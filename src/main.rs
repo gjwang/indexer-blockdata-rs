@@ -1,6 +1,7 @@
 use std::env;
 use std::sync::Arc;
 
+use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
     prelude::*,
@@ -12,9 +13,24 @@ use log::{error, info};
 mod logger;
 mod configure;
 
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    #[clap(long, default_value = "0")]
+    block_number_begin: usize,
+    #[clap(long, default_value = "-1")]
+    block_number_end: isize,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
+
+    let args = Args::parse();
+    let block_number_begin = args.block_number_begin;
+    let block_number_end = args.block_number_end;
+    println!("block_number_begin={block_number_begin} block_number_end={block_number_end}");
+
     logger::setup_logger().expect("Failed to set up logger");
 
 
@@ -41,9 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("Timestamp: {}", block_data.timestamp);
         info!("Number of transactions: {}", block_data.transactions.len());
 
-        for tx in block_data.transactions {
-            info!("{:?} {} -> {:?}", tx.hash, tx.from, tx.to);
-        }
+        // for tx in block_data.transactions {
+        //     info!("{:?} {} -> {:?}", tx.hash, tx.from, tx.to);
+        // }
     } else {
         error!("Block not found");
     }
