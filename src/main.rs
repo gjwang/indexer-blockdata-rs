@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get the INFURA_API_KEY from the environment
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
-    let endpoint = format!("https://mainnet.infura.io/v3/{}", infura_api_key);
+    let endpoint = format!("https://mainnet.infura.io/v3/{infura_api_key}");
 
     // Connect to an Ethereum node (replace with your own node URL)
     let provider = Provider::<Http>::try_from(endpoint)?;
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Number of transactions: {}", block_data.transactions.len());
 
         for tx in block_data.transactions {
-            println!("{:?}", tx)
+            println!("{:?} {} -> {:?}", tx.hash, tx.from, tx.to);
         }
     } else {
         println!("Block not found");
