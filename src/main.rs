@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::env;
+use dotenv::dotenv;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct BlockData {
@@ -32,8 +34,14 @@ struct JsonRpcResponse {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Ethereum JSON-RPC endpoint (replace with your preferred node or service)
-    let endpoint = "https://mainnet.infura.io/v3/YOUR_INFURA_PROJECT_ID";
+    dotenv().ok();
+
+    // Get the INFURA_API_KEY from the environment
+    let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
+
+    // Ethereum JSON-RPC endpoint
+    let endpoint = format!("https://mainnet.infura.io/v3/{}", infura_api_key);
+
 
     // Create a client
     let client = reqwest::Client::new();
