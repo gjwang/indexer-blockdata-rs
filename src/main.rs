@@ -10,10 +10,13 @@ use eyre::Result;
 use log::{error, info};
 
 mod logger;
+mod configure;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     logger::setup_logger().expect("Failed to set up logger");
+
 
     // Get the INFURA_API_KEY from the environment
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
