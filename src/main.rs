@@ -10,6 +10,7 @@ use ethers::{
 };
 use eyre::Result;
 use log::{error, info};
+use sled::Db;
 use tokio::time::sleep;
 
 mod logger;
@@ -48,12 +49,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // let latest_block = client.get_block_number().await?;
     // info!("Latest block number: {}", latest_block);
 
+    let db: Db = sled::open("config_db")?;
     if block_number_begin < 0 {
-        block_number_begin = 0; //TODO: read from storage
-        info!("block_number_begin {}", block_number_begin);
+        if let Some(value) = db.get("block_number_begin")? {
+            block_number_begin = i64::from_be_bytes(value.as_ref().try_into()?);
+            println!("Got block_number_begin value: {}", block_number_begin);
+        } else {
+            block_number_begin = 0;
+        }
     }
 
+    // Insert a key-value pair
+    db.insert("block_number_begin", &block_number_begin.to_be_bytes())?;
+    println!("Inserted block_number_begin: {}", block_number_begin);
+    // db.insert("_block_number_end", &_block_number_end.to_be_bytes())?;
+    // println!("Inserted _block_number_end: {}", _block_number_end);
+    // if let Some(value) = db.get("_block_number_end")? {
+    //     let retrieved_block_number = i64::from_be_bytes(value.as_ref().try_into()?);
+    //     println!("Got _block_number_end value: {}", retrieved_block_number);
+    // }
+
     loop {
+        let _block_number_begin = db.get("block_number_begin").as_mut();
+        if let Some(value) = db.get("block_number_begin")? {
+            block_number_begin = i64::from_be_bytes(value.as_ref().try_into()?);
+            println!("Got block_number_begin value: {}", block_number_begin);
+        } else {
+            block_number_begin = 0;
+        }
+
         let mut block_number_end;
         if _block_number_end < 0 {
             block_number_end = i64::try_from(client.get_block_number().await?)?;
@@ -89,8 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         block_number_begin += 1;
+
+        db.insert("block_number_begin", &block_number_begin.to_be_bytes())?;
     }
-
-
-    Ok(())
 }
