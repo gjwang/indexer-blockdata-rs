@@ -1,36 +1,12 @@
-use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::env;
+use std::sync::Arc;
+
 use dotenv::dotenv;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct BlockData {
-    number: String,
-    hash: String,
-    parentHash: String,
-    nonce: String,
-    sha3Uncles: String,
-    logsBloom: String,
-    transactionsRoot: String,
-    stateRoot: String,
-    receiptsRoot: String,
-    miner: String,
-    difficulty: String,
-    totalDifficulty: String,
-    extraData: String,
-    size: String,
-    gasLimit: String,
-    gasUsed: String,
-    timestamp: String,
-    // Add more fields as needed
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct JsonRpcResponse {
-    jsonrpc: String,
-    id: u64,
-    result: BlockData,
-}
+use ethers::{
+    prelude::*,
+    providers::{Http, Provider},
+};
+use eyre::Result;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,39 +14,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get the INFURA_API_KEY from the environment
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
-
-    // Ethereum JSON-RPC endpoint
     let endpoint = format!("https://mainnet.infura.io/v3/{}", infura_api_key);
 
+    // Connect to an Ethereum node (replace with your own node URL)
+    let provider = Provider::<Http>::try_from(endpoint)?;
+    let client = Arc::new(provider);
 
-    // Create a client
-    let client = reqwest::Client::new();
+    // Fetch the latest block number
+    let latest_block = client.get_block_number().await?;
+    println!("Latest block number: {}", latest_block);
 
-    // Prepare the JSON-RPC request
-    let request_body = json!({
-        "jsonrpc": "2.0",
-        "method": "eth_getBlockByNumber",
-        "params": ["latest", false],
-        "id": 1
-    });
+    // Fetch block data
+    let block = client.get_block_with_txs(latest_block).await?;
 
-    // Send the request
-    let response = client
-        .post(endpoint)
-        .json(&request_body)
-        .send()
-        .await?
-        .json::<JsonRpcResponse>()
-        .await?;
+    if let Some(block_data) = block {
+        // println!("{:?}", block_data);
+        println!("Block hash: {:?}", block_data.hash);
+        println!("Parent hash: {:?}", block_data.parent_hash);
+        println!("Timestamp: {}", block_data.timestamp);
+        println!("Number of transactions: {}", block_data.transactions.len());
 
-    // Print the block data
-    println!("Latest Ethereum Block Data:");
-    println!("Block Number: {}", u64::from_str_radix(&response.result.number[2..], 16)?);
-    println!("Block Hash: {}", response.result.hash);
-    println!("Parent Hash: {}", response.result.parentHash);
-    println!("Timestamp: {}", u64::from_str_radix(&response.result.timestamp[2..], 16)?);
-    println!("Gas Used: {}", u64::from_str_radix(&response.result.gasUsed[2..], 16)?);
-    println!("Gas Limit: {}", u64::from_str_radix(&response.result.gasLimit[2..], 16)?);
+        for tx in block_data.transactions {
+            println!("{:?}", tx)
+        }
+    } else {
+        println!("Block not found");
+    }
 
     Ok(())
 }
