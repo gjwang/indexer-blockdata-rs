@@ -15,6 +15,7 @@ Cargo.lock
 
 .idea
 .env
+log/
 
 # Added by cargo
 
