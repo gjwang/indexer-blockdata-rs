@@ -24,6 +24,8 @@ struct Args {
     block_number_begin: i64,
     #[clap(long, default_value = "-1")]
     block_number_end: i64,
+    #[clap(long, action = clap::ArgAction::Set, default_value_t = false)]
+    is_reverse_indexing: bool,
 }
 
 #[tokio::main]
@@ -33,7 +35,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let mut block_number_begin = args.block_number_begin;
     let _block_number_end = args.block_number_end;
-    println!("block_number_begin={block_number_begin} block_number_end={_block_number_end}");
+    let is_reverse_indexing = args.is_reverse_indexing;
+    println!("block_number_begin={block_number_begin} block_number_end={_block_number_end} is_reverse_indexing={is_reverse_indexing}");
 
     logger::setup_logger().expect("Failed to set up logger");
 
@@ -48,22 +51,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let kv_db = SledDb::new("my_db")?;
+    let _ = kv_db.insert_bool("is_reverse_indexing", is_reverse_indexing);
+
     if block_number_begin < 0 {
-        block_number_begin = kv_db.get("block_number_begin", 0)?;
-        println!("Got block_number_begin value: {}", block_number_begin);
+        block_number_begin = kv_db.get("block_number_begin", 0);
+    } else {
         kv_db.insert("block_number_begin", block_number_begin)?;
     }
+    block_number_begin = kv_db.get("block_number_begin", 0);
 
+
+    let mut block_number_end;
+    if _block_number_end < 0 {
+        block_number_end = i64::try_from(client.get_block_number().await?)?;
+        info!("LatestBlockNumber: {}", block_number_end);
+        kv_db.insert("block_number_end", block_number_end)?;
+    } else {
+        kv_db.insert("block_number_end", _block_number_end)?;
+    }
+
+    println!("block_number_begin: {} block_number_end={_block_number_end}", block_number_begin);
 
     loop {
-        block_number_begin = kv_db.get("block_number_begin", 0)?;
+        block_number_begin = kv_db.get("block_number_begin", 0);
 
-        let mut block_number_end;
-        if _block_number_end < 0 {
+        if !is_reverse_indexing {
             block_number_end = i64::try_from(client.get_block_number().await?)?;
             info!("LatestBlockNumber: {}", block_number_end);
         } else {
-            block_number_end = _block_number_end
+            block_number_end = kv_db.get("block_number_end", -1);
         }
 
         let delay_blocks = block_number_end - block_number_begin;
@@ -72,8 +88,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if delay_blocks <= 0 {
             let duration = Duration::from_secs(5);
             info!("catchup the latest_block_number={block_number_end} sleep {:?}", duration);
+            if is_reverse_indexing {
+                info!("Finished all");
+                return Ok(());
+            }
             sleep(duration).await;
             continue;
+        }
+
+        let block_number;
+        if is_reverse_indexing {
+            block_number = block_number_end;
+        } else {
+            block_number = block_number_begin;
         }
 
         // Fetch block data
@@ -91,8 +118,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             error!("Block not found");
         }
 
-        block_number_begin += 1;
-
-        kv_db.insert("block_number_begin", block_number_begin)?;
+        if !is_reverse_indexing {
+            block_number_begin += 1;
+            kv_db.insert("block_number_begin", block_number_begin)?;
+        } else {
+            block_number_end -= 1;
+            kv_db.insert("block_number_end", block_number_end)?;
+        }
     }
 }
