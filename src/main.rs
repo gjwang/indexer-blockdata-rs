@@ -2,6 +2,8 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
+
+
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
@@ -15,10 +17,13 @@ use serde_json::{json, Value};
 use tokio::time::sleep;
 
 use simple_kv_storage::SledDb;
+use crate::compressor::{compress_json, decompress_json};
 
 mod logger;
 mod configure;
 mod simple_kv_storage;
+mod compressor;
+
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Args {
@@ -140,13 +145,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let hash = block_data["hash"].as_str().unwrap();
         println!("Block Hash: {}", hash);
 
-        if let Some(number) = block_data["number"].as_u64() {
-            println!("Block Number: {}", number);
-        }
 
-        // if let Some(hash) = block_data["hash"].as_str() {
-        //     println!("Block Hash: {}", hash);
-        // }
+        let compressed_data = compress_json(&block_data)?;
+        // println!("Compressed data: {:?}", compressed_data);
+
+        // Decompress JSON data
+        let decompressed_json = decompress_json(&compressed_data)?;
+        // println!("Decompressed JSON: {}", decompressed_json);
+
+        // Compare original and decompressed JSON
+        assert_eq!(block_data, decompressed_json);
+        println!("Original and decompressed JSON are equal.");
+
+        let json_str = serde_json::to_string(&block_data).unwrap();
+        let original_len = json_str.len();
+        let compressed_len = compressed_data.len();
+        let compress_ratio = original_len as f64 /compressed_len as f64;
+        println!("OriginalDataLength: {original_len} CompressedDataLength: {compressed_len} compress_ratio: {compress_ratio:.2}");
+
 
         if !is_reverse_indexing {
             block_number_begin += 1;
