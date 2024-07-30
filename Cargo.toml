@@ -19,3 +19,4 @@ chrono = "0.4.38"
 config = "0.14.0"
 clap = { version = "4.5.11", features = ["derive"] }
 sled = "0.34"
+flate2 = "1.0.30"
