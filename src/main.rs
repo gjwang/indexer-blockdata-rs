@@ -11,6 +11,7 @@ use ethers::{
 use eyre::Result;
 use log::{error, info};
 use log4rs;
+use serde_json::{json, Value};
 use tokio::time::sleep;
 
 use simple_kv_storage::SledDb;
@@ -27,6 +28,25 @@ struct Args {
     block_number_end: i64,
     #[clap(long, action = clap::ArgAction::Set, default_value_t = false)]
     is_reverse_indexing: bool,
+}
+
+async fn get_block_data(client: &Provider<Http>, block_number_begin: u64) -> Result<Value, Box<dyn std::error::Error>> {
+    let filter = Filter::new()
+        .from_block(block_number_begin)
+        .to_block(block_number_begin);
+
+    let block = client.get_block_with_txs(U64::from(block_number_begin)).await?;
+    // println!("block= {:?}", block);
+    let logs = client.get_logs(&filter).await?;
+
+    let mut block_json: Value = serde_json::to_value(&block)?;
+
+    // Add logs to the block JSON
+    if let Value::Object(ref mut map) = block_json {
+        map.insert("logs".to_string(), json!(logs));
+    }
+
+    Ok(block_json)
 }
 
 #[tokio::main]
@@ -112,20 +132,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             block_number = block_number_begin;
         }
 
-        // Fetch block data
-        let block = client.get_block_with_txs(U64::from(block_number_begin)).await?;
-        if let Some(block_data) = block {
-            info!("BlockNumber: {:?}, hash:{:?}", block_data.number, block_data.hash);
-            info!("Parent hash: {:?}", block_data.parent_hash);
-            info!("Timestamp: {}", block_data.timestamp);
-            info!("Number of transactions: {}", block_data.transactions.len());
+        let block_data = get_block_data(&client, block_number_begin as u64).await?;
+        // println!("{}", serde_json::to_string_pretty(&block_data)?);
 
-            // for tx in block_data.transactions {
-            //     info!("{:?} {} -> {:?}", tx.hash, tx.from, tx.to);
-            // }
-        } else {
-            error!("Block not found");
+        let number = block_data["number"].as_str().unwrap();
+        println!("BlockNumber: {}", number);
+        let hash = block_data["hash"].as_str().unwrap();
+        println!("Block Hash: {}", hash);
+
+        if let Some(number) = block_data["number"].as_u64() {
+            println!("Block Number: {}", number);
         }
+
+        // if let Some(hash) = block_data["hash"].as_str() {
+        //     println!("Block Hash: {}", hash);
+        // }
 
         if !is_reverse_indexing {
             block_number_begin += 1;
