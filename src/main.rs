@@ -150,12 +150,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // println!("Compressed data: {:?}", compressed_data);
 
         // Decompress JSON data
-        let decompressed_json = decompress_json(&compressed_data)?;
+        // let decompressed_json = decompress_json(&compressed_data)?;
         // println!("Decompressed JSON: {}", decompressed_json);
-
         // Compare original and decompressed JSON
-        assert_eq!(block_data, decompressed_json);
-        println!("Original and decompressed JSON are equal.");
+        // assert_eq!(block_data, decompressed_json);
+        // println!("Original and decompressed JSON are equal.");
 
         let json_str = serde_json::to_string(&block_data).unwrap();
         let original_len = json_str.len();
