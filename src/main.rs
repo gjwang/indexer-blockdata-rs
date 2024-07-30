@@ -10,6 +10,7 @@ use ethers::{
 };
 use eyre::Result;
 use log::{error, info};
+use log4rs;
 use tokio::time::sleep;
 
 use simple_kv_storage::SledDb;
@@ -50,8 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Arc::new(provider);
 
 
-    let kv_db = SledDb::new("my_db")?;
-    let _ = kv_db.insert_bool("is_reverse_indexing", is_reverse_indexing);
+    let db_name = "config_db";
+    let kv_db = SledDb::new(db_name)?;
 
     if block_number_begin < 0 {
         block_number_begin = kv_db.get("block_number_begin", 0);
@@ -62,15 +63,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 
     let mut block_number_end;
-    if _block_number_end < 0 {
+    if _block_number_end == -1 {
+        //use LatestBlockNumber value as block_number_end
         block_number_end = i64::try_from(client.get_block_number().await?)?;
         info!("LatestBlockNumber: {}", block_number_end);
         kv_db.insert("block_number_end", block_number_end)?;
+    } else if _block_number_end == -2 {
+        //use local storage value as block_number_end
+        block_number_end = kv_db.get("block_number_end", -2);
+        info!("use local block_number_end: {block_number_end}");
     } else {
+        //use input value as block_number_end
         kv_db.insert("block_number_end", _block_number_end)?;
+        block_number_end = _block_number_end;
     }
 
-    println!("block_number_begin: {} block_number_end={_block_number_end}", block_number_begin);
+
+    println!("block_number_begin: {block_number_begin} _block_number_end={_block_number_end} block_number_end={block_number_end}");
 
     loop {
         block_number_begin = kv_db.get("block_number_begin", 0);
