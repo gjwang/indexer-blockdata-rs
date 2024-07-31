@@ -20,10 +20,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Execute a query
     let mut rows = session
-        .query("SELECT cluster_name, listen_address FROM system.local", &[])
-        .await?
-        .rows
-        .unwrap_or_default();
+        .query("SELECT cluster_name, listen_address FROM system.local", &[]).await?;
 
     // Process the results
     for row in rows {
