@@ -48,7 +48,7 @@ impl ScyllaService {
 }
 
 // Usage example
-async fn example_usage() -> Result<()> {
+pub async fn example_usage() -> Result<()> {
     let scylla_service = ScyllaService::new();
     scylla_service.connect("127.0.0.1:9042").await?;
 
@@ -73,13 +73,6 @@ async fn example_usage() -> Result<()> {
             _ => println!("Missing cluster name or listen address"),
         }
     }
-
-    Ok(())
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    example_usage().await.expect("TODO: panic message");
 
     Ok(())
 }

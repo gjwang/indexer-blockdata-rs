@@ -1,7 +1,15 @@
 [package]
-name = "indexer-blockdata-rs"
+name = "indexerblockdata"
 version = "0.1.0"
 edition = "2021"
+
+[lib]
+name = "indexerblockdata"
+path = "src/lib.rs"
+
+[[bin]]
+name = "scylla_demo"
+path = "src/bin/scylla_demo.rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

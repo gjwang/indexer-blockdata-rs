@@ -2,8 +2,6 @@ use std::env;
 use std::sync::Arc;
 use std::time::Duration;
 
-
-
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
@@ -17,12 +15,14 @@ use serde_json::{json, Value};
 use tokio::time::sleep;
 
 use simple_kv_storage::SledDb;
+
 use crate::compressor::{compress_json, decompress_json};
 
 mod logger;
 mod configure;
 mod simple_kv_storage;
 mod compressor;
+mod scylla_service;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -159,7 +159,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let json_str = serde_json::to_string(&block_data).unwrap();
         let original_len = json_str.len();
         let compressed_len = compressed_data.len();
-        let compress_ratio = original_len as f64 /compressed_len as f64;
+        let compress_ratio = original_len as f64 / compressed_len as f64;
         println!("OriginalDataLength: {original_len} CompressedDataLength: {compressed_len} compress_ratio: {compress_ratio:.2}");
 
 
