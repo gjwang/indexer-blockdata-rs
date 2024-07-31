@@ -1,0 +1,72 @@
+use std::error::Error;
+use std::fs::File;
+use std::io::Write;
+use std::path::Path;
+
+use s3::{Bucket, Region};
+use s3::creds::Credentials;
+
+pub struct S3Service {
+    bucket: Bucket,
+}
+
+
+impl S3Service {
+    pub fn new(bucket_name: &str, region: &str, endpoint: &str, aws_access_key_id: &str, aws_secret_access_key: &str) -> Result<Self, Box<dyn Error>> {
+        let region = Region::Custom {
+            region: region.to_owned(),
+            endpoint: endpoint.to_owned(),
+        };
+
+        // Credentials
+        let credentials = Credentials::new(
+            Some(&aws_access_key_id),
+            Some(&aws_secret_access_key),
+            None,
+            None,
+            None,
+        )?;
+
+        // Create a bucket object
+        let bucket = Bucket::new(bucket_name, region, credentials)?
+            .with_path_style(); // Use path-style for MinIO
+
+        Ok(S3Service { bucket })
+    }
+
+    pub async fn upload_object_bytes(&self, key: &str, content: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+        let response = self.bucket.put_object(key, &content).await?;
+        if response.status_code() == 200 {
+            println!("File uploaded successfully!");
+        } else {
+            println!("Failed to upload file. Status code: {}", response.status_code());
+        }
+
+        Ok(())
+    }
+
+
+    pub async fn upload_object(&self, file_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let file_name = file_path.file_name().unwrap().to_str().unwrap();
+        let content = std::fs::read(file_path)?;
+        self.upload_object_bytes(file_name, content).await?;
+
+        Ok(())
+    }
+
+
+    pub async fn download_object(&self, object_key: &str, download_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let response = self.bucket.get_object(object_key).await?;
+
+        if response.status_code() == 200 {
+            let data = response.bytes();
+            let mut file = File::create(download_path)?;
+            file.write_all(&data)?;
+            println!("File downloaded successfully to {:?}", download_path);
+        } else {
+            println!("Failed to download file. Status code: {}", response.status_code());
+        }
+
+        Ok(())
+    }
+}
