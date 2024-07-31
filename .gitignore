@@ -15,6 +15,7 @@ Cargo.lock
 
 .idea
 .env
+.zed/
 log/
 config_db/
 

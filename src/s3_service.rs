@@ -1,10 +1,9 @@
+use s3::creds::Credentials;
+use s3::{Bucket, Region};
 use std::error::Error;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-
-use s3::creds::Credentials;
-use s3::{Bucket, Region};
 
 pub struct S3Service {
     bucket: Bucket,

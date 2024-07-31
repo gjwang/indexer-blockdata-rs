@@ -1,7 +1,3 @@
-use std::env;
-use std::sync::Arc;
-use std::time::Duration;
-
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
@@ -9,12 +5,14 @@ use ethers::{
     providers::{Http, Provider},
 };
 use eyre::Result;
+use indexerblockdata::s3_service::S3Service;
 use log::{error, info};
 use serde_json::{json, Value};
-use tokio::time::sleep;
-
-use indexerblockdata::s3_service::S3Service;
 use simple_kv_storage::SledDb;
+use std::env;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 use crate::compressor::{compress_json, decompress_json};
 

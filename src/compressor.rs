@@ -1,8 +1,8 @@
-use flate2::write::GzEncoder;
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde_json::Value;
-use std::io::{self, Write, Read};
+use std::io::{self, Read, Write};
 
 // Function to compress JSON data
 pub fn compress_json(json_data: &Value) -> io::Result<Vec<u8>> {

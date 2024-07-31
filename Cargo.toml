@@ -11,6 +11,7 @@ path = "src/lib.rs"
 name = "scylla_demo"
 path = "src/bin/scylla_demo.rs"
 
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
