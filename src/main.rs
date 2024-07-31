@@ -10,19 +10,19 @@ use ethers::{
 };
 use eyre::Result;
 use log::{error, info};
-use log4rs;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
+use indexerblockdata::s3_service::S3Service;
 use simple_kv_storage::SledDb;
 
 use crate::compressor::{compress_json, decompress_json};
 
-mod logger;
-mod configure;
-mod simple_kv_storage;
 mod compressor;
+mod configure;
+mod logger;
 mod scylla_service;
+mod simple_kv_storage;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -35,12 +35,17 @@ struct Args {
     is_reverse_indexing: bool,
 }
 
-async fn get_block_data(client: &Provider<Http>, block_number_begin: u64) -> Result<Value, Box<dyn std::error::Error>> {
+async fn get_block_data(
+    client: &Provider<Http>,
+    block_number_begin: u64,
+) -> Result<Value, Box<dyn std::error::Error>> {
     let filter = Filter::new()
         .from_block(block_number_begin)
         .to_block(block_number_begin);
 
-    let block = client.get_block_with_txs(U64::from(block_number_begin)).await?;
+    let block = client
+        .get_block_with_txs(U64::from(block_number_begin))
+        .await?;
     // println!("block= {:?}", block);
     let logs = client.get_logs(&filter).await?;
 
@@ -66,7 +71,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     logger::setup_logger().expect("Failed to set up logger");
 
-
     // Get the INFURA_API_KEY from the environment
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
     let endpoint = format!("https://mainnet.infura.io/v3/{infura_api_key}");
@@ -74,7 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to an Ethereum node (replace with your own node URL)
     let provider = Provider::<Http>::try_from(endpoint)?;
     let client = Arc::new(provider);
-
 
     let db_name = "config_db";
     let kv_db = SledDb::new(db_name)?;
@@ -85,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         kv_db.insert("block_number_begin", block_number_begin)?;
     }
     block_number_begin = kv_db.get("block_number_begin", 0);
-
 
     let mut block_number_end;
     if _block_number_end == -1 {
@@ -103,8 +105,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         block_number_end = _block_number_end;
     }
 
-
     println!("block_number_begin: {block_number_begin} _block_number_end={_block_number_end} block_number_end={block_number_end}");
+
+    let endpoint = "http://localhost:9000"; // Use this for MinIO, comment out for S3
+    let bucket_name = "my-bucket2";
+    let region = "us-east-1";
+    let aws_access_key_id = env::var("S3_ACCESS_KEY_ID").expect("S3_ACCESS_KEY_ID must be set");
+    let aws_secret_access_key =
+        env::var("S3_SECRET_ACCESS_KEY").expect("S3_SECRET_ACCESS_KEY must be set");
+    println!(
+        "endpoint={endpoint}, bucket_name={bucket_name}, aws_access_key_id={aws_access_key_id}"
+    );
+
+    let s3_service = S3Service::new(
+        &bucket_name,
+        &region,
+        &endpoint,
+        &aws_access_key_id,
+        &aws_secret_access_key,
+    )?;
 
     loop {
         block_number_begin = kv_db.get("block_number_begin", 0);
@@ -121,7 +140,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if delay_blocks <= 0 {
             let duration = Duration::from_secs(5);
-            info!("catchup the latest_block_number={block_number_end} sleep {:?}", duration);
+            info!(
+                "catchup the latest_block_number={block_number_end} sleep {:?}",
+                duration
+            );
             if is_reverse_indexing {
                 info!("Finished all");
                 return Ok(());
@@ -145,7 +167,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let hash = block_data["hash"].as_str().unwrap();
         println!("Block Hash: {}", hash);
 
-
         let compressed_data = compress_json(&block_data)?;
         // println!("Compressed data: {:?}", compressed_data);
 
@@ -162,6 +183,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let compress_ratio = original_len as f64 / compressed_len as f64;
         println!("OriginalDataLength: {original_len} CompressedDataLength: {compressed_len} compress_ratio: {compress_ratio:.2}");
 
+        let key = format!("{block_number}.json");
+        s3_service.upload_object(&key, compressed_data).await?;
+        println!("upload block data {key} to S3 success ✅");
 
         if !is_reverse_indexing {
             block_number_begin += 1;

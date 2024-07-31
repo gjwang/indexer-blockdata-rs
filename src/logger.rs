@@ -1,13 +1,12 @@
 use std::error::Error;
 
+use log::LevelFilter;
+use log4rs::append::file::FileAppender;
 use log4rs::{
-    append::console::ConsoleAppender
-    ,
+    append::console::ConsoleAppender,
     config::{Appender, Config as LogConfig, Root},
     encode::pattern::PatternEncoder,
 };
-use log4rs::append::file::FileAppender;
-use log::LevelFilter;
 
 use crate::configure::load_config;
 
@@ -17,15 +16,18 @@ pub fn setup_logger() -> Result<(), Box<dyn Error>> {
     let log_file = config.get_string("log_file")?;
     println!("log_file={log_file}");
 
-
     // Create a stdout appender
     let stdout = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}")))
+        .encoder(Box::new(PatternEncoder::new(
+            "{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}",
+        )))
         .build();
 
     // Create a file appender
     let file = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new("{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}")))
+        .encoder(Box::new(PatternEncoder::new(
+            "{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}",
+        )))
         .build(log_file)?;
 
     // Build the log4rs configuration
