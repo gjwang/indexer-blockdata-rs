@@ -6,10 +6,11 @@ pub(crate) struct SledDb {
     db: Db,
 }
 
-
 impl SledDb {
     pub fn new(path: &str) -> Result<Self, sled::Error> {
-        Ok(Self { db: sled::open(path)? })
+        Ok(Self {
+            db: sled::open(path)?,
+        })
     }
 
     pub fn insert(&self, key: &str, value: i64) -> Result<(), Box<dyn std::error::Error>> {
@@ -26,10 +27,8 @@ impl SledDb {
 
     pub fn get(&self, key: &str, default: i64) -> i64 {
         match self.db.get(key) {
-            Ok(Some(value)) => {
-                i64::from_be_bytes(value.as_ref().try_into().unwrap_or([0; 8]))
-            }
-            _ => default
+            Ok(Some(value)) => i64::from_be_bytes(value.as_ref().try_into().unwrap_or([0; 8])),
+            _ => default,
         }
     }
 
@@ -39,7 +38,7 @@ impl SledDb {
                 // Assuming we stored booleans as a single byte
                 !value.is_empty() && value[0] != 0
             }
-            _ => default
+            _ => default,
         }
     }
 

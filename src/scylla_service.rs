@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use scylla::{Session, SessionBuilder};
 use scylla::_macro_internal::{CqlValue, Row};
 use scylla::transport::Node;
+use scylla::{Session, SessionBuilder};
 use tokio::sync::Mutex;
 
 pub struct ScyllaService {
@@ -34,7 +34,6 @@ impl ScyllaService {
         }
     }
 
-
     pub async fn get_cluster_info(&self) -> Result<Vec<Arc<Node>>> {
         let session_guard = self.session.lock().await;
         if let Some(session) = &*session_guard {
@@ -57,7 +56,6 @@ pub async fn example_usage() -> Result<()> {
     let nodes_info = scylla_service.get_cluster_info().await?;
     println!("nodes_info:{:?}", nodes_info);
 
-
     let stmt = "SELECT cluster_name, listen_address FROM system.local";
     // Use the service to execute queries
     let rows = scylla_service.execute_query(stmt).await?;
@@ -76,4 +74,3 @@ pub async fn example_usage() -> Result<()> {
 
     Ok(())
 }
-
