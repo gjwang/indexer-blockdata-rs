@@ -8,12 +8,8 @@ use s3::Bucket;
 use s3::creds::Credentials;
 use s3::Region;
 
-async fn upload_object(bucket: &Bucket, file_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let file_name = file_path.file_name().unwrap().to_str().unwrap();
-    let content = std::fs::read(file_path)?;
-
-    let response = bucket.put_object(file_name, &content).await?;
-
+async fn upload_object_bytes(bucket: &Bucket, key: &str, content: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    let response = bucket.put_object(key, &content).await?;
     if response.status_code() == 200 {
         println!("File uploaded successfully!");
     } else {
@@ -22,6 +18,16 @@ async fn upload_object(bucket: &Bucket, file_path: &Path) -> Result<(), Box<dyn 
 
     Ok(())
 }
+
+
+async fn upload_object(bucket: &Bucket, file_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let file_name = file_path.file_name().unwrap().to_str().unwrap();
+    let content = std::fs::read(file_path)?;
+    upload_object_bytes(bucket, file_name, content).await?;
+    
+    Ok(())
+}
+
 
 async fn download_object(bucket: &Bucket, object_key: &str, download_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let response = bucket.get_object(object_key).await?;
@@ -78,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Upload example
     let upload_path = Path::new(file_path);
     upload_object(&bucket, &upload_path).await?;
+
 
     // Download example
     let object_key = "0.jpeg";  // The name of the file in S3/MinIO
