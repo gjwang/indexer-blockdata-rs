@@ -1,6 +1,6 @@
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde_json::Value;
 use std::io::{self, Read, Write};
 
@@ -23,13 +23,13 @@ pub fn decompress_json(compressed_data: &[u8]) -> io::Result<Value> {
     let mut decoder = GzDecoder::new(compressed_data);
     let mut decompressed_data = Vec::new();
     decoder.read_to_end(&mut decompressed_data)?;
-
     // Convert decompressed data back to JSON string
     let decompressed_json_str = String::from_utf8(decompressed_data).unwrap();
     let decompressed_json: Value = serde_json::from_str(&decompressed_json_str).unwrap();
 
     Ok(decompressed_json)
 }
+
 
 // fn main() -> io::Result<()> {
 //     // Sample JSON data

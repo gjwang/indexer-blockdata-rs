@@ -1,4 +1,5 @@
 use std::env;
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Provider::<Http>::try_from(endpoint)?;
     let client = Arc::new(provider);
 
-    let db_name = "config_db";
+    let db_name = "config_db_indexer";
     let kv_db = SledDb::new(db_name)?;
 
     let kv_blk_number_begin_key = "indexer::block_number_begin";
@@ -127,13 +128,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let key = format!("{block_number}.json.gz");
-        let block_data = s3_service.get_object(&key).await?;
-        println!("get_object {key} ✅");
+        let block_data = s3_service.get_object(&key).await;
+        match block_data {
+            Ok(data) => {
+                println!("get_object {key} ✅");
+                let decompressed_json = decompress_json(&data)?; // Decompress JSON data
+                println!("Decompressed block: {key}");
+                //TODO save into scylla
+            }
+            Err(e) => {
+                println!("get_object block:{key} Error: {:?}", e);
+                sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        }
 
-        // Decompress JSON data
-        let decompressed_json = decompress_json(&block_data)?;
-        // println!("Decompressed key{key} decompressed_json={decompressed_json}");
-        //TODO save into scylla
 
         if !is_reverse_indexing {
             block_number_begin += 1;
