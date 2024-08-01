@@ -1,9 +1,11 @@
-use s3::creds::Credentials;
-use s3::{Bucket, Region};
 use std::error::Error;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
+
+use bytes::Bytes;
+use s3::{Bucket, Region};
+use s3::creds::Credentials;
 
 pub struct S3Service {
     bucket: Bucket,
@@ -62,25 +64,34 @@ impl S3Service {
         Ok(())
     }
 
-    pub async fn download_object(
+    pub async fn get_object(
+        &self,
+        object_key: &str,
+    ) -> Result<Bytes, Box<dyn std::error::Error>> {
+        let response = self.bucket.get_object(object_key).await?;
+
+        if response.status_code() == 200 {
+            println!("get_object {object_key} successfully");
+            let data = response.bytes();
+            Ok(data.clone())
+        } else {
+            println!(
+                "Failed to get_object:{object_key} Status code: {}",
+                response.status_code()
+            );
+            Ok(Bytes::new())
+        }
+    }
+
+    pub async fn download_object_to_file(
         &self,
         object_key: &str,
         download_path: &Path,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let response = self.bucket.get_object(object_key).await?;
-
-        if response.status_code() == 200 {
-            let data = response.bytes();
-            let mut file = File::create(download_path)?;
-            file.write_all(&data)?;
-            println!("File downloaded successfully to {:?}", download_path);
-        } else {
-            println!(
-                "Failed to download file. Status code: {}",
-                response.status_code()
-            );
-        }
-
+        let data = self.get_object(object_key).await?;
+        let mut file = File::create(download_path)?;
+        file.write_all(&data)?;
+        println!("File downloaded successfully to {:?}", download_path);
         Ok(())
     }
 }
