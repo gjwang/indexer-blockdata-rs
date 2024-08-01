@@ -18,7 +18,7 @@ Cargo.lock
 .zed/
 log/
 config_db/
-config_db*
+
 
 
 # Added by cargo

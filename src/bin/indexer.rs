@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Provider::<Http>::try_from(endpoint)?;
     let client = Arc::new(provider);
 
-    let db_name = "config_db_indexer";
+    let db_name = "config_db/indexer";
     let kv_db = SledDb::new(db_name)?;
 
     let kv_blk_number_begin_key = "indexer::block_number_begin";
