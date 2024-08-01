@@ -3,7 +3,7 @@ use std::path::Path;
 
 use dotenv::dotenv;
 
-use indexerblockdata::s3_service::S3Service;
+use fetcher::s3_service::S3Service;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
