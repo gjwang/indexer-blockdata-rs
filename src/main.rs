@@ -175,11 +175,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // assert_eq!(block_data, decompressed_json);
         // println!("Original and decompressed JSON are equal.");
 
-        let json_str = serde_json::to_string(&block_data).unwrap();
-        let original_len = json_str.len();
-        let compressed_len = compressed_data.len();
-        let compress_ratio = original_len as f64 / compressed_len as f64;
-        println!("OriginalDataLength: {original_len} CompressedDataLength: {compressed_len} compress_ratio: {compress_ratio:.2}");
+        // let json_str = serde_json::to_string(&block_data).unwrap();
+        // let original_len = json_str.len();
+        // let compressed_len = compressed_data.len();
+        // let compress_ratio = original_len as f64 / compressed_len as f64;
+        // println!("OriginalDataLength: {original_len} CompressedDataLength: {compressed_len} compress_ratio: {compress_ratio:.2}");
 
         let key = format!("{block_number}.json");
         s3_service.upload_object(&key, compressed_data).await?;
