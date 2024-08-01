@@ -9,20 +9,14 @@ use ethers::{
     providers::{Http, Provider},
 };
 use eyre::Result;
-use log::{error, info};
+use log::info;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
+use fetcher::compressor::{compress_json, decompress_json};
+use fetcher::logger;
 use fetcher::s3_service::S3Service;
-use simple_kv_storage::SledDb;
-
-use crate::compressor::{compress_json, decompress_json};
-
-mod compressor;
-mod configure;
-mod logger;
-mod scylla_service;
-mod simple_kv_storage;
+use fetcher::simple_kv_storage::SledDb;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -35,29 +29,6 @@ struct Args {
     is_reverse_indexing: bool,
 }
 
-async fn get_block_data(
-    client: &Provider<Http>,
-    block_number_begin: u64,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let filter = Filter::new()
-        .from_block(block_number_begin)
-        .to_block(block_number_begin);
-
-    let block = client
-        .get_block_with_txs(U64::from(block_number_begin))
-        .await?;
-    // println!("block= {:?}", block);
-    let logs = client.get_logs(&filter).await?;
-
-    let mut block_json: Value = serde_json::to_value(&block)?;
-
-    // Add logs to the block JSON
-    if let Value::Object(ref mut map) = block_json {
-        map.insert("logs".to_string(), json!(logs));
-    }
-
-    Ok(block_json)
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -82,26 +53,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db_name = "config_db";
     let kv_db = SledDb::new(db_name)?;
 
+    let kv_blk_number_begin_key = "indexer::block_number_begin";
+    let kv_blk_number_end_key = "indexer::block_number_end";
     if block_number_begin < 0 {
-        block_number_begin = kv_db.get("block_number_begin", 0);
+        block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
     } else {
-        kv_db.insert("block_number_begin", block_number_begin)?;
+        kv_db.insert(kv_blk_number_begin_key, block_number_begin)?;
     }
-    block_number_begin = kv_db.get("block_number_begin", 0);
+    block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
 
     let mut block_number_end;
     if _block_number_end == -1 {
         //use LatestBlockNumber value as block_number_end
         block_number_end = i64::try_from(client.get_block_number().await?)?;
         info!("LatestBlockNumber: {}", block_number_end);
-        kv_db.insert("block_number_end", block_number_end)?;
+        kv_db.insert(kv_blk_number_end_key, block_number_end)?;
     } else if _block_number_end == -2 {
         //use local storage value as block_number_end
-        block_number_end = kv_db.get("block_number_end", -2);
+        block_number_end = kv_db.get(kv_blk_number_end_key, -2);
         info!("use local block_number_end: {block_number_end}");
     } else {
         //use input value as block_number_end
-        kv_db.insert("block_number_end", _block_number_end)?;
+        kv_db.insert(kv_blk_number_end_key, _block_number_end)?;
         block_number_end = _block_number_end;
     }
 
@@ -126,17 +99,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     loop {
-        block_number_begin = kv_db.get("block_number_begin", 0);
-
-        if !is_reverse_indexing {
-            block_number_end = i64::try_from(client.get_block_number().await?)?;
-            info!("LatestBlockNumber: {}", block_number_end);
-        } else {
-            block_number_end = kv_db.get("block_number_end", -1);
-        }
+        block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
+        block_number_end = kv_db.get(kv_blk_number_end_key, -1);
 
         let delay_blocks = block_number_end - block_number_begin;
-        info!("delay_blocks={delay_blocks} block_number_begin={block_number_begin} block_number_end={block_number_end}");
+        info!("index delay_blocks={delay_blocks} block_number_begin={block_number_begin} block_number_end={block_number_end}");
 
         if delay_blocks <= 0 {
             let duration = Duration::from_secs(5);
@@ -159,25 +126,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             block_number = block_number_begin;
         }
 
-        let block_data = get_block_data(&client, block_number_begin as u64).await?;
-        // println!("{}", serde_json::to_string_pretty(&block_data)?);
-
-        let number = block_data["number"].as_str().unwrap();
-        println!("BlockNumber: {}", number);
-        let hash = block_data["hash"].as_str().unwrap();
-        println!("Block Hash: {}", hash);
-
-        let compressed_data = compress_json(&block_data)?;
         let key = format!("{block_number}.json.gz");
-        s3_service.upload_object(&key, compressed_data).await?;
-        println!("upload block data {key} to S3 success ✅");
+        let block_data = s3_service.get_object(&key).await?;
+        println!("get_object {key} ✅");
+
+        // Decompress JSON data
+        let decompressed_json = decompress_json(&block_data)?;
+        // println!("Decompressed key{key} decompressed_json={decompressed_json}");
+        //TODO save into scylla
 
         if !is_reverse_indexing {
             block_number_begin += 1;
-            kv_db.insert("block_number_begin", block_number_begin)?;
+            kv_db.insert(kv_blk_number_begin_key, block_number_begin)?;
         } else {
             block_number_end -= 1;
-            kv_db.insert("block_number_end", block_number_end)?;
+            kv_db.insert(kv_blk_number_end_key, block_number_end)?;
         }
     }
 }

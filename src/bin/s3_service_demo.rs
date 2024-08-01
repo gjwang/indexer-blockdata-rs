@@ -35,7 +35,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_path = Path::new(filename);
 
     s3_service.upload_file(file_path).await?;
-    s3_service.download_object(filename, file_path).await?;
+    s3_service
+        .download_object_to_file(filename, file_path)
+        .await?;
 
     Ok(())
 }

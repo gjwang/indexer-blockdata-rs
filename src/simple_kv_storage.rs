@@ -2,7 +2,7 @@ use std::convert::TryInto;
 
 use sled::{Db, IVec};
 
-pub(crate) struct SledDb {
+pub struct SledDb {
     db: Db,
 }
 
