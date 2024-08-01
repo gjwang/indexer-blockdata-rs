@@ -79,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Provider::<Http>::try_from(endpoint)?;
     let client = Arc::new(provider);
 
-    let db_name = "config_db_fetcher";
+    let db_name = "config_db/fetcher";
     let kv_db = SledDb::new(db_name)?;
 
     if block_number_begin < 0 {
