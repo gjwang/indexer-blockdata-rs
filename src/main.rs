@@ -5,7 +5,7 @@ use ethers::{
     providers::{Http, Provider},
 };
 use eyre::Result;
-use indexerblockdata::s3_service::S3Service;
+use fetcher::s3_service::S3Service;
 use log::{error, info};
 use serde_json::{json, Value};
 use simple_kv_storage::SledDb;
