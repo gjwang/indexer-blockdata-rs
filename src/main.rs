@@ -1,7 +1,11 @@
+use std::convert::Infallible;
 use std::env;
+use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
+use cached::proc_macro::cached;
+use cached::SizedCache;
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
@@ -59,6 +63,14 @@ async fn get_block_data(
     Ok(block_json)
 }
 
+// #[cached(time = 10)]
+async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, Box<dyn std::error::Error>> {
+    let block_number_end = i64::try_from(client.get_block_number().await?)?;
+    info!("get_latest_block_number block_number_end={block_number_end}");
+    Ok(block_number_end)
+}
+
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
@@ -92,7 +104,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut block_number_end;
     if _block_number_end == -1 {
         //use LatestBlockNumber value as block_number_end
-        block_number_end = i64::try_from(client.get_block_number().await?)?;
+        // block_number_end = i64::try_from(client.get_block_number().await?)?;
+        block_number_end = get_latest_block_number(client.clone()).await?;
         info!("LatestBlockNumber: {}", block_number_end);
         kv_db.insert("block_number_end", block_number_end)?;
     } else if _block_number_end == -2 {
@@ -129,7 +142,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         block_number_begin = kv_db.get("block_number_begin", 0);
 
         if !is_reverse_indexing {
-            block_number_end = i64::try_from(client.get_block_number().await?)?;
+            // block_number_end = i64::try_from(client.get_block_number().await?)?;
+            block_number_end = get_latest_block_number(client.clone()).await?;
             info!("LatestBlockNumber: {}", block_number_end);
         } else {
             block_number_end = kv_db.get("block_number_end", -1);
