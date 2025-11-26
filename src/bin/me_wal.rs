@@ -32,8 +32,9 @@ use wal_schema::wal_schema::{
 // Adjust this depending on where your generated code lives.
 // If you manually created src/bin/wal_generated.rs, keep the #[path] line.
 #[allow(dead_code, unused_imports)]
-#[path = "wal_generated.rs"]
-mod wal_schema;
+mod wal_schema {
+    include!(concat!(env!("OUT_DIR"), "/wal_generated.rs"));
+}
 
 // =================================================================
 // 2. IMPORTS
