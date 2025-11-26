@@ -62,6 +62,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+
 fn create_producer(broker: &str) -> Result<FutureProducer> {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", broker)
