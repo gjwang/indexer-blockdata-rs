@@ -14,12 +14,23 @@ use nix::sys::wait::waitpid;
 use nix::unistd::{fork, ForkResult};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+// Only use Jemalloc on Linux/Mac (Unix), not Windows
+#[cfg(not(target_env = "msvc"))]
+use tikv_jemallocator::Jemalloc;
 use ulid::Ulid;
 
 use wal_schema::wal_schema::{
     Cancel, CancelArgs, EntryType, Order as FbsOrder, OrderArgs,
     OrderSide as FbsSide, UlidStruct, WalFrame, WalFrameArgs,
 };
+
+// =================================================================
+// MEMORY ALLOCATOR CONFIG
+// =================================================================
+
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 // [Previous imports...]
 #[allow(dead_code, unused_imports)]
