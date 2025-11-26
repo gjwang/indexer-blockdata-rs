@@ -63,7 +63,7 @@ async fn get_block_data(
     Ok(block_json)
 }
 
-// #[cached(time = 10)]
+#[cached(time = 10)]
 async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, Box<dyn std::error::Error>> {
     let block_number_end = i64::try_from(client.get_block_number().await?)?;
     info!("get_latest_block_number block_number_end={block_number_end}");
