@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("Producer creation error");
 
     println!("开始向 Redpanda 发送 {} 条消息...", MSG_COUNT);
-    
+
     // 信号量：用于控制并发，防止生产速度远超网络发送速度导致 OOM
     let semaphore = Arc::new(Semaphore::new(MAX_INFLIGHT));
 
