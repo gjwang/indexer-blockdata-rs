@@ -1,26 +1,58 @@
+// src/bin/me_wal.rs
+
+// =================================================================
+// 1. MODULE IMPORT (Select one method based on your setup)
+// =================================================================
+
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use anyhow::Result;
+use crossbeam_channel::{bounded, Receiver, Sender};
+// FlatBuffers imports
+use flatbuffers::FlatBufferBuilder;
+use memmap2::{Mmap, MmapMut};
 use rustc_hash::FxHashMap;
-use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use memmap2::MmapMut;
+use wal_schema::wal_schema::{
+    Cancel,
+    CancelArgs,
+    EntryType,
+    Order as FbsOrder,
+    OrderArgs,
+    OrderSide as FbsSide,
+    UlidStruct,
+    WalFrame,
+    WalFrameArgs,
+};
+
+// METHOD A: Use this if build.rs is working (Recommended based on your logs)
+#[allow(dead_code, unused_imports)]
+mod wal_schema {
+    include!(concat!(env!("OUT_DIR"), "/wal_generated.rs"));
+}
+
+// METHOD B: Use this if you manually pasted wal_generated.rs into src/bin/
+// #[allow(dead_code, unused_imports)]
+// #[path = "wal_generated.rs"]
+// mod wal_schema;
+
+// =================================================================
+// 2. IMPORTS
+// =================================================================
 
 // ==========================================
-// 1. DOMAIN TYPES (Optimized)
+// 3. DOMAIN TYPES (In-Memory)
 // ==========================================
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrderSide { Buy, Sell }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Order {
     pub id: Ulid,
     pub symbol: [u8; 8], // Stack allocated string
@@ -29,20 +61,29 @@ pub struct Order {
     pub quantity: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub enum LogEntry {
     PlaceOrder(Order),
     CancelOrder { id: Ulid },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct WalFrame {
-    pub seq: u64,
-    pub entry: LogEntry,
+// Helper: Rust Ulid -> FlatBuffer UlidStruct
+fn to_fbs_ulid(u: Ulid) -> UlidStruct {
+    let n = u.0;
+    let hi = (n >> 64) as u64;
+    let lo = n as u64;
+    UlidStruct::new(hi, lo)
+}
+
+// Helper: FlatBuffer UlidStruct -> Rust Ulid
+fn from_fbs_ulid(f: &UlidStruct) -> Ulid {
+    let hi = f.hi() as u128;
+    let lo = f.lo() as u128;
+    Ulid((hi << 64) | lo)
 }
 
 // ==========================================
-// 2. MMAP WAL IMPLEMENTATION
+// 4. WAL IMPLEMENTATION
 // ==========================================
 
 pub struct Wal {
@@ -53,116 +94,156 @@ pub struct Wal {
 impl Wal {
     pub fn open(path: &Path, start_seq: u64) -> Result<Self> {
         let path = path.to_path_buf();
-        // Deep buffer to absorb spikes
         let (tx, rx) = bounded(1_000_000);
 
         thread::spawn(move || {
-            Self::background_mmap_writer(path, rx, start_seq);
+            Self::background_writer(path, rx, start_seq);
         });
 
-        Ok(Self {
-            tx,
-            current_seq: start_seq,
-        })
+        Ok(Self { tx, current_seq: start_seq })
     }
 
-    fn background_mmap_writer(path: PathBuf, rx: Receiver<LogEntry>, mut current_seq: u64) {
-        // 1. OPEN & PRE-ALLOCATE FILE
-        let file = OpenOptions::new()
-            .read(true).write(true).create(true)
-            .open(&path).expect("Failed to open WAL");
+    fn background_writer(path: PathBuf, rx: Receiver<LogEntry>, mut current_seq: u64) {
+        let file = OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
 
-        // CRITICAL: We MUST pre-allocate the file size.
-        // allocating 1GB (1024*1024*1024).
-        // In prod, you check file len and extend if needed.
+        // 1GB Allocation
         let file_len = 1024 * 1024 * 1024;
-        file.set_len(file_len).expect("Failed to allocate WAL file");
+        if file.metadata().unwrap().len() < file_len { file.set_len(file_len).unwrap(); }
 
-        // 2. CREATE MEMORY MAP
-        // unsafe: We promise not to access this memory incorrectly.
-        let mut mmap = unsafe { MmapMut::map_mut(&file).expect("Failed to mmap") };
+        let mut mmap = unsafe { MmapMut::map_mut(&file).unwrap() };
+        let mut builder = FlatBufferBuilder::new();
 
-        // 3. LOCATE STARTING OFFSET
-        // If restarting, we need to scan (skip for this speed demo, assume 0 or passed offset)
-        // For this demo, we assume we start writing at offset 0 (or you'd save offset in a header).
+        // Scan for end of file
         let mut cursor = 0;
-
-        // Skip existing data if we are appending (simple naive scan for non-zero bytes)
-        // In prod, you save the 'cursor' position in a separate metadata file.
-        while cursor < file_len as usize && mmap[cursor] != 0 {
-            // This is a naive skip. Real implementations track offset separately.
-            cursor += 1;
+        while cursor + 4 < file_len as usize {
+            let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
+            let len = u32::from_le_bytes(len_bytes) as usize;
+            if len == 0 { break; }
+            cursor += 4 + len;
         }
 
         const SYNC_BATCH: usize = 2000;
-        const SYNC_TIME: Duration = Duration::from_millis(20);
-
         let mut unsynced_writes = 0;
-        let mut last_sync = Instant::now();
-
-        // Reusable serialization buffer to avoid stack churn
-        // Max frame size estimate: 8 bytes (seq) + 1 byte (variant) + 50 bytes (Order) ~ 64 bytes
-        let mut scratch_buf = [0u8; 128];
 
         loop {
-            let timeout = SYNC_TIME.checked_sub(last_sync.elapsed()).unwrap_or(Duration::ZERO);
-
-            match rx.recv_timeout(timeout) {
+            match rx.recv() {
                 Ok(entry) => {
                     current_seq += 1;
-                    let frame = WalFrame { seq: current_seq, entry };
+                    builder.reset();
 
-                    // A. SERIALIZE TO STACK (Extremely fast)
-                    // We serialize to a scratch buffer first to know the length
-                    let size = bincode::serialized_size(&frame).unwrap() as usize;
-                    bincode::serialize_into(&mut scratch_buf[..], &frame).unwrap();
+                    // --- ASSIGNMENT FIX HERE ---
+                    // We capture the result of the match into variables
+                    let (entry_type, entry_offset) = match entry {
+                        LogEntry::PlaceOrder(o) => {
+                            let s_str = std::str::from_utf8(&o.symbol).unwrap_or("UNKNOWN").trim_matches('\0');
+                            let f_sym = builder.create_string(s_str);
+                            let f_side = match o.side {
+                                OrderSide::Buy => FbsSide::Buy,
+                                OrderSide::Sell => FbsSide::Sell
+                            };
+                            let f_ulid = to_fbs_ulid(o.id);
 
-                    // B. CHECK BOUNDS
-                    if cursor + 8 + size >= file_len as usize {
-                        panic!("WAL FULL! Implement rotation or extension.");
-                    }
+                            let order = FbsOrder::create(&mut builder, &OrderArgs {
+                                id: Some(&f_ulid),
+                                symbol: Some(f_sym),
+                                side: f_side,
+                                price: o.price,
+                                quantity: o.quantity,
+                            });
+                            (EntryType::Order, order.as_union_value())
+                        }
+                        LogEntry::CancelOrder { id } => {
+                            let f_ulid = to_fbs_ulid(id);
+                            let cancel = Cancel::create(&mut builder, &CancelArgs {
+                                id: Some(&f_ulid),
+                            });
+                            (EntryType::Cancel, cancel.as_union_value())
+                        }
+                    };
 
-                    // C. WRITE LEN + DATA DIRECTLY TO RAM (memcpy)
-                    // Write 8 bytes length
-                    let len_bytes = (size as u64).to_le_bytes();
+                    // Create the Frame using the variables we just assigned
+                    let frame = WalFrame::create(&mut builder, &WalFrameArgs {
+                        seq: current_seq,
+                        entry_type,
+                        entry: Some(entry_offset),
+                    });
 
-                    // unsafe copy is slightly faster, but slice copy is safe and usually optimized to memcpy
-                    mmap[cursor..cursor + 8].copy_from_slice(&len_bytes);
-                    cursor += 8;
+                    builder.finish(frame, None);
+                    let buf = builder.finished_data();
+                    let size = buf.len();
 
-                    // Write payload
-                    mmap[cursor..cursor + size].copy_from_slice(&scratch_buf[..size]);
+                    // Check Bounds
+                    if cursor + 4 + size >= file_len as usize { panic!("WAL Full"); }
+
+                    // Write Length (u32)
+                    mmap[cursor..cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
+                    cursor += 4;
+
+                    // Write Data
+                    mmap[cursor..cursor + size].copy_from_slice(buf);
                     cursor += size;
 
                     unsynced_writes += 1;
-                }
-                Err(RecvTimeoutError::Timeout) => {
-                    if unsynced_writes > 0 {
-                        // Async flush: tells OS "start writing dirty pages to disk"
-                        // It doesn't block heavily.
+
+                    if unsynced_writes >= SYNC_BATCH {
                         let _ = mmap.flush_async();
                         unsynced_writes = 0;
-                        last_sync = Instant::now();
                     }
                 }
-                Err(RecvTimeoutError::Disconnected) => {
-                    let _ = mmap.flush(); // Blocking sync on exit
+                Err(_) => {
+                    let _ = mmap.flush();
                     break;
                 }
-            }
-
-            // Periodic Sync
-            if unsynced_writes >= SYNC_BATCH {
-                // flush_async() is the magic. It initiates IO but returns quickly.
-                // It ensures durability without stalling the thread like fsync().
-                let _ = mmap.flush_async();
-                unsynced_writes = 0;
-                last_sync = Instant::now();
             }
         }
     }
 
-    #[inline(always)]
+    pub fn replay(path: &Path) -> Result<(Vec<LogEntry>, u64)> {
+        if !path.exists() { return Ok((Vec::new(), 0)); }
+        let file = File::open(path)?;
+        let mmap = unsafe { Mmap::map(&file)? };
+
+        let mut entries = Vec::new();
+        let mut max_seq = 0;
+        let mut cursor = 0;
+
+        while cursor + 4 < mmap.len() {
+            let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
+            let len = u32::from_le_bytes(len_bytes) as usize;
+            if len == 0 { break; }
+            cursor += 4;
+
+            let data = &mmap[cursor..cursor + len];
+            let frame = wal_schema::wal_schema::root_as_wal_frame(data)?;
+
+            if frame.seq() > max_seq { max_seq = frame.seq(); }
+
+            if let Some(order) = frame.entry_as_order() {
+                let f_id = order.id().unwrap();
+                let f_sym = order.symbol().unwrap();
+                let f_side = order.side();
+
+                let mut sym_arr = [0u8; 8];
+                let bytes = f_sym.as_bytes();
+                let copy_len = bytes.len().min(8);
+                sym_arr[..copy_len].copy_from_slice(&bytes[..copy_len]);
+
+                entries.push(LogEntry::PlaceOrder(Order {
+                    id: from_fbs_ulid(f_id),
+                    symbol: sym_arr,
+                    side: if f_side == FbsSide::Buy { OrderSide::Buy } else { OrderSide::Sell },
+                    price: order.price(),
+                    quantity: order.quantity(),
+                }));
+            }
+            // Add Cancel replay logic here if needed
+
+            cursor += len;
+        }
+
+        Ok((entries, max_seq))
+    }
+
     pub fn append(&mut self, entry: LogEntry) {
         let _ = self.tx.send(entry);
         self.current_seq += 1;
@@ -170,7 +251,7 @@ impl Wal {
 }
 
 // ==========================================
-// 3. MATCHING ENGINE
+// 5. ENGINE & MAIN
 // ==========================================
 
 pub struct MatchingEngine {
@@ -180,59 +261,56 @@ pub struct MatchingEngine {
 
 impl MatchingEngine {
     pub fn new(wal_path: &Path) -> Result<Self> {
-        let wal = Wal::open(wal_path, 0)?;
+        let start = Instant::now();
+        let (history, seq) = Wal::replay(wal_path)?;
+        println!("Replayed {} events in {:.2?}", history.len(), start.elapsed());
+
+        let mut orders = FxHashMap::default();
+        for entry in history {
+            match entry {
+                LogEntry::PlaceOrder(o) => { orders.insert(o.id, o); }
+                _ => {}
+            }
+        }
+
         Ok(Self {
-            orders: FxHashMap::default(),
-            wal,
+            orders,
+            wal: Wal::open(wal_path, seq)?,
         })
     }
 
-    #[inline(always)]
     pub fn place_order(&mut self, order: Order) {
         self.wal.append(LogEntry::PlaceOrder(order));
         self.orders.insert(order.id, order);
     }
 }
 
-// ==========================================
-// 4. MAIN BENCHMARK
-// ==========================================
-
 fn main() -> Result<()> {
-    let wal_path = Path::new("mmap.wal");
-    if wal_path.exists() { fs::remove_file(wal_path)?; }
+    let path = Path::new("flatbuffer.wal");
+    // Clean up previous run
+    if path.exists() { fs::remove_file(path)?; }
 
-    let total_orders = 5_000_000; // 5 MILLION ORDERS
+    let mut engine = MatchingEngine::new(path)?;
 
-    println!(">>> STARTING MMAP NUCLEAR TEST ({} Orders)", total_orders);
-
-    let mut engine = MatchingEngine::new(wal_path)?;
-    let symbol = *b"BTCUSDT\0";
-
-    // Warmup
-    thread::sleep(Duration::from_millis(100));
-
+    let total = 1_000_000;
+    println!("Generating {} orders...", total);
     let start = Instant::now();
 
-    for _ in 0..total_orders {
+    for _ in 0..total {
         engine.place_order(Order {
             id: Ulid::new(),
-            symbol,
+            symbol: *b"ETH_USDT",
             side: OrderSide::Buy,
-            price: 100,
+            price: 2000,
             quantity: 1,
         });
     }
 
     let duration = start.elapsed();
-    let ops = total_orders as f64 / duration.as_secs_f64();
+    println!("Written in {:.2?}", duration);
+    println!("TPS: {:.0}", total as f64 / duration.as_secs_f64());
 
-    println!("\n>>> RESULTS (MMAP):");
-    println!("    Total Time:    {:.2?}", duration);
-    println!("    Orders/Sec:    {:.0} orders/sec", ops);
-
-    // Give time for async flush to finish
+    // Give IO thread time to flush before exiting
     thread::sleep(Duration::from_secs(1));
-
     Ok(())
 }
