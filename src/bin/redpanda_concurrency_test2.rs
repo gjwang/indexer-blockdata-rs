@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
 
     let start_time = Instant::now();
 
-    let mut handles = vec![];
+    let mut tasks = Vec::with_capacity(num_messages);
 
     for i in 0..concurrency {
         let producer = producer.clone();
@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         let success_count = success_count.clone();
         let error_count = error_count.clone();
 
-        let handle = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             for j in 0..(num_messages / concurrency) {
                 total_sent.fetch_add(1, Ordering::Relaxed);
 
@@ -61,12 +61,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         });
-        handles.push(handle);
+        tasks.push(task);
     }
 
     // 等待所有任务完成
-    for handle in handles {
-        handle.await?;
+    for task in tasks {
+        task.await?;
     }
 
     let elapsed = start_time.elapsed();
@@ -80,8 +80,8 @@ async fn main() -> anyhow::Result<()> {
     println!("Total messages attempted: {}", total);
     println!("✅ Successfully sent:      {}", success);
     println!("❌ Failed to send:         {}", errors);
-    println!("⏱️  Total time:             {:.2?}", elapsed);
-    println!("🚀 Throughput:             {:.2} msg/sec", throughput);
+    println!("⏱️  Total time:           {:.2?}", elapsed);
+    println!("🚀 Throughput:            {:.2} msg/sec", throughput);
     println!("=======================================================");
 
     if errors > 0 {
