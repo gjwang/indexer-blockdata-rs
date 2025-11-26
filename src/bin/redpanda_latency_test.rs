@@ -1,3 +1,12 @@
+// Cargo.toml dependencies:
+// [dependencies]
+// rdkafka = { version = "0.36", features = ["cmake-build"] }
+// tokio = { version = "1", features = ["full"] }
+// serde = { version = "1.0", features = ["derive"] }
+// serde_json = "1.0"
+// anyhow = "1.0"
+// chrono = "0.4"
+
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -46,7 +55,7 @@ async fn main() -> Result<()> {
     consumer.subscribe(&[topic])?;
 
     println!("Starting latency test...\n");
-    run_latency_test(&producer, &consumer, topic, 100).await?;
+    run_latency_test(&producer, &consumer, topic, 10000).await?;
 
     Ok(())
 }
@@ -69,8 +78,10 @@ fn create_consumer(broker: &str, group_id: &str) -> Result<StreamConsumer> {
         .set("bootstrap.servers", broker)
         .set("group.id", group_id)
         .set("enable.auto.commit", "true")
-        .set("auto.offset.reset", "latest")
+        .set("auto.offset.reset", "earliest")  // Changed to earliest to not miss messages
         .set("fetch.min.bytes", "1")
+        .set("session.timeout.ms", "10000")
+        .set("heartbeat.interval.ms", "3000")
         .create()?;
 
     println!("Consumer created successfully");
@@ -87,16 +98,22 @@ async fn run_latency_test(
     let records_for_consumer = latency_records.clone();
     let records_for_send = latency_records.clone();
 
-    println!("Consumer listening...");
+    println!("Consumer listening and waiting for partition assignment...");
 
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let receive_task = async {
+        consume_messages(consumer, records_for_consumer, message_count).await
+    };
+
+
+    // Wait longer for consumer to be fully ready and partition assigned
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("Sending {} test messages...\n", message_count);
 
-    let send_task = async { send_messages(producer, topic, records_for_send, message_count).await };
+    let send_task = async {
+        send_messages(producer, topic, records_for_send, message_count).await
+    };
 
-    let receive_task =
-        async { consume_messages(consumer, records_for_consumer, message_count).await };
 
     tokio::join!(send_task, receive_task);
 
@@ -124,7 +141,9 @@ async fn send_messages(
         let key = format!("key-{}", i);
 
         let send_start = Instant::now();
-        let record_msg = FutureRecord::to(topic).key(&key).payload(&payload);
+        let record_msg = FutureRecord::to(topic)
+            .key(&key)
+            .payload(&payload);
 
         match producer.send(record_msg, Duration::from_secs(5)).await {
             Ok(_) => {
@@ -147,7 +166,7 @@ async fn send_messages(
             }
         }
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        // tokio::time::sleep(Duration::from_millis(10)).await;
     }
 
     println!("\nMessage sending completed");
@@ -161,8 +180,17 @@ async fn consume_messages(
     let mut received_count = 0;
     println!("Consumer started receiving messages...\n");
 
+    // Increase timeout to accommodate for all messages to be sent and received
+    let overall_timeout = Duration::from_secs(3);
+    let start_time = Instant::now();
+
     loop {
-        match tokio::time::timeout(Duration::from_secs(5), consumer.recv()).await {
+        if start_time.elapsed() > overall_timeout {
+            println!("  Overall timeout reached, received {} messages", received_count);
+            break;
+        }
+
+        match tokio::time::timeout(Duration::from_secs(2), consumer.recv()).await {
             Ok(Ok(msg)) => {
                 let receive_time = Instant::now();
 
@@ -170,19 +198,16 @@ async fn consume_messages(
                     if let Ok(text) = std::str::from_utf8(payload) {
                         if let Ok(demo_msg) = serde_json::from_str::<DemoMessage>(text) {
                             let mut recs = records.lock().await;
-                            if let Some(record) = recs.iter_mut().find(|r| r.msg_id == demo_msg.id)
-                            {
+                            if let Some(record) = recs.iter_mut().find(|r| r.msg_id == demo_msg.id) {
                                 record.receive_time = Some(receive_time);
                                 received_count += 1;
 
                                 if received_count % 20 == 0 {
-                                    println!(
-                                        "  Received {}/{} messages",
-                                        received_count, expected_count
-                                    );
+                                    println!("  Received {}/{} messages", received_count, expected_count);
                                 }
 
                                 if received_count >= expected_count {
+                                    println!("\n  All messages received!");
                                     break;
                                 }
                             }
@@ -194,8 +219,8 @@ async fn consume_messages(
                 eprintln!("  Receive error: {:?}", e);
             }
             Err(_) => {
-                println!("  Receive timeout, received {} messages", received_count);
-                break;
+                // Timeout on individual recv, continue waiting
+                continue;
             }
         }
     }
@@ -223,10 +248,8 @@ fn print_latency_stats(records: &[LatencyRecord]) {
     println!("\nTest Statistics:");
     println!("  Total messages sent:     {}", records.len());
     println!("  Successfully received:   {}", received_count);
-    println!(
-        "  Loss rate:               {:.2}%",
-        (records.len() - received_count) as f64 / records.len() as f64 * 100.0
-    );
+    println!("  Loss rate:               {:.2}%",
+             (records.len() - received_count) as f64 / records.len() as f64 * 100.0);
 
     if !producer_latencies.is_empty() {
         let producer_stats = calculate_stats(&producer_latencies);
@@ -240,17 +263,14 @@ fn print_latency_stats(records: &[LatencyRecord]) {
         if !producer_latencies.is_empty() {
             let producer_stats = calculate_stats(&producer_latencies);
             let avg_network_consumer = e2e_stats.avg.saturating_sub(producer_stats.avg);
-            println!(
-                "\nNetwork + Consumer Latency (approx): {:?}",
-                avg_network_consumer
-            );
+            println!("\nNetwork + Consumer Latency (approx): {:?}", avg_network_consumer);
         }
     }
 
     println!("\n{}", "=".repeat(60));
 }
 
-fn calculate_stats(latencies: &Vec<Duration>) -> LatencyStats {
+fn calculate_stats(latencies: &[Duration]) -> LatencyStats {
     let mut sorted = latencies.to_vec();
     sorted.sort();
 
