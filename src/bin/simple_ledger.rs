@@ -72,7 +72,7 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 4. Streaming WAL Iterator (With Seq Check)
+// 4. Streaming WAL Iterator (The Reader)
 // ==========================================
 
 pub struct WalIterator {
@@ -94,7 +94,7 @@ impl Iterator for WalIterator {
     type Item = Result<(u64, LedgerCommand)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 1. Read Length
+        // 1. Read Length (4 bytes)
         let mut len_buf = [0u8; 4];
         match self.reader.read_exact(&mut len_buf) {
             Ok(_) => {}
@@ -112,23 +112,23 @@ impl Iterator for WalIterator {
         }
         if payload_len == 0 { return None; }
 
-        // 2. Read CRC
+        // 2. Read CRC (4 bytes)
         let mut crc_buf = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut crc_buf) {
             return Some(Err(e.into()));
         }
         let stored_crc = u32::from_le_bytes(crc_buf);
 
-        // 3. Read Data (Seq + Payload)
-        // Note: The 'payload_len' stores the size of [Seq(8B) + CommandBytes]
+        // 3. Read Data Block (Seq + Payload)
         let mut data_buf = vec![0u8; payload_len];
         if let Err(e) = self.reader.read_exact(&mut data_buf) {
             return Some(Err(e.into()));
         }
 
-        // 4. Verify CRC
+        // 4. [UPDATED] Verify CRC (Include Length + Data)
         let mut hasher = Hasher::new();
-        hasher.update(&data_buf);
+        hasher.update(&len_buf);  // Include Length
+        hasher.update(&data_buf); // Include Seq + Payload
         let calc_crc = hasher.finalize();
 
         if calc_crc != stored_crc {
@@ -138,14 +138,14 @@ impl Iterator for WalIterator {
             )));
         }
 
-        // 5. Extract Seq
+        // 5. Extract Seq (First 8 bytes)
         if data_buf.len() < 8 {
             return Some(Err(anyhow::anyhow!("Record too short (missing seq)")));
         }
         let (seq_bytes, cmd_bytes) = data_buf.split_at(8);
         let seq = u64::from_le_bytes(seq_bytes.try_into().unwrap());
 
-        // 6. Deserialize
+        // 6. Deserialize Payload
         let cmd = match bincode::deserialize(cmd_bytes) {
             Ok(c) => c,
             Err(e) => return Some(Err(e.into())),
@@ -153,6 +153,8 @@ impl Iterator for WalIterator {
 
         // Advance cursor: 4(Len) + 4(CRC) + DataLen
         self.cursor += 8 + payload_len as u64;
+
+        // Return Success
         Some(Ok((seq, cmd)))
     }
 }
@@ -182,8 +184,7 @@ impl HybridWal {
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // Fast Scan (Skip pointer)
-        // Format: [Len 4] [CRC 4] [Data (Seq 8 + Payload)]
+        // Fast Scan
         let mut cursor = 0;
         while cursor + 8 < len {
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
@@ -209,6 +210,7 @@ impl HybridWal {
 
         // Total Data = Seq (8B) + Payload
         let data_len = 8 + cmd_bytes.len();
+        let data_len_u32 = data_len as u32;
 
         if data_len > MAX_RECORD_SIZE {
             bail!("Record size {} exceeds MAX_RECORD_SIZE", data_len);
@@ -218,14 +220,15 @@ impl HybridWal {
             self.remap_grow()?;
         }
 
-        // Calc CRC (Seq + Payload)
+        // [UPDATED] Calc CRC (Length + Seq + Payload)
         let mut hasher = Hasher::new();
-        hasher.update(&seq.to_le_bytes());
-        hasher.update(&cmd_bytes);
+        hasher.update(&data_len_u32.to_le_bytes()); // Include Length
+        hasher.update(&seq.to_le_bytes());          // Include Seq
+        hasher.update(&cmd_bytes);                  // Include Payload
         let crc = hasher.finalize();
 
         // Write [Len 4]
-        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(data_len as u32).to_le_bytes());
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&data_len_u32.to_le_bytes());
         self.cursor += 4;
 
         // Write [CRC 4]
@@ -260,7 +263,7 @@ impl HybridWal {
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: HybridWal,
-    last_seq: u64, // Track sequence
+    last_seq: u64,
 }
 
 impl GlobalLedger {
@@ -276,12 +279,8 @@ impl GlobalLedger {
         for res in wal.iter()? {
             let (seq, cmd) = res?;
 
-            // --- STRICT SEQUENCE CHECK ---
-            // If seq is 0, it might be the very first record (handle as needed, here we assume start at 1)
-            // Or just check continuity: seq must be > last_seq
+            // Gap Detection
             if seq != last_seq + 1 {
-                // Option: Panic or Log Error
-                // For financial systems, panic is safer than processing gaps.
                 bail!("CRITICAL: Sequence Gap! Expected {}, Found {}. Data loss detected.", last_seq + 1, seq);
             }
 
@@ -354,6 +353,8 @@ impl GlobalLedger {
 
 fn main() -> Result<()> {
     let wal_path = Path::new("safe_wal.log");
+
+    // Clean environment for accurate benchmark
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
