@@ -14,12 +14,7 @@ use serde::{Deserialize, Serialize};
 // 1. Configuration Constants
 // ==========================================
 
-// Safety Limit: Max 10MB per record.
-// This prevents OOM crashes if a corrupted length byte claims a huge size.
 const MAX_RECORD_SIZE: usize = 10 * 1024 * 1024;
-
-// Read Buffer Size: 1MB.
-// Significantly reduces system calls during recovery.
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
 // ==========================================
@@ -49,7 +44,6 @@ impl UserAccount {
 
     #[inline(always)]
     pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
-        // Optimization: Linear scan on Vec is faster than HashMap for small N (<20 items)
         if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
             return &mut self.assets[index].1;
         }
@@ -78,67 +72,63 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 4. Streaming WAL Iterator (The Reader)
+// 4. Streaming WAL Iterator (With Seq Check)
 // ==========================================
 
 pub struct WalIterator {
     reader: BufReader<File>,
-    cursor: u64, // Track offset for error reporting
+    cursor: u64,
 }
 
 impl WalIterator {
     pub fn new(path: &Path) -> Result<Self> {
         let file = File::open(path)?;
-        // Optimization: Use a large 1MB buffer
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
         reader.seek(SeekFrom::Start(0))?;
-
         Ok(Self { reader, cursor: 0 })
     }
 }
 
+// Returns (SequenceNumber, Command)
 impl Iterator for WalIterator {
-    type Item = Result<LedgerCommand>;
+    type Item = Result<(u64, LedgerCommand)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 1. Read Length (4 bytes)
+        // 1. Read Length
         let mut len_buf = [0u8; 4];
         match self.reader.read_exact(&mut len_buf) {
             Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None, // EOF
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return None,
             Err(e) => return Some(Err(e.into())),
         }
 
         let payload_len = u32::from_le_bytes(len_buf) as usize;
 
-        // [Safety Check] Prevent reading huge garbage data
         if payload_len > MAX_RECORD_SIZE {
             return Some(Err(anyhow::anyhow!(
                 "CRITICAL: Record length {} exceeds limit {} at offset {}",
                 payload_len, MAX_RECORD_SIZE, self.cursor
             )));
         }
-
-        // Zero padding usually indicates end of valid data in pre-allocated files
         if payload_len == 0 { return None; }
 
-        // 2. Read CRC (4 bytes)
+        // 2. Read CRC
         let mut crc_buf = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut crc_buf) {
             return Some(Err(e.into()));
         }
         let stored_crc = u32::from_le_bytes(crc_buf);
 
-        // 3. Read Payload
-        // Allocating a Vec here is cheap because payload_len is usually small (e.g., <100 bytes)
-        let mut payload = vec![0u8; payload_len];
-        if let Err(e) = self.reader.read_exact(&mut payload) {
+        // 3. Read Data (Seq + Payload)
+        // Note: The 'payload_len' stores the size of [Seq(8B) + CommandBytes]
+        let mut data_buf = vec![0u8; payload_len];
+        if let Err(e) = self.reader.read_exact(&mut data_buf) {
             return Some(Err(e.into()));
         }
 
-        // 4. [Integrity Check] Verify CRC
+        // 4. Verify CRC
         let mut hasher = Hasher::new();
-        hasher.update(&payload);
+        hasher.update(&data_buf);
         let calc_crc = hasher.finalize();
 
         if calc_crc != stored_crc {
@@ -148,17 +138,27 @@ impl Iterator for WalIterator {
             )));
         }
 
-        // 5. Deserialize
-        let cmd = bincode::deserialize(&payload).map_err(|e| e.into());
+        // 5. Extract Seq
+        if data_buf.len() < 8 {
+            return Some(Err(anyhow::anyhow!("Record too short (missing seq)")));
+        }
+        let (seq_bytes, cmd_bytes) = data_buf.split_at(8);
+        let seq = u64::from_le_bytes(seq_bytes.try_into().unwrap());
 
-        // Update cursor tracker
+        // 6. Deserialize
+        let cmd = match bincode::deserialize(cmd_bytes) {
+            Ok(c) => c,
+            Err(e) => return Some(Err(e.into())),
+        };
+
+        // Advance cursor: 4(Len) + 4(CRC) + DataLen
         self.cursor += 8 + payload_len as u64;
-        Some(cmd)
+        Some(Ok((seq, cmd)))
     }
 }
 
 // ==========================================
-// 5. Hybrid WAL (Writer: Mmap, Reader: Iterator)
+// 5. Hybrid WAL (Writer: Mmap, Reader: Iter)
 // ==========================================
 
 pub struct HybridWal {
@@ -166,7 +166,7 @@ pub struct HybridWal {
     mmap: MmapMut,
     cursor: usize,
     len: usize,
-    path: PathBuf, // Stored for creating iterators
+    path: PathBuf,
 }
 
 impl HybridWal {
@@ -175,7 +175,6 @@ impl HybridWal {
         let meta = file.metadata()?;
         let mut len = meta.len() as usize;
 
-        // Pre-allocate 1GB for new files
         if len == 0 {
             len = 1024 * 1024 * 1024;
             file.set_len(len as u64)?;
@@ -183,55 +182,64 @@ impl HybridWal {
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // Fast Scan: Find write cursor by skipping headers
-        // We do NOT read payload or verify CRC here (that's for Replay)
+        // Fast Scan (Skip pointer)
+        // Format: [Len 4] [CRC 4] [Data (Seq 8 + Payload)]
         let mut cursor = 0;
         while cursor + 8 < len {
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
-            let payload_len = u32::from_le_bytes(len_bytes) as usize;
+            let chunk_len = u32::from_le_bytes(len_bytes) as usize;
 
-            if payload_len == 0 { break; }
-            // Bounds check
-            if cursor + 8 + payload_len > len { break; }
+            if chunk_len == 0 { break; }
+            if cursor + 8 + chunk_len > len { break; }
 
-            cursor += 8 + payload_len;
+            cursor += 8 + chunk_len;
         }
 
         println!("   [WAL] Write cursor at: {}", cursor);
         Ok(Self { file, mmap, cursor, len, path: path.to_path_buf() })
     }
 
-    // Returns the high-performance streaming iterator
     pub fn iter(&self) -> Result<WalIterator> {
         WalIterator::new(&self.path)
     }
 
     #[inline(always)]
-    pub fn append(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        let payload = bincode::serialize(cmd)?;
-        let size = payload.len();
+    pub fn append(&mut self, seq: u64, cmd: &LedgerCommand) -> Result<()> {
+        let cmd_bytes = bincode::serialize(cmd)?;
 
-        // [Safety Check] Ensure we don't write huge records
-        if size > MAX_RECORD_SIZE {
-            bail!("Record size {} exceeds MAX_RECORD_SIZE {}", size, MAX_RECORD_SIZE);
+        // Total Data = Seq (8B) + Payload
+        let data_len = 8 + cmd_bytes.len();
+
+        if data_len > MAX_RECORD_SIZE {
+            bail!("Record size {} exceeds MAX_RECORD_SIZE", data_len);
         }
 
-        // Auto-Grow logic
-        if self.cursor + 8 + size >= self.len {
+        if self.cursor + 8 + data_len >= self.len {
             self.remap_grow()?;
         }
 
-        // Calculate CRC
+        // Calc CRC (Seq + Payload)
         let mut hasher = Hasher::new();
-        hasher.update(&payload);
+        hasher.update(&seq.to_le_bytes());
+        hasher.update(&cmd_bytes);
         let crc = hasher.finalize();
 
-        // Write: [Length 4B] [CRC 4B] [Payload...]
-        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
-        self.mmap[self.cursor + 4..self.cursor + 8].copy_from_slice(&crc.to_le_bytes());
-        self.mmap[self.cursor + 8..self.cursor + 8 + size].copy_from_slice(&payload);
+        // Write [Len 4]
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(data_len as u32).to_le_bytes());
+        self.cursor += 4;
 
-        self.cursor += 8 + size;
+        // Write [CRC 4]
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&crc.to_le_bytes());
+        self.cursor += 4;
+
+        // Write [Seq 8]
+        self.mmap[self.cursor..self.cursor + 8].copy_from_slice(&seq.to_le_bytes());
+        self.cursor += 8;
+
+        // Write [Payload]
+        self.mmap[self.cursor..self.cursor + cmd_bytes.len()].copy_from_slice(&cmd_bytes);
+        self.cursor += cmd_bytes.len();
+
         Ok(())
     }
 
@@ -246,52 +254,59 @@ impl HybridWal {
 }
 
 // ==========================================
-// 6. Global Ledger Logic
+// 6. Global Ledger Logic (With Seq Check)
 // ==========================================
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: HybridWal,
+    last_seq: u64, // Track sequence
 }
 
 impl GlobalLedger {
     pub fn new(wal_path: &Path) -> Result<Self> {
-        // 1. Separate initialization to satisfy Borrow Checker
         let wal = HybridWal::open(wal_path)?;
         let mut accounts = FxHashMap::default();
+        let mut last_seq = 0;
 
-        println!("   [System] Replaying WAL (Streaming)...");
+        println!("   [System] Replaying WAL...");
         let start = Instant::now();
         let mut count = 0;
 
-        // 2. Replay using 1MB BufReader
-        for cmd_result in wal.iter()? {
-            let cmd = cmd_result?; // Will return Err if CRC fail
+        for res in wal.iter()? {
+            let (seq, cmd) = res?;
+
+            // --- STRICT SEQUENCE CHECK ---
+            // If seq is 0, it might be the very first record (handle as needed, here we assume start at 1)
+            // Or just check continuity: seq must be > last_seq
+            if seq != last_seq + 1 {
+                // Option: Panic or Log Error
+                // For financial systems, panic is safer than processing gaps.
+                bail!("CRITICAL: Sequence Gap! Expected {}, Found {}. Data loss detected.", last_seq + 1, seq);
+            }
+
             Self::apply_transaction(&mut accounts, &cmd)?;
+            last_seq = seq;
             count += 1;
 
-            // Print progress every 50k records
-            if count % 50_000 == 0 {
-                // \r moves cursor to start of line, creating an updating effect
+            if count % 200_000 == 0 {
                 print!("   [Recover] Processed {:>10} transactions...\r", count);
                 std::io::stdout().flush().unwrap();
             }
         }
 
-        println!("   [System] Replayed {} txs in {:.2?}", count, start.elapsed());
-
-        // 3. Assemble
-        Ok(Self { accounts, wal })
+        println!("\n   [System] Replay Complete. Total: {}. Last Seq: {}. Time: {:.2?}", count, last_seq, start.elapsed());
+        Ok(Self { accounts, wal, last_seq })
     }
 
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // 1. Write WAL (with safety checks)
-        self.wal.append(cmd)?;
-        // 2. Update Memory
-        Self::apply_transaction(&mut self.accounts, cmd)
+        let new_seq = self.last_seq + 1;
+        self.wal.append(new_seq, cmd)?;
+        Self::apply_transaction(&mut self.accounts, cmd)?;
+        self.last_seq = new_seq;
+        Ok(())
     }
 
-    // Static logic function to decouple 'self' borrow
     fn apply_transaction(accounts: &mut FxHashMap<UserId, UserAccount>, cmd: &LedgerCommand) -> Result<()> {
         match cmd {
             LedgerCommand::Deposit { user_id, asset, amount } => {
@@ -339,8 +354,6 @@ impl GlobalLedger {
 
 fn main() -> Result<()> {
     let wal_path = Path::new("safe_wal.log");
-
-    // Clean environment for accurate benchmark
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
@@ -352,9 +365,9 @@ fn main() -> Result<()> {
         ledger.apply(&LedgerCommand::Deposit { user_id: id as u64, asset: 1, amount: 1_000_000 })?;
     }
 
-    // --- Phase 2: High Ops Benchmark ---
+    // --- Phase 2: High Ops ---
     println!("\n>>> SESSION 2: Performance Benchmark (Write)");
-    println!("    Scenario: 2M Ordered Operations (Deposit -> Lock -> Unlock)");
+    println!("    Scenario: 2M Ordered Operations");
 
     let total_ops = 20_000_000;
     let start = Instant::now();
@@ -375,16 +388,15 @@ fn main() -> Result<()> {
     println!("    Time:         {:.4} s", duration.as_secs_f64());
     println!("    Throughput:   {:.0} ops/sec", total_ops as f64 / duration.as_secs_f64());
 
-    // --- Phase 3: Replay Test (BufReader Stream) ---
-    println!("\n>>> SESSION 3: Streaming Replay (1MB Buffer)");
-    drop(ledger); // Close file handles
+    // --- Phase 3: Replay Test ---
+    println!("\n>>> SESSION 3: Streaming Replay (1MB Buffer + Seq Check)");
+    drop(ledger);
 
     let start_replay = Instant::now();
     let _recovered = GlobalLedger::new(wal_path)?;
     let replay_dur = start_replay.elapsed();
 
     println!("    Replay Time:  {:.2?}", replay_dur);
-    // Calculation includes pre-warm data
     println!("    Replay Speed: {:.0} tx/sec", (total_ops + user_count) as f64 / replay_dur.as_secs_f64());
 
     Ok(())
