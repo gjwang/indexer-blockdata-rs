@@ -270,8 +270,8 @@ impl GlobalLedger {
             Self::apply_transaction(&mut accounts, &cmd)?;
             count += 1;
 
-            // Print progress every 10k records
-            if count % 10_000 == 0 {
+            // Print progress every 50k records
+            if count % 50_000 == 0 {
                 // \r moves cursor to start of line, creating an updating effect
                 print!("   [Recover] Processed {:>10} transactions...\r", count);
                 std::io::stdout().flush().unwrap();
