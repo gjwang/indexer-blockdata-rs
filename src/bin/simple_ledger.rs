@@ -269,6 +269,13 @@ impl GlobalLedger {
             let cmd = cmd_result?; // Will return Err if CRC fail
             Self::apply_transaction(&mut accounts, &cmd)?;
             count += 1;
+
+            // Print progress every 10k records
+            if count % 10_000 == 0 {
+                // \r moves cursor to start of line, creating an updating effect
+                print!("   [Recover] Processed {:>10} transactions...\r", count);
+                std::io::stdout().flush().unwrap();
+            }
         }
 
         println!("   [System] Replayed {} txs in {:.2?}", count, start.elapsed());
