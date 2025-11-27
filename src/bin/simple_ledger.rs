@@ -293,17 +293,17 @@ impl GlobalLedger {
 fn main() -> Result<()> {
     let wal_path = Path::new("ledger.wal");
 
-    // 1. 清理环境
+    // 1. Cleanup environment
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
 
     // ==========================================
-    // 阶段 1: 预热 (Pre-warm)
+    // Phase 1: Pre-warm (Initialize Data)
     // ==========================================
-    // 将 user_count 设为 usize 以方便取模运算
-    let user_count = 100_000;
-    println!(">>> SESSION 1: 预热数据 (初始化 {} 个用户)", user_count);
+    // Use usize for easier modulo arithmetic
+    let user_count = 10_000;
+    println!(">>> SESSION 1: Pre-warming data (Initializing {} users)", user_count);
 
     for id in 0..user_count {
         ledger.apply(&LedgerCommand::Deposit {
@@ -312,29 +312,30 @@ fn main() -> Result<()> {
             amount: 1_000_000,
         })?;
     }
-    println!("    预热完成。");
+    println!("    Pre-warm complete.");
 
     // ==========================================
-    // 阶段 2: 性能压测 (Benchmark)
+    // Phase 2: Performance Benchmark
     // ==========================================
-    println!("\n>>> SESSION 2: 性能压测 (Persistence Enabled)");
-    println!("    Scenario: 200万次有序操作 (Round-Robin: Deposit -> Lock -> Unlock)");
+    println!("\n>>> SESSION 2: Performance Benchmark (Persistence Enabled)");
+    println!("    Scenario: 2M Ordered Operations (Round-Robin: Deposit -> Lock -> Unlock)");
 
-    let total_ops = 10_000_000;
+    let total_ops = 2_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
         let user_id = (i % user_count) as u64;
 
-        // [核心修复]：根据“轮次”决定操作，而不是根据 i % 3
-        // round 0: User 0..9999 全部 Deposit
-        // round 1: User 0..9999 全部 Lock
-        // round 2: User 0..9999 全部 Unlock
+        // [CRITICAL FIX]: Use "Rounds" instead of random `i % 3`
+        // Round 0: User 0..9999 all Deposit
+        // Round 1: User 0..9999 all Lock
+        // Round 2: User 0..9999 all Unlock
+        // This guarantees logical correctness (you can't unlock before locking).
         let round = i / user_count;
 
         match round % 3 {
             0 => {
-                // 轮次 A: 充值
+                // Round A: Deposit
                 ledger.apply(&LedgerCommand::Deposit {
                     user_id,
                     asset: 1,
@@ -342,7 +343,7 @@ fn main() -> Result<()> {
                 })?;
             }
             1 => {
-                // 轮次 B: 冻结 (因为上一轮充值过，肯定成功)
+                // Round B: Lock (Guaranteed to succeed because of Round A)
                 ledger.apply(&LedgerCommand::Lock {
                     user_id,
                     asset: 1,
@@ -350,7 +351,7 @@ fn main() -> Result<()> {
                 })?;
             }
             _ => {
-                // 轮次 C: 解冻 (因为上一轮冻结过，肯定成功)
+                // Round C: Unlock (Guaranteed to succeed because of Round B)
                 ledger.apply(&LedgerCommand::Unlock {
                     user_id,
                     asset: 1,
