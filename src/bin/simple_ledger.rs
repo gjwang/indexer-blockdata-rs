@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
+use crc32fast::Hasher;
 use memmap2::{MmapMut, MmapOptions};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+// <--- NEW DEPENDENCY
+
 // ==========================================
-// 1. 基础数据结构
+// 1. Data Structures (Same as before)
 // ==========================================
 
 pub type AssetId = u32;
@@ -45,7 +48,7 @@ impl UserAccount {
 }
 
 // ==========================================
-// 2. 指令集 (Commands)
+// 2. Commands (Same as before)
 // ==========================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +67,7 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 3. 高性能 WAL (Mmap + Bincode)
+// 3. High Performance WAL (Mmap + CRC32)
 // ==========================================
 
 pub struct MmapWal {
@@ -86,7 +89,7 @@ impl MmapWal {
         let meta = file.metadata()?;
         let mut len = meta.len() as usize;
 
-        // 如果是新文件，预分配 1GB
+        // Pre-allocate 1GB for new files
         if len == 0 {
             len = 1024 * 1024 * 1024; // 1GB
             file.set_len(len as u64)?;
@@ -94,98 +97,123 @@ impl MmapWal {
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // 扫描游标：找到数据结尾 (这里用简单的 0 检查，生产环境应用 Header+CRC)
-        // 格式：[Length u32] [Payload...]
+        // --- SCAN & RECOVER CURSOR ---
+        // Format: [Length u32] [CRC32 u32] [Payload...]
         let mut cursor = 0;
-        while cursor + 4 < len {
+        while cursor + 8 < len {
+            // 1. Read Length
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
-            if payload_len == 0 { break; } // 遇到 0 长度，说明后面是空白
-            if cursor + 4 + payload_len > len { break; } // 数据不完整
+            // Zero length means end of written data
+            if payload_len == 0 { break; }
 
-            cursor += 4 + payload_len;
+            // Check if file is truncated/corrupt at end
+            if cursor + 8 + payload_len > len {
+                eprintln!("WARNING: WAL truncated at offset {}", cursor);
+                break;
+            }
+
+            // 2. Read Stored CRC
+            let crc_bytes: [u8; 4] = mmap[cursor + 4..cursor + 8].try_into().unwrap();
+            let stored_crc = u32::from_le_bytes(crc_bytes);
+
+            // 3. Verify CRC (Read Payload)
+            let payload = &mmap[cursor + 8..cursor + 8 + payload_len];
+            let mut hasher = Hasher::new();
+            hasher.update(payload);
+            let calculated_crc = hasher.finalize();
+
+            if calculated_crc != stored_crc {
+                bail!("CRITICAL: WAL Corruption detected at offset {}! Expected CRC {}, found {}. Possible disk failure.",
+                      cursor, stored_crc, calculated_crc);
+            }
+
+            cursor += 8 + payload_len;
         }
 
-        println!("WAL Opened. Resuming from offset: {}", cursor);
+        println!("WAL Opened. Verified Integrity. Resuming from offset: {}", cursor);
 
         Ok(Self { file, mmap, cursor, len })
     }
 
     #[inline(always)]
     pub fn append(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // 1. 序列化 (Bincode 极快)
-        // 计算大小 (Size Limit 设为 Infinite)
-        let size = bincode::serialized_size(cmd)? as usize;
+        // 1. Serialize to buffer (Stack allocation, fast)
+        // In extremely high perf code, we might reuse a thread-local buffer
+        let payload = bincode::serialize(cmd)?;
+        let size = payload.len();
 
-        // 2. 检查容量 & 自动扩容
-        if self.cursor + 4 + size >= self.len {
+        // 2. Auto-Grow Logic
+        // We need 4 bytes (Len) + 4 bytes (CRC) + Payload Size
+        if self.cursor + 8 + size >= self.len {
             self.remap_grow()?;
         }
 
-        // 3. 写入长度前缀 (u32)
-        let len_bytes = (size as u32).to_le_bytes();
-        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&len_bytes);
-        self.cursor += 4;
+        // 3. Calculate CRC32 (Hardware Accelerated)
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let crc = hasher.finalize();
 
-        // 4. 写入 Payload
-        bincode::serialize_into(&mut self.mmap[self.cursor..self.cursor + size], cmd)?;
-        self.cursor += size;
+        // 4. Write Header [Length u32] [CRC u32]
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
+        self.mmap[self.cursor + 4..self.cursor + 8].copy_from_slice(&crc.to_le_bytes());
+
+        // 5. Write Payload
+        self.mmap[self.cursor + 8..self.cursor + 8 + size].copy_from_slice(&payload);
+
+        self.cursor += 8 + size;
 
         Ok(())
     }
 
-    // 扩容逻辑：双倍扩容
     fn remap_grow(&mut self) -> Result<()> {
         self.mmap.flush()?;
-
         let new_len = self.len * 2;
         println!(">>> WAL Full. Extending from {} MB to {} MB...",
                  self.len / 1024 / 1024, new_len / 1024 / 1024);
 
         self.file.set_len(new_len as u64)?;
-
-        // 重新映射
         self.mmap = unsafe { MmapOptions::new().map_mut(&self.file)? };
         self.len = new_len;
-
         Ok(())
     }
 
-    // 恢复逻辑：读取所有历史指令
+    // Recovery function: Returns valid commands
     pub fn replay(&self) -> Result<Vec<LedgerCommand>> {
         let mut commands = Vec::new();
         let mut cursor = 0;
 
-        while cursor + 4 < self.len {
+        // We trust the structure because we verified CRCs in open()
+        while cursor + 8 < self.len {
             let len_bytes: [u8; 4] = self.mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
             if payload_len == 0 { break; }
 
-            cursor += 4;
-            let payload = &self.mmap[cursor..cursor + payload_len];
+            // Skip Length (4) + CRC (4) to get Payload
+            let payload = &self.mmap[cursor + 8..cursor + 8 + payload_len];
+
             let cmd: LedgerCommand = bincode::deserialize(payload)?;
             commands.push(cmd);
 
-            cursor += payload_len;
+            cursor += 8 + payload_len;
         }
         Ok(commands)
     }
 }
 
 // ==========================================
-// 4. 全局账本引擎 (The Ledger)
+// 4. Global Ledger (Logic)
 // ==========================================
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
-    wal: MmapWal, // 集成 WAL
+    wal: MmapWal,
     seq: u64,
 }
 
 impl GlobalLedger {
-    // 初始化：打开 WAL 并恢复状态
     pub fn new(wal_path: &Path) -> Result<Self> {
         let wal = MmapWal::open(wal_path)?;
 
@@ -195,13 +223,11 @@ impl GlobalLedger {
             seq: 0,
         };
 
-        // RECOVERY: 重放日志
         println!("Replaying WAL...");
         let history = ledger.wal.replay()?;
         let count = history.len();
 
         for cmd in history {
-            // 这里我们调用内部 logic，跳过 wal append，防止重复写入
             ledger.apply_logic(&cmd)?;
             ledger.seq += 1;
         }
@@ -210,9 +236,8 @@ impl GlobalLedger {
         Ok(ledger)
     }
 
-    // 对外接口：先写日志，再改内存
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // 1. Persistence (WAL)
+        // 1. Persistence (With CRC)
         self.wal.append(cmd)?;
         self.seq += 1;
 
@@ -222,7 +247,7 @@ impl GlobalLedger {
         Ok(())
     }
 
-    // 纯内存逻辑 (拆分出来供 Replay 使用)
+    // Logic separated for replay
     fn apply_logic(&mut self, cmd: &LedgerCommand) -> Result<()> {
         match cmd {
             LedgerCommand::Deposit { user_id, asset, amount } => {
@@ -276,35 +301,21 @@ impl GlobalLedger {
     fn get_or_error(&mut self, user_id: UserId) -> Result<&mut UserAccount> {
         self.accounts.get_mut(&user_id).ok_or(anyhow::anyhow!("User not found"))
     }
-
-    pub fn print_user(&self, user_id: UserId) {
-        if let Some(user) = self.accounts.get(&user_id) {
-            println!("User {}: {:?}", user_id, user.assets);
-        } else {
-            println!("User {} not found", user_id);
-        }
-    }
 }
 
 // ==========================================
-// 5. 主程序 (测试 WAL 持久化)
+// 5. Main (With Benchmark)
 // ==========================================
 
 fn main() -> Result<()> {
-    let wal_path = Path::new("ledger.wal");
-
-    // 1. Cleanup environment
+    let wal_path = Path::new("ledger_crc.wal");
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
 
-    // ==========================================
-    // Phase 1: Pre-warm (Initialize Data)
-    // ==========================================
-    // Use usize for easier modulo arithmetic
+    // --- Phase 1: Pre-warm ---
     let user_count = 10_000;
-    println!(">>> SESSION 1: Pre-warming data (Initializing {} users)", user_count);
-
+    println!(">>> SESSION 1: Pre-warming data ({} users)...", user_count);
     for id in 0..user_count {
         ledger.apply(&LedgerCommand::Deposit {
             user_id: id as u64,
@@ -314,49 +325,26 @@ fn main() -> Result<()> {
     }
     println!("    Pre-warm complete.");
 
-    // ==========================================
-    // Phase 2: Performance Benchmark
-    // ==========================================
-    println!("\n>>> SESSION 2: Performance Benchmark (Persistence Enabled)");
-    println!("    Scenario: 2M Ordered Operations (Round-Robin: Deposit -> Lock -> Unlock)");
+    // --- Phase 2: Performance Benchmark ---
+    println!("\n>>> SESSION 2: Performance Benchmark (WAL + CRC32)");
+    println!("    Scenario: 2M Ordered Operations");
 
     let total_ops = 2_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
         let user_id = (i % user_count) as u64;
-
-        // [CRITICAL FIX]: Use "Rounds" instead of random `i % 3`
-        // Round 0: User 0..9999 all Deposit
-        // Round 1: User 0..9999 all Lock
-        // Round 2: User 0..9999 all Unlock
-        // This guarantees logical correctness (you can't unlock before locking).
         let round = i / user_count;
 
         match round % 3 {
-            0 => {
-                // Round A: Deposit
-                ledger.apply(&LedgerCommand::Deposit {
-                    user_id,
-                    asset: 1,
-                    amount: 100,
-                })?;
+            0 => { // Deposit
+                ledger.apply(&LedgerCommand::Deposit { user_id, asset: 1, amount: 100 })?;
             }
-            1 => {
-                // Round B: Lock (Guaranteed to succeed because of Round A)
-                ledger.apply(&LedgerCommand::Lock {
-                    user_id,
-                    asset: 1,
-                    amount: 50,
-                })?;
+            1 => { // Lock
+                ledger.apply(&LedgerCommand::Lock { user_id, asset: 1, amount: 50 })?;
             }
-            _ => {
-                // Round C: Unlock (Guaranteed to succeed because of Round B)
-                ledger.apply(&LedgerCommand::Unlock {
-                    user_id,
-                    asset: 1,
-                    amount: 50,
-                })?;
+            _ => { // Unlock
+                ledger.apply(&LedgerCommand::Unlock { user_id, asset: 1, amount: 50 })?;
             }
         }
     }
@@ -371,6 +359,10 @@ fn main() -> Result<()> {
     println!("    Throughput:   {:.0} ops/sec", tps);
     println!("    Avg Latency:  {:.2?} / op", duration / total_ops as u32);
     println!("--------------------------------------------------");
+
+    // --- Phase 3: Integrity Check Demo ---
+    // In a real test, you could manually corrupt a byte in the file here
+    // and assert that re-opening it causes a Panic/Error.
 
     Ok(())
 }
