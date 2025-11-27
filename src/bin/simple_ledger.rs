@@ -1,32 +1,31 @@
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::mem;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use memmap2::{MmapMut, MmapOptions};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 // ==========================================
-// 1. 基础数据结构 (Data Structures)
+// 1. 基础数据结构
 // ==========================================
 
-// 使用 u32 代表币种 (1=BTC, 2=ETH, 3=USDT)
-// 字符串比较太慢，生产环境必须在启动时建立 String -> u32 映射
 pub type AssetId = u32;
 pub type UserId = u64;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-#[repr(C)] // 保证内存布局紧凑
+#[repr(C)]
 pub struct Balance {
-    pub available: u64, // 可用资金
-    pub frozen: u64,    // 冻结资金 (挂单中)
+    pub available: u64,
+    pub frozen: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserAccount {
     pub user_id: UserId,
-    // 优化：绝大多数用户持有币种 < 20 个。
-    // 在小数据量下，Vec 的线性扫描 (O(N)) 远快于 HashMap (O(1) + Hash开销)
-    // 且 Vec 内存连续，对 CPU Cache 极其友好。
     pub assets: Vec<(AssetId, Balance)>,
 }
 
@@ -35,99 +34,214 @@ impl UserAccount {
         Self { user_id, assets: Vec::with_capacity(8) }
     }
 
-    // 获取余额的可变引用 (如果不存在则创建 0 余额)
-    // 获取余额的可变引用 (如果不存在则创建 0 余额)
     #[inline(always)]
     pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
-        // 1. 先尝试查找索引 (只读借用，用完即还)
         if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
-            // 2. 根据索引获取可变引用 (这是全新的借用，编译器能通过)
             return &mut self.assets[index].1;
         }
-
-        // 3. 没找到，创建一个新的
-        self.assets.push((asset, Balance::default()));
+        self.assets.push((asset, Balance { available: 0, frozen: 0 }));
         &mut self.assets.last_mut().unwrap().1
     }
 }
 
-
 // ==========================================
 // 2. 指令集 (Commands)
 // ==========================================
-// 这是账本唯一允许的操作集合。写 WAL 就是写这个 Enum。
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LedgerCommand {
-    /// 充值 (外部 -> 可用)
     Deposit { user_id: UserId, asset: AssetId, amount: u64 },
-
-    /// 提现 (可用 -> 外部)
     Withdraw { user_id: UserId, asset: AssetId, amount: u64 },
-
-    /// 冻结 (可用 -> 冻结) - 下单前必做
     Lock { user_id: UserId, asset: AssetId, amount: u64 },
-
-    /// 解冻 (冻结 -> 可用) - 撤单/流单
     Unlock { user_id: UserId, asset: AssetId, amount: u64 },
-
-    /// 撮合结算 (冻结 -> 扣除, 获得 -> 可用)
-    /// 注意：这里处理单边用户的结算
     TradeSettle {
         user_id: UserId,
         spend_asset: AssetId,
-        spend_amount: u64, // 从冻结扣除
+        spend_amount: u64,
         gain_asset: AssetId,
-        gain_amount: u64,   // 加到可用
+        gain_amount: u64,
     },
 }
 
 // ==========================================
-// 3. 全局账本引擎 (The Ledger)
+// 3. 高性能 WAL (Mmap + Bincode)
+// ==========================================
+
+pub struct MmapWal {
+    file: File,
+    mmap: MmapMut,
+    cursor: usize,
+    len: usize,
+}
+
+impl MmapWal {
+    pub fn open(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .context("Failed to open WAL")?;
+
+        let meta = file.metadata()?;
+        let mut len = meta.len() as usize;
+
+        // 如果是新文件，预分配 1GB
+        if len == 0 {
+            len = 1024 * 1024 * 1024; // 1GB
+            file.set_len(len as u64)?;
+        }
+
+        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+
+        // 扫描游标：找到数据结尾 (这里用简单的 0 检查，生产环境应用 Header+CRC)
+        // 格式：[Length u32] [Payload...]
+        let mut cursor = 0;
+        while cursor + 4 < len {
+            let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
+            let payload_len = u32::from_le_bytes(len_bytes) as usize;
+
+            if payload_len == 0 { break; } // 遇到 0 长度，说明后面是空白
+            if cursor + 4 + payload_len > len { break; } // 数据不完整
+
+            cursor += 4 + payload_len;
+        }
+
+        println!("WAL Opened. Resuming from offset: {}", cursor);
+
+        Ok(Self { file, mmap, cursor, len })
+    }
+
+    #[inline(always)]
+    pub fn append(&mut self, cmd: &LedgerCommand) -> Result<()> {
+        // 1. 序列化 (Bincode 极快)
+        // 计算大小 (Size Limit 设为 Infinite)
+        let size = bincode::serialized_size(cmd)? as usize;
+
+        // 2. 检查容量 & 自动扩容
+        if self.cursor + 4 + size >= self.len {
+            self.remap_grow()?;
+        }
+
+        // 3. 写入长度前缀 (u32)
+        let len_bytes = (size as u32).to_le_bytes();
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&len_bytes);
+        self.cursor += 4;
+
+        // 4. 写入 Payload
+        bincode::serialize_into(&mut self.mmap[self.cursor..self.cursor + size], cmd)?;
+        self.cursor += size;
+
+        Ok(())
+    }
+
+    // 扩容逻辑：双倍扩容
+    fn remap_grow(&mut self) -> Result<()> {
+        self.mmap.flush()?;
+
+        let new_len = self.len * 2;
+        println!(">>> WAL Full. Extending from {} MB to {} MB...",
+                 self.len / 1024 / 1024, new_len / 1024 / 1024);
+
+        self.file.set_len(new_len as u64)?;
+
+        // 重新映射
+        self.mmap = unsafe { MmapOptions::new().map_mut(&self.file)? };
+        self.len = new_len;
+
+        Ok(())
+    }
+
+    // 恢复逻辑：读取所有历史指令
+    pub fn replay(&self) -> Result<Vec<LedgerCommand>> {
+        let mut commands = Vec::new();
+        let mut cursor = 0;
+
+        while cursor + 4 < self.len {
+            let len_bytes: [u8; 4] = self.mmap[cursor..cursor + 4].try_into().unwrap();
+            let payload_len = u32::from_le_bytes(len_bytes) as usize;
+
+            if payload_len == 0 { break; }
+
+            cursor += 4;
+            let payload = &self.mmap[cursor..cursor + payload_len];
+            let cmd: LedgerCommand = bincode::deserialize(payload)?;
+            commands.push(cmd);
+
+            cursor += payload_len;
+        }
+        Ok(commands)
+    }
+}
+
+// ==========================================
+// 4. 全局账本引擎 (The Ledger)
 // ==========================================
 
 pub struct GlobalLedger {
-    // 核心内存数据
     accounts: FxHashMap<UserId, UserAccount>,
-    // 简单的 WAL 模拟 (实际应使用之前的 Mmap WAL)
+    wal: MmapWal, // 集成 WAL
     seq: u64,
 }
 
 impl GlobalLedger {
-    pub fn new() -> Self {
-        Self {
+    // 初始化：打开 WAL 并恢复状态
+    pub fn new(wal_path: &Path) -> Result<Self> {
+        let wal = MmapWal::open(wal_path)?;
+
+        let mut ledger = Self {
             accounts: FxHashMap::default(),
+            wal,
             seq: 0,
+        };
+
+        // RECOVERY: 重放日志
+        println!("Replaying WAL...");
+        let history = ledger.wal.replay()?;
+        let count = history.len();
+
+        for cmd in history {
+            // 这里我们调用内部 logic，跳过 wal append，防止重复写入
+            ledger.apply_logic(&cmd)?;
+            ledger.seq += 1;
         }
+        println!("Recovered {} transactions. Current Seq: {}", count, ledger.seq);
+
+        Ok(ledger)
     }
 
-    // 核心处理函数：应用指令
-    // 返回 Result，如果余额不足会报错，状态回滚（实际上没改内存）
+    // 对外接口：先写日志，再改内存
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
+        // 1. Persistence (WAL)
+        self.wal.append(cmd)?;
         self.seq += 1;
-        // 1. 在这里写入 WAL (self.wal.append(cmd))
 
-        // 2. 应用内存逻辑
+        // 2. Memory State
+        self.apply_logic(cmd)?;
+
+        Ok(())
+    }
+
+    // 纯内存逻辑 (拆分出来供 Replay 使用)
+    fn apply_logic(&mut self, cmd: &LedgerCommand) -> Result<()> {
         match cmd {
             LedgerCommand::Deposit { user_id, asset, amount } => {
                 let user = self.get_user(*user_id);
                 let bal = user.get_balance_mut(*asset);
-                // 严谨的溢出检查
                 bal.available = bal.available.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
 
             LedgerCommand::Withdraw { user_id, asset, amount } => {
                 let user = self.get_or_error(*user_id)?;
                 let bal = user.get_balance_mut(*asset);
-                if bal.available < *amount { bail!("Insufficient available funds"); }
+                if bal.available < *amount { bail!("Insufficient funds"); }
                 bal.available -= amount;
             }
 
             LedgerCommand::Lock { user_id, asset, amount } => {
                 let user = self.get_or_error(*user_id)?;
                 let bal = user.get_balance_mut(*asset);
-                if bal.available < *amount { bail!("Insufficient available funds to lock"); }
-
+                if bal.available < *amount { bail!("Insufficient available"); }
                 bal.available -= amount;
                 bal.frozen = bal.frozen.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
@@ -135,24 +249,17 @@ impl GlobalLedger {
             LedgerCommand::Unlock { user_id, asset, amount } => {
                 let user = self.get_or_error(*user_id)?;
                 let bal = user.get_balance_mut(*asset);
-                if bal.frozen < *amount { bail!("Insufficient frozen funds to unlock"); }
-
+                if bal.frozen < *amount { bail!("Insufficient frozen"); }
                 bal.frozen -= amount;
                 bal.available = bal.available.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
 
             LedgerCommand::TradeSettle { user_id, spend_asset, spend_amount, gain_asset, gain_amount } => {
                 let user = self.get_or_error(*user_id)?;
-
-                // 1. 扣钱 (从冻结扣，因为下单时已经 Lock 了)
                 let spend_bal = user.get_balance_mut(*spend_asset);
-                if spend_bal.frozen < *spend_amount {
-                    // 生产环境这是一个 Critical Bug (撮合引擎状态与账本不一致)
-                    bail!("CRITICAL: Trade spend amount > frozen balance");
-                }
+                if spend_bal.frozen < *spend_amount { bail!("CRITICAL: Trade spend > frozen"); }
                 spend_bal.frozen -= spend_amount;
 
-                // 2. 加钱 (进可用)
                 let gain_bal = user.get_balance_mut(*gain_asset);
                 gain_bal.available = gain_bal.available.checked_add(*gain_amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
@@ -160,19 +267,16 @@ impl GlobalLedger {
         Ok(())
     }
 
-    // 辅助：获取用户，如果不存在则创建
     #[inline(always)]
     fn get_user(&mut self, user_id: UserId) -> &mut UserAccount {
         self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id))
     }
 
-    // 辅助：获取用户，不存在则报错 (用于提现/下单)
     #[inline(always)]
     fn get_or_error(&mut self, user_id: UserId) -> Result<&mut UserAccount> {
         self.accounts.get_mut(&user_id).ok_or(anyhow::anyhow!("User not found"))
     }
 
-    // 调试打印
     pub fn print_user(&self, user_id: UserId) {
         if let Some(user) = self.accounts.get(&user_id) {
             println!("User {}: {:?}", user_id, user.assets);
@@ -183,56 +287,89 @@ impl GlobalLedger {
 }
 
 // ==========================================
-// 4. 主程序测试
+// 5. 主程序 (测试 WAL 持久化)
 // ==========================================
 
 fn main() -> Result<()> {
-    let mut ledger = GlobalLedger::new();
+    let wal_path = Path::new("ledger.wal");
+
+    // 1. 清理环境
+    if wal_path.exists() { fs::remove_file(wal_path)?; }
+
+    let mut ledger = GlobalLedger::new(wal_path)?;
+
+    // ==========================================
+    // 阶段 1: 预热 (Pre-warm)
+    // ==========================================
+    // 将 user_count 设为 usize 以方便取模运算
+    let user_count = 100_000;
+    println!(">>> SESSION 1: 预热数据 (初始化 {} 个用户)", user_count);
+
+    for id in 0..user_count {
+        ledger.apply(&LedgerCommand::Deposit {
+            user_id: id as u64,
+            asset: 1,
+            amount: 1_000_000,
+        })?;
+    }
+    println!("    预热完成。");
+
+    // ==========================================
+    // 阶段 2: 性能压测 (Benchmark)
+    // ==========================================
+    println!("\n>>> SESSION 2: 性能压测 (Persistence Enabled)");
+    println!("    Scenario: 200万次有序操作 (Round-Robin: Deposit -> Lock -> Unlock)");
+
+    let total_ops = 10_000_000;
     let start = Instant::now();
 
-    // 模拟 3 个币种
-    let btc = 1;
-    let usdt = 2;
-
-    println!(">>> 1. 充值 (Deposit)");
-    // 给 User 100 充值 10000 USDT
-    ledger.apply(&LedgerCommand::Deposit { user_id: 100, asset: usdt, amount: 10000 })?;
-    ledger.print_user(100);
-
-    println!("\n>>> 2. 下单冻结 (Lock)");
-    // User 100 想买 BTC，冻结 5000 USDT
-    ledger.apply(&LedgerCommand::Lock { user_id: 100, asset: usdt, amount: 5000 })?;
-    ledger.print_user(100);
-
-    println!("\n>>> 3. 撮合成交 (TradeSettle)");
-    // 撮合成功：User 100 花费 5000 USDT，买入 0.1 BTC (假设 1 BTC = 50000 USDT)
-    // 这里的 0.1 BTC 我们用 10000000 聪表示 (假设单位是聪)
-    ledger.apply(&LedgerCommand::TradeSettle {
-        user_id: 100,
-        spend_asset: usdt,
-        spend_amount: 5000,
-        gain_asset: btc,
-        gain_amount: 10_000_000,
-    })?;
-    ledger.print_user(100);
-
-    println!("\n>>> 性能测试 (纯内存逻辑)");
-    let total_ops = 10_000_000;
-    let bench_start = Instant::now();
-
     for i in 0..total_ops {
-        // 模拟一个高频的存取操作
-        // 这里不做 unwrap，模拟真实环境处理 Error 的开销
-        let _ = ledger.apply(&LedgerCommand::Deposit {
-            user_id: 100,
-            asset: usdt,
-            amount: 1,
-        });
+        let user_id = (i % user_count) as u64;
+
+        // [核心修复]：根据“轮次”决定操作，而不是根据 i % 3
+        // round 0: User 0..9999 全部 Deposit
+        // round 1: User 0..9999 全部 Lock
+        // round 2: User 0..9999 全部 Unlock
+        let round = i / user_count;
+
+        match round % 3 {
+            0 => {
+                // 轮次 A: 充值
+                ledger.apply(&LedgerCommand::Deposit {
+                    user_id,
+                    asset: 1,
+                    amount: 100,
+                })?;
+            }
+            1 => {
+                // 轮次 B: 冻结 (因为上一轮充值过，肯定成功)
+                ledger.apply(&LedgerCommand::Lock {
+                    user_id,
+                    asset: 1,
+                    amount: 50,
+                })?;
+            }
+            _ => {
+                // 轮次 C: 解冻 (因为上一轮冻结过，肯定成功)
+                ledger.apply(&LedgerCommand::Unlock {
+                    user_id,
+                    asset: 1,
+                    amount: 50,
+                })?;
+            }
+        }
     }
 
-    let duration = bench_start.elapsed();
-    println!("Processed {} ops in {:.2?}", total_ops, duration);
-    println!("TPS: {:.0} ops/sec", total_ops as f64 / duration.as_secs_f64());
+    let duration = start.elapsed();
+    let seconds = duration.as_secs_f64();
+    let tps = total_ops as f64 / seconds;
+
+    println!("--------------------------------------------------");
+    println!("    Total Ops:    {}", total_ops);
+    println!("    Total Time:   {:.4} s", seconds);
+    println!("    Throughput:   {:.0} ops/sec", tps);
+    println!("    Avg Latency:  {:.2?} / op", duration / total_ops as u32);
+    println!("--------------------------------------------------");
 
     Ok(())
 }
