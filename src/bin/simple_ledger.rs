@@ -1,14 +1,20 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use crc32fast::Hasher;
+// ------------------------------------------
+// 混合 WAL 管理器：写使用 Mmap，读使用 Stream
+// ------------------------------------------
 use memmap2::{MmapMut, MmapOptions};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
+
+// 用于泛型反序列化
 
 // ==========================================
 // 1. Data Structures
@@ -65,78 +71,155 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 3. High Performance WAL (Mmap + CRC32)
+// 3. 流式 WAL (Streaming WAL)
 // ==========================================
 
-pub struct MmapWal {
+// 定义最大单条记录限制 (例如 10MB)，防止文件损坏导致读取巨大的内存
+const MAX_RECORD_SIZE: usize = 10 * 1024 * 1024;
+
+pub struct WalIterator {
+    reader: BufReader<File>,
+    path: PathBuf,
+    cursor: u64, // 当前读取的文件偏移量
+}
+
+impl WalIterator {
+    pub fn new(path: &Path) -> Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(0))?;
+
+        Ok(Self {
+            reader,
+            path: path.to_path_buf(),
+            cursor: 0,
+        })
+    }
+}
+
+// 实现 Iterator 特性，使其可以被 for 循环使用
+impl Iterator for WalIterator {
+    type Item = Result<LedgerCommand>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut len_buf = [0u8; 4];
+        let mut crc_buf = [0u8; 4];
+
+        // 1. 读取 Length (4 bytes)
+        match self.reader.read_exact(&mut len_buf) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                // 文件自然结束
+                return None;
+            }
+            Err(e) => return Some(Err(e.into())), // IO 错误
+        }
+
+        let payload_len = u32::from_le_bytes(len_buf) as usize;
+
+        // 2. 安全检查：如果长度太离谱，说明文件大概率坏了，或者解析到了错误位置
+        if payload_len > MAX_RECORD_SIZE {
+            return Some(Err(anyhow::anyhow!(
+                "Corrupt WAL: Record length {} exceeds limit at offset {}",
+                payload_len, self.cursor
+            )));
+        }
+        if payload_len == 0 {
+            // 长度为0通常意味着预分配的空洞区域（写入未完成）
+            return None;
+        }
+
+        // 3. 读取 CRC (4 bytes)
+        if let Err(e) = self.reader.read_exact(&mut crc_buf) {
+            return Some(Err(e.into()));
+        }
+        let stored_crc = u32::from_le_bytes(crc_buf);
+
+        // 4. 读取 Payload (流式读取，只分配这一条记录的内存)
+        let mut payload = vec![0u8; payload_len];
+        if let Err(e) = self.reader.read_exact(&mut payload) {
+            return Some(Err(e.into()));
+        }
+
+        // 5. 校验 CRC
+        let mut hasher = Hasher::new();
+        hasher.update(&payload);
+        let calculated_crc = hasher.finalize();
+
+        if calculated_crc != stored_crc {
+            return Some(Err(anyhow::anyhow!(
+                "CRITICAL: CRC Mismatch at offset {}! Stored: {}, Calculated: {}",
+                self.cursor, stored_crc, calculated_crc
+            )));
+        }
+
+        // 6. 反序列化
+        let result = bincode::deserialize(&payload)
+            .map_err(|e| e.into()); // 转换错误类型
+
+        // 更新游标 (4 + 4 + payload)
+        self.cursor += 8 + payload_len as u64;
+
+        Some(result)
+    }
+}
+
+pub struct HybridWal {
+    path: PathBuf,
     file: File,
     mmap: MmapMut,
     cursor: usize,
     len: usize,
 }
 
-impl MmapWal {
+impl HybridWal {
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(path)
-            .context("Failed to open WAL")?;
-
+        let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
         let meta = file.metadata()?;
         let mut len = meta.len() as usize;
 
-        // Pre-allocate 1GB for new files
         if len == 0 {
             len = 1024 * 1024 * 1024;
             file.set_len(len as u64)?;
         }
 
-        let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
+        // 写模式：依然使用 Mmap，因为写性能最高
+        let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // --- 优化：快速扫描 (Fast Scan) ---
-        // 我们只看长度，不读内容，不算 CRC。速度提升 10 倍以上。
+        // 快速扫描找到写入位置 (仅跳指针，不读内容)
+        // 实际恢复数据时我们用上面的 Iterator
         let mut cursor = 0;
         while cursor + 8 < len {
-            // 1. 只读前 4 个字节 (Length)
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
-
-            // 遇到 0，说明后面没数据了
             if payload_len == 0 { break; }
-
-            // 越界检查
-            if cursor + 8 + payload_len > len {
-                eprintln!("   [WAL] Warning: Truncated at {}", cursor);
-                break;
-            }
-
-            // 2. 直接跳过！不读 Payload，不算 CRC！
+            if cursor + 8 + payload_len > len { break; }
             cursor += 8 + payload_len;
         }
 
-        println!("   [WAL] Opened fast. Cursor at: {}", cursor);
-        Ok(Self { file, mmap, cursor, len })
+        println!("   [WAL] Write cursor at: {}", cursor);
+
+        Ok(Self { path: path.to_path_buf(), file, mmap, cursor, len })
+    }
+
+    // 获取流式迭代器 (用于恢复)
+    pub fn iter(&self) -> Result<WalIterator> {
+        WalIterator::new(&self.path)
     }
 
     #[inline(always)]
     pub fn append(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // Serialize
         let payload = bincode::serialize(cmd)?;
         let size = payload.len();
 
-        // Auto-Grow
         if self.cursor + 8 + size >= self.len {
             self.remap_grow()?;
         }
 
-        // Calculate CRC32 (Hardware Accelerated)
         let mut hasher = Hasher::new();
         hasher.update(&payload);
         let crc = hasher.finalize();
 
-        // Write: [Length] [CRC] [Payload]
         self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
         self.mmap[self.cursor + 4..self.cursor + 8].copy_from_slice(&crc.to_le_bytes());
         self.mmap[self.cursor + 8..self.cursor + 8 + size].copy_from_slice(&payload);
@@ -148,70 +231,40 @@ impl MmapWal {
     fn remap_grow(&mut self) -> Result<()> {
         self.mmap.flush()?;
         let new_len = self.len * 2;
-        // println!("   [WAL] Extending to {} MB...", new_len / 1024 / 1024);
-
         self.file.set_len(new_len as u64)?;
         self.mmap = unsafe { MmapOptions::new().map_mut(&self.file)? };
         self.len = new_len;
         Ok(())
     }
-
-    pub fn replay(&self) -> Result<Vec<LedgerCommand>> {
-        let mut commands = Vec::new();
-        let mut cursor = 0;
-
-        while cursor + 8 < self.len {
-            let len_bytes: [u8; 4] = self.mmap[cursor..cursor + 4].try_into().unwrap();
-            let payload_len = u32::from_le_bytes(len_bytes) as usize;
-
-            if payload_len == 0 { break; }
-
-            // --- 必须在这里做 CRC 检查 ---
-            let crc_bytes: [u8; 4] = self.mmap[cursor + 4..cursor + 8].try_into().unwrap();
-            let stored_crc = u32::from_le_bytes(crc_bytes);
-            let payload = &self.mmap[cursor + 8..cursor + 8 + payload_len];
-
-            // 既然我们要读取 payload 进行反序列化，
-            // 顺便计算 CRC 的开销是非常小的（因为数据已经在 L1 Cache 里了）。
-            let mut hasher = Hasher::new();
-            hasher.update(payload);
-            let calculated_crc = hasher.finalize();
-
-            if calculated_crc != stored_crc {
-                bail!("CRITICAL: Data corruption! Stop.");
-            }
-
-            let cmd: LedgerCommand = bincode::deserialize(payload)?;
-            commands.push(cmd);
-
-            cursor += 8 + payload_len;
-        }
-        Ok(commands)
-    }
 }
 
 // ==========================================
-// 4. Global Ledger Logic
+// 4. Ledger Logic (使用 Stream 恢复)
 // ==========================================
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
-    wal: MmapWal,
+    wal: HybridWal,
 }
 
 impl GlobalLedger {
     pub fn new(wal_path: &Path) -> Result<Self> {
-        let wal = MmapWal::open(wal_path)?;
+        let wal = HybridWal::open(wal_path)?;
         let mut ledger = Self { accounts: FxHashMap::default(), wal };
 
-        // Recover State
-        let history = ledger.wal.replay()?;
-        if !history.is_empty() {
-            println!("   [System] Replaying {} transactions from WAL...", history.len());
-            for cmd in history {
-                ledger.apply_logic(&cmd)?;
-            }
+        // 使用流式加载，内存占用极低
+        println!("   [System] Streaming WAL Replay...");
+        let start = Instant::now();
+        let mut count = 0;
+
+        // 这里不再一次性 load 进 Vec，而是一个个处理
+        for cmd_result in ledger.wal.iter()? {
+            let cmd = cmd_result?; // 如果 CRC 错误，这里会抛出 Error
+            ledger.apply_logic(&cmd)?;
+            count += 1;
         }
+
+        println!("   [System] Replayed {} txs in {:.2?}", count, start.elapsed());
         Ok(ledger)
     }
 
@@ -220,6 +273,7 @@ impl GlobalLedger {
         self.apply_logic(cmd)
     }
 
+    // 纯内存逻辑 (和之前一样)
     fn apply_logic(&mut self, cmd: &LedgerCommand) -> Result<()> {
         match cmd {
             LedgerCommand::Deposit { user_id, asset, amount } => {
@@ -249,7 +303,6 @@ impl GlobalLedger {
             }
             LedgerCommand::TradeSettle { user_id, spend_asset, spend_amount, gain_asset, gain_amount } => {
                 let user = self.accounts.get_mut(user_id).context("User not found")?;
-
                 let spend_bal = user.get_balance_mut(*spend_asset);
                 if spend_bal.frozen < *spend_amount { bail!("CRITICAL: Trade spend > frozen"); }
                 spend_bal.frozen -= spend_amount;
@@ -263,74 +316,49 @@ impl GlobalLedger {
 }
 
 // ==========================================
-// 5. MAIN (Performance Test)
+// 5. Main (保持压测不变)
 // ==========================================
 
 fn main() -> Result<()> {
-    let wal_path = Path::new("perf_crc.wal");
-
-    // Clean environment for accurate benchmark
+    let wal_path = Path::new("stream_wal.log");
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
 
-    // ==========================================
-    // Phase 1: Pre-warm (Initialize Data)
-    // ==========================================
+    // --- Phase 1: Pre-warm ---
     let user_count = 10_000;
-    println!(">>> SESSION 1: Pre-warming data (Initializing {} users)", user_count);
-
+    println!(">>> SESSION 1: Pre-warming data ({} users)...", user_count);
     for id in 0..user_count {
-        ledger.apply(&LedgerCommand::Deposit {
-            user_id: id as u64,
-            asset: 1,
-            amount: 1_000_000,
-        })?;
+        ledger.apply(&LedgerCommand::Deposit { user_id: id as u64, asset: 1, amount: 1_000_000 })?;
     }
-    println!("    Pre-warm complete.");
 
-    // ==========================================
-    // Phase 2: Performance Benchmark
-    // ==========================================
-    println!("\n>>> SESSION 2: Performance Benchmark");
-    println!("    Mode:     Mmap WAL + CRC32 Checksum + Memory Ledger");
-    println!("    Scenario: 2M Ordered Operations (Round-Robin: Deposit -> Lock -> Unlock)");
-
+    // --- Phase 2: High Ops ---
+    println!("\n>>> SESSION 2: Performance Benchmark (Streaming Recovery Check)");
     let total_ops = 2_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
         let user_id = (i % user_count) as u64;
-
-        // Use "Rounds" logic to ensure correctness
-        // Round 0: Deposit
-        // Round 1: Lock
-        // Round 2: Unlock
         let round = i / user_count;
-
         match round % 3 {
-            0 => {
-                ledger.apply(&LedgerCommand::Deposit { user_id, asset: 1, amount: 100 })?;
-            }
-            1 => {
-                ledger.apply(&LedgerCommand::Lock { user_id, asset: 1, amount: 50 })?;
-            }
-            _ => {
-                ledger.apply(&LedgerCommand::Unlock { user_id, asset: 1, amount: 50 })?;
-            }
+            0 => { ledger.apply(&LedgerCommand::Deposit { user_id, asset: 1, amount: 100 })?; }
+            1 => { ledger.apply(&LedgerCommand::Lock { user_id, asset: 1, amount: 50 })?; }
+            _ => { ledger.apply(&LedgerCommand::Unlock { user_id, asset: 1, amount: 50 })?; }
         }
     }
 
     let duration = start.elapsed();
-    let seconds = duration.as_secs_f64();
-    let tps = total_ops as f64 / seconds;
-
-    println!("--------------------------------------------------");
     println!("    Total Ops:    {}", total_ops);
-    println!("    Total Time:   {:.4} s", seconds);
-    println!("    Throughput:   {:.0} ops/sec", tps);
-    println!("    Avg Latency:  {:.2?} / op", duration / total_ops as u32);
-    println!("--------------------------------------------------");
+    println!("    Throughput:   {:.0} ops/sec", total_ops as f64 / duration.as_secs_f64());
+
+    // --- Phase 3: Streaming Recovery Verification ---
+    println!("\n>>> SESSION 3: Restart & Stream Replay");
+    // 销毁旧对象，强制重新打开文件
+    drop(ledger);
+
+    let start_replay = Instant::now();
+    let _recovered_ledger = GlobalLedger::new(wal_path)?;
+    println!("    Recovery Time: {:.2?}", start_replay.elapsed());
 
     Ok(())
 }
