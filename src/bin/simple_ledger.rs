@@ -11,6 +11,18 @@ use memmap2::{MmapMut, MmapOptions};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+// 使用我们刚刚提取的 struct
+use md5_utils::{Md5Reader, Md5Writer};
+
+// ==========================================
+// 0. 模块引入 (Module Import)
+// ==========================================
+
+// 告诉编译器去上一级目录找 md5_utils.rs
+// (因为 bin 目录下的文件默认看不到 src 根目录的模块，除非它是 lib 的一部分)
+#[path = "../md5_utils.rs"]
+mod md5_utils;
+
 // ==========================================
 // 1. Configuration Constants
 // ==========================================
@@ -20,62 +32,7 @@ const READ_BUFFER_SIZE: usize = 1024 * 1024;
 const SNAPSHOT_RETENTION: usize = 3;
 
 // ==========================================
-// 2. Helper: Streaming MD5 Checksum
-// ==========================================
-
-// [新增] 边写文件，边算 MD5
-struct Md5Writer<W: Write> {
-    inner: W,
-    context: md5::Context,
-}
-
-impl<W: Write> Md5Writer<W> {
-    fn new(inner: W) -> Self {
-        Self { inner, context: md5::Context::new() }
-    }
-    // 完成计算，返回 MD5 字符串
-    fn finish(self) -> String {
-        format!("{:x}", self.context.compute())
-    }
-}
-
-impl<W: Write> Write for Md5Writer<W> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.context.consume(buf);
-        self.inner.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-// [新增] 边读文件，边算 MD5
-struct Md5Reader<R: Read> {
-    inner: R,
-    context: md5::Context,
-}
-
-impl<R: Read> Md5Reader<R> {
-    fn new(inner: R) -> Self {
-        Self { inner, context: md5::Context::new() }
-    }
-    fn finish(self) -> String {
-        format!("{:x}", self.context.compute())
-    }
-}
-
-impl<R: Read> Read for Md5Reader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        let n = self.inner.read(buf)?;
-        if n > 0 {
-            self.context.consume(&buf[..n]);
-        }
-        Ok(n)
-    }
-}
-
-// ==========================================
-// 3. Data Structures
+// 2. Data Structures
 // ==========================================
 
 pub type AssetId = u32;
@@ -116,7 +73,7 @@ pub struct Snapshot {
 }
 
 // ==========================================
-// 4. Commands
+// 3. Commands
 // ==========================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,7 +92,7 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 5. Streaming WAL Iterator
+// 4. Streaming WAL Iterator
 // ==========================================
 
 pub struct WalIterator {
@@ -209,7 +166,7 @@ impl Iterator for WalIterator {
 }
 
 // ==========================================
-// 6. Hybrid WAL
+// 5. Hybrid WAL
 // ==========================================
 
 pub struct HybridWal {
@@ -293,7 +250,7 @@ impl HybridWal {
 }
 
 // ==========================================
-// 7. Global Ledger (MD5 Snapshot)
+// 6. Global Ledger (With MD5 Snapshot)
 // ==========================================
 
 pub struct GlobalLedger {
@@ -316,15 +273,12 @@ impl GlobalLedger {
             println!("   [Recover] Verifying Snapshot: {:?} (Seq {})", path, seq);
             let start_snap = Instant::now();
 
-            // 使用 Md5Reader 流式计算校验和，避免读入内存后再算，节省一次内存拷贝
             let file = File::open(&path)?;
             let buf_reader = BufReader::new(file);
             let mut md5_reader = Md5Reader::new(buf_reader);
 
-            // 边读边算
             let snap: Snapshot = bincode::deserialize_from(&mut md5_reader)?;
 
-            // 获取计算出的 Hash
             let calculated_md5 = md5_reader.finish();
 
             if calculated_md5 != expected_md5 {
@@ -364,7 +318,6 @@ impl GlobalLedger {
         })
     }
 
-    // 解析文件名: snapshot_{seq}_{md5}.snap
     fn find_latest_snapshot(dir: &Path) -> Result<Option<(u64, PathBuf, String)>> {
         let mut max_seq = 0;
         let mut found = None;
@@ -372,7 +325,6 @@ impl GlobalLedger {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                // Name format: snapshot_1000_abc123...
                 if name.starts_with("snapshot_") && path.extension().map_or(false, |e| e == "snap") {
                     let parts: Vec<&str> = name.split('_').collect();
                     if parts.len() == 3 {
@@ -390,14 +342,12 @@ impl GlobalLedger {
         Ok(found)
     }
 
-    // [MODIFIED] Trigger Snapshot with MD5 Filename
     pub fn trigger_snapshot(&self) {
         let current_seq = self.last_seq;
         let dir = self.snapshot_dir.clone();
         let accounts_copy = self.accounts.clone();
 
         thread::spawn(move || {
-            // 1. 写临时文件
             let tmp_filename = format!("snapshot_{}.tmp", current_seq);
             let tmp_path = dir.join(&tmp_filename);
 
@@ -409,14 +359,12 @@ impl GlobalLedger {
             let md5_string = match File::create(&tmp_path) {
                 Ok(file) => {
                     let buf_writer = BufWriter::new(file);
-                    // 包装 Md5Writer
                     let mut md5_writer = Md5Writer::new(buf_writer);
 
                     if let Err(e) = bincode::serialize_into(&mut md5_writer, &snap) {
                         println!("   [Snapshot] Write Error: {:?}", e);
                         return;
                     }
-                    // 必须先 flush 确保数据落盘
                     let _ = md5_writer.flush();
                     md5_writer.finish()
                 }
@@ -426,7 +374,6 @@ impl GlobalLedger {
                 }
             };
 
-            // 2. 重命名文件 (包含 MD5)
             let final_filename = format!("snapshot_{}_{}.snap", current_seq, md5_string);
             let final_path = dir.join(final_filename);
 
@@ -435,7 +382,7 @@ impl GlobalLedger {
                 return;
             }
 
-            // 3. Cleanup Old Snapshots
+            // Cleanup Old Snapshots
             let mut snaps = Vec::new();
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -443,7 +390,6 @@ impl GlobalLedger {
                     if let Some(name) = p.file_stem().and_then(|s| s.to_str()) {
                         if name.starts_with("snapshot_") && p.extension().map_or(false, |e| e == "snap") {
                             let parts: Vec<&str> = name.split('_').collect();
-                            // snapshot_{seq}_{md5}.snap
                             if parts.len() == 3 {
                                 if let Ok(seq) = parts[1].parse::<u64>() {
                                     snaps.push((seq, p));
@@ -514,7 +460,7 @@ impl GlobalLedger {
 }
 
 // ==========================================
-// 8. Main
+// 8. Main (Benchmark)
 // ==========================================
 
 fn main() -> Result<()> {
@@ -536,7 +482,7 @@ fn main() -> Result<()> {
 
     // --- Phase 2: High Ops + Snapshotting ---
     println!("\n>>> SESSION 2: Writing 2M records with Snapshots...");
-    let total_ops = 2_000_000;
+    let total_ops = 50_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
@@ -550,7 +496,7 @@ fn main() -> Result<()> {
         };
 
         // Snapshot every 500k
-        if i > 0 && i % 500_000 == 0 {
+        if i > 0 && i % 1000_000 == 0 {
             ledger.trigger_snapshot();
             print!(".");
             std::io::stdout().flush()?;
