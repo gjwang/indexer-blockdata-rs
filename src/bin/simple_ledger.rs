@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::thread;
@@ -17,9 +17,65 @@ use serde::{Deserialize, Serialize};
 
 const MAX_RECORD_SIZE: usize = 10 * 1024 * 1024;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
+const SNAPSHOT_RETENTION: usize = 3;
 
 // ==========================================
-// 2. Data Structures
+// 2. Helper: Streaming MD5 Checksum
+// ==========================================
+
+// [新增] 边写文件，边算 MD5
+struct Md5Writer<W: Write> {
+    inner: W,
+    context: md5::Context,
+}
+
+impl<W: Write> Md5Writer<W> {
+    fn new(inner: W) -> Self {
+        Self { inner, context: md5::Context::new() }
+    }
+    // 完成计算，返回 MD5 字符串
+    fn finish(self) -> String {
+        format!("{:x}", self.context.compute())
+    }
+}
+
+impl<W: Write> Write for Md5Writer<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.context.consume(buf);
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+// [新增] 边读文件，边算 MD5
+struct Md5Reader<R: Read> {
+    inner: R,
+    context: md5::Context,
+}
+
+impl<R: Read> Md5Reader<R> {
+    fn new(inner: R) -> Self {
+        Self { inner, context: md5::Context::new() }
+    }
+    fn finish(self) -> String {
+        format!("{:x}", self.context.compute())
+    }
+}
+
+impl<R: Read> Read for Md5Reader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        if n > 0 {
+            self.context.consume(&buf[..n]);
+        }
+        Ok(n)
+    }
+}
+
+// ==========================================
+// 3. Data Structures
 // ==========================================
 
 pub type AssetId = u32;
@@ -53,7 +109,6 @@ impl UserAccount {
     }
 }
 
-// [NEW] Snapshot Structure for disk storage
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     pub last_seq: u64,
@@ -61,7 +116,7 @@ pub struct Snapshot {
 }
 
 // ==========================================
-// 3. Commands
+// 4. Commands
 // ==========================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,7 +135,7 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 4. Streaming WAL Iterator (Reader)
+// 5. Streaming WAL Iterator
 // ==========================================
 
 pub struct WalIterator {
@@ -101,7 +156,6 @@ impl Iterator for WalIterator {
     type Item = Result<(u64, LedgerCommand)>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // 1. Read Length
         let mut len_buf = [0u8; 4];
         match self.reader.read_exact(&mut len_buf) {
             Ok(_) => {}
@@ -118,20 +172,17 @@ impl Iterator for WalIterator {
         }
         if payload_len == 0 { return None; }
 
-        // 2. Read CRC
         let mut crc_buf = [0u8; 4];
         if let Err(e) = self.reader.read_exact(&mut crc_buf) {
             return Some(Err(e.into()));
         }
         let stored_crc = u32::from_le_bytes(crc_buf);
 
-        // 3. Read Data (Seq + Payload)
         let mut data_buf = vec![0u8; payload_len];
         if let Err(e) = self.reader.read_exact(&mut data_buf) {
             return Some(Err(e.into()));
         }
 
-        // 4. Verify CRC (Length + Data)
         let mut hasher = Hasher::new();
         hasher.update(&len_buf);
         hasher.update(&data_buf);
@@ -141,14 +192,12 @@ impl Iterator for WalIterator {
             return Some(Err(anyhow::anyhow!("CRITICAL: CRC Mismatch at offset {}", self.cursor)));
         }
 
-        // 5. Extract Seq
         if data_buf.len() < 8 {
             return Some(Err(anyhow::anyhow!("Record too short")));
         }
         let (seq_bytes, cmd_bytes) = data_buf.split_at(8);
         let seq = u64::from_le_bytes(seq_bytes.try_into().unwrap());
 
-        // 6. Deserialize
         let cmd = match bincode::deserialize(cmd_bytes) {
             Ok(c) => c,
             Err(e) => return Some(Err(e.into())),
@@ -160,7 +209,7 @@ impl Iterator for WalIterator {
 }
 
 // ==========================================
-// 5. Hybrid WAL (Writer)
+// 6. Hybrid WAL
 // ==========================================
 
 pub struct HybridWal {
@@ -184,7 +233,6 @@ impl HybridWal {
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // Fast Scan
         let mut cursor = 0;
         while cursor + 8 < len {
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
@@ -245,14 +293,14 @@ impl HybridWal {
 }
 
 // ==========================================
-// 6. Global Ledger (Snapshot + WAL)
+// 7. Global Ledger (MD5 Snapshot)
 // ==========================================
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: HybridWal,
     last_seq: u64,
-    snapshot_dir: PathBuf, // Store this to save snaps
+    snapshot_dir: PathBuf,
 }
 
 impl GlobalLedger {
@@ -263,35 +311,43 @@ impl GlobalLedger {
         let mut accounts = FxHashMap::default();
         let mut recovered_seq = 0;
 
-        // 1. Try Load Snapshot
-        if let Some((seq, path)) = Self::find_latest_snapshot(snapshot_dir)? {
-            println!("   [Recover] Loading Snapshot: {:?} (Seq {})", path, seq);
+        // 1. Try Load Snapshot with MD5 Verification
+        if let Some((seq, path, expected_md5)) = Self::find_latest_snapshot(snapshot_dir)? {
+            println!("   [Recover] Verifying Snapshot: {:?} (Seq {})", path, seq);
             let start_snap = Instant::now();
-            let file = File::open(path)?;
-            let reader = BufReader::new(file);
-            let snap: Snapshot = bincode::deserialize_from(reader)?;
+
+            // 使用 Md5Reader 流式计算校验和，避免读入内存后再算，节省一次内存拷贝
+            let file = File::open(&path)?;
+            let buf_reader = BufReader::new(file);
+            let mut md5_reader = Md5Reader::new(buf_reader);
+
+            // 边读边算
+            let snap: Snapshot = bincode::deserialize_from(&mut md5_reader)?;
+
+            // 获取计算出的 Hash
+            let calculated_md5 = md5_reader.finish();
+
+            if calculated_md5 != expected_md5 {
+                bail!("CRITICAL: Snapshot Corrupted! MD5 Mismatch.\nExpected: {}\nCalculated: {}",
+                      expected_md5, calculated_md5);
+            }
 
             accounts = snap.accounts;
             recovered_seq = snap.last_seq;
-            println!("   [Recover] Snapshot Loaded in {:.2?}", start_snap.elapsed());
+            println!("   [Recover] Snapshot Integrity OK. Loaded in {:.2?}", start_snap.elapsed());
         }
 
-        // 2. Replay WAL (Only newer events)
+        // 2. Replay WAL
         println!("   [Recover] Scanning WAL from Seq {}...", recovered_seq);
         let start_wal = Instant::now();
         let mut count = 0;
 
         for res in wal.iter()? {
             let (seq, cmd) = res?;
-
-            // Skip old logs
             if seq <= recovered_seq { continue; }
-
-            // Strict Continuity Check
             if seq != recovered_seq + 1 {
                 bail!("CRITICAL: Sequence Gap! Expected {}, Found {}.", recovered_seq + 1, seq);
             }
-
             Self::apply_transaction(&mut accounts, &cmd)?;
             recovered_seq = seq;
             count += 1;
@@ -308,18 +364,24 @@ impl GlobalLedger {
         })
     }
 
-    fn find_latest_snapshot(dir: &Path) -> Result<Option<(u64, PathBuf)>> {
+    // 解析文件名: snapshot_{seq}_{md5}.snap
+    fn find_latest_snapshot(dir: &Path) -> Result<Option<(u64, PathBuf, String)>> {
         let mut max_seq = 0;
         let mut found = None;
+
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
-            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if stem.starts_with("snapshot_") && path.extension().map_or(false, |e| e == "snap") {
-                    // Filename: snapshot_1000.snap
-                    if let Ok(seq) = stem["snapshot_".len()..].parse::<u64>() {
-                        if seq > max_seq {
-                            max_seq = seq;
-                            found = Some((seq, path));
+            if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                // Name format: snapshot_1000_abc123...
+                if name.starts_with("snapshot_") && path.extension().map_or(false, |e| e == "snap") {
+                    let parts: Vec<&str> = name.split('_').collect();
+                    if parts.len() == 3 {
+                        if let Ok(seq) = parts[1].parse::<u64>() {
+                            let md5 = parts[2].to_string();
+                            if seq > max_seq {
+                                max_seq = seq;
+                                found = Some((seq, path, md5));
+                            }
                         }
                     }
                 }
@@ -328,36 +390,77 @@ impl GlobalLedger {
         Ok(found)
     }
 
-    // [NEW] Trigger Snapshot (Clone & Offload)
+    // [MODIFIED] Trigger Snapshot with MD5 Filename
     pub fn trigger_snapshot(&self) {
         let current_seq = self.last_seq;
         let dir = self.snapshot_dir.clone();
-
-        let start_clone = Instant::now();
-        let accounts_copy = self.accounts.clone(); // The only blocking part
-        let clone_dur = start_clone.elapsed();
+        let accounts_copy = self.accounts.clone();
 
         thread::spawn(move || {
-            let start_write = Instant::now();
-            let filename = format!("snapshot_{}.snap", current_seq);
-            let path = dir.join(filename);
+            // 1. 写临时文件
+            let tmp_filename = format!("snapshot_{}.tmp", current_seq);
+            let tmp_path = dir.join(&tmp_filename);
 
             let snap = Snapshot {
                 last_seq: current_seq,
                 accounts: accounts_copy,
             };
 
-            match File::create(&path) {
+            let md5_string = match File::create(&tmp_path) {
                 Ok(file) => {
-                    let writer = std::io::BufWriter::new(file);
-                    if let Err(e) = bincode::serialize_into(writer, &snap) {
+                    let buf_writer = BufWriter::new(file);
+                    // 包装 Md5Writer
+                    let mut md5_writer = Md5Writer::new(buf_writer);
+
+                    if let Err(e) = bincode::serialize_into(&mut md5_writer, &snap) {
                         println!("   [Snapshot] Write Error: {:?}", e);
-                    } else {
-                        // println!("   [Snapshot] Saved Seq {}. Clone: {:.2?}, Write: {:.2?}",
-                        //          current_seq, clone_dur, start_write.elapsed());
+                        return;
+                    }
+                    // 必须先 flush 确保数据落盘
+                    let _ = md5_writer.flush();
+                    md5_writer.finish()
+                }
+                Err(e) => {
+                    println!("   [Snapshot] File Create Error: {:?}", e);
+                    return;
+                }
+            };
+
+            // 2. 重命名文件 (包含 MD5)
+            let final_filename = format!("snapshot_{}_{}.snap", current_seq, md5_string);
+            let final_path = dir.join(final_filename);
+
+            if let Err(e) = fs::rename(&tmp_path, &final_path) {
+                println!("   [Snapshot] Rename Error: {:?}", e);
+                return;
+            }
+
+            // 3. Cleanup Old Snapshots
+            let mut snaps = Vec::new();
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if let Some(name) = p.file_stem().and_then(|s| s.to_str()) {
+                        if name.starts_with("snapshot_") && p.extension().map_or(false, |e| e == "snap") {
+                            let parts: Vec<&str> = name.split('_').collect();
+                            // snapshot_{seq}_{md5}.snap
+                            if parts.len() == 3 {
+                                if let Ok(seq) = parts[1].parse::<u64>() {
+                                    snaps.push((seq, p));
+                                }
+                            }
+                        }
                     }
                 }
-                Err(e) => println!("   [Snapshot] File Create Error: {:?}", e),
+            }
+
+            snaps.sort_by(|a, b| b.0.cmp(&a.0)); // Descending
+
+            if snaps.len() > SNAPSHOT_RETENTION {
+                for (seq, path) in snaps.iter().skip(SNAPSHOT_RETENTION) {
+                    println!("   [Cleanup] Deleting old snapshot seq: {}", seq);
+                    let _ = fs::remove_file(path);
+                }
             }
         });
     }
@@ -411,7 +514,7 @@ impl GlobalLedger {
 }
 
 // ==========================================
-// 7. Main (Benchmark)
+// 8. Main
 // ==========================================
 
 fn main() -> Result<()> {
@@ -433,7 +536,7 @@ fn main() -> Result<()> {
 
     // --- Phase 2: High Ops + Snapshotting ---
     println!("\n>>> SESSION 2: Writing 2M records with Snapshots...");
-    let total_ops = 20_000_253;
+    let total_ops = 2_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
@@ -446,36 +549,32 @@ fn main() -> Result<()> {
             _ => ledger.apply(&LedgerCommand::Unlock { user_id, asset: 1, amount: 50 })?,
         };
 
-        // Trigger snapshot every 500k ops
-        if i > 0 && i % 1_000_000 == 0 {
+        // Snapshot every 500k
+        if i > 0 && i % 500_000 == 0 {
             ledger.trigger_snapshot();
-            print!("."); // Visual progress
+            print!(".");
             std::io::stdout().flush()?;
         }
     }
 
-    // Trigger one final snapshot at the end
+    // Final Snapshot
     ledger.trigger_snapshot();
 
     let duration = start.elapsed();
     println!("\n    Total Ops:    {}", total_ops);
     println!("    Throughput:   {:.0} ops/sec", total_ops as f64 / duration.as_secs_f64());
 
-    // Wait for background snapshots to finish writing
     println!("    Waiting for background snapshots...");
     thread::sleep(std::time::Duration::from_secs(2));
 
     // --- Phase 3: Recovery Test ---
-    println!("\n>>> SESSION 3: Restart & Recovery (Snapshot + WAL)");
+    println!("\n>>> SESSION 3: Restart & MD5 Verification");
     drop(ledger);
 
     let start_replay = Instant::now();
     let recovered = GlobalLedger::new(wal_path, snap_dir)?;
     println!("    Total Recovery Time: {:.2?}", start_replay.elapsed());
 
-    // Verification:
-    // User count should be 10000 + 0 (only updated existing users)
-    // Seq should be total_ops + user_count (2M + 10k)
     println!("    Last Seq: {}", recovered.last_seq);
     if recovered.last_seq == (total_ops as u64 + user_count as u64) {
         println!("✅ SUCCESS: Data fully restored.");
