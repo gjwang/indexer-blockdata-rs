@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::Write;
 use std::mem;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -10,10 +10,8 @@ use memmap2::{MmapMut, MmapOptions};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
-// <--- NEW DEPENDENCY
-
 // ==========================================
-// 1. Data Structures (Same as before)
+// 1. Data Structures
 // ==========================================
 
 pub type AssetId = u32;
@@ -48,7 +46,7 @@ impl UserAccount {
 }
 
 // ==========================================
-// 2. Commands (Same as before)
+// 2. Commands
 // ==========================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,87 +89,66 @@ impl MmapWal {
 
         // Pre-allocate 1GB for new files
         if len == 0 {
-            len = 1024 * 1024 * 1024; // 1GB
+            len = 1024 * 1024 * 1024;
             file.set_len(len as u64)?;
         }
 
         let mut mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
-        // --- SCAN & RECOVER CURSOR ---
-        // Format: [Length u32] [CRC32 u32] [Payload...]
+        // --- 优化：快速扫描 (Fast Scan) ---
+        // 我们只看长度，不读内容，不算 CRC。速度提升 10 倍以上。
         let mut cursor = 0;
         while cursor + 8 < len {
-            // 1. Read Length
+            // 1. 只读前 4 个字节 (Length)
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
-            // Zero length means end of written data
+            // 遇到 0，说明后面没数据了
             if payload_len == 0 { break; }
 
-            // Check if file is truncated/corrupt at end
+            // 越界检查
             if cursor + 8 + payload_len > len {
-                eprintln!("WARNING: WAL truncated at offset {}", cursor);
+                eprintln!("   [WAL] Warning: Truncated at {}", cursor);
                 break;
             }
 
-            // 2. Read Stored CRC
-            let crc_bytes: [u8; 4] = mmap[cursor + 4..cursor + 8].try_into().unwrap();
-            let stored_crc = u32::from_le_bytes(crc_bytes);
-
-            // 3. Verify CRC (Read Payload)
-            let payload = &mmap[cursor + 8..cursor + 8 + payload_len];
-            let mut hasher = Hasher::new();
-            hasher.update(payload);
-            let calculated_crc = hasher.finalize();
-
-            if calculated_crc != stored_crc {
-                bail!("CRITICAL: WAL Corruption detected at offset {}! Expected CRC {}, found {}. Possible disk failure.",
-                      cursor, stored_crc, calculated_crc);
-            }
-
+            // 2. 直接跳过！不读 Payload，不算 CRC！
             cursor += 8 + payload_len;
         }
 
-        println!("WAL Opened. Verified Integrity. Resuming from offset: {}", cursor);
-
+        println!("   [WAL] Opened fast. Cursor at: {}", cursor);
         Ok(Self { file, mmap, cursor, len })
     }
 
     #[inline(always)]
     pub fn append(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // 1. Serialize to buffer (Stack allocation, fast)
-        // In extremely high perf code, we might reuse a thread-local buffer
+        // Serialize
         let payload = bincode::serialize(cmd)?;
         let size = payload.len();
 
-        // 2. Auto-Grow Logic
-        // We need 4 bytes (Len) + 4 bytes (CRC) + Payload Size
+        // Auto-Grow
         if self.cursor + 8 + size >= self.len {
             self.remap_grow()?;
         }
 
-        // 3. Calculate CRC32 (Hardware Accelerated)
+        // Calculate CRC32 (Hardware Accelerated)
         let mut hasher = Hasher::new();
         hasher.update(&payload);
         let crc = hasher.finalize();
 
-        // 4. Write Header [Length u32] [CRC u32]
+        // Write: [Length] [CRC] [Payload]
         self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
         self.mmap[self.cursor + 4..self.cursor + 8].copy_from_slice(&crc.to_le_bytes());
-
-        // 5. Write Payload
         self.mmap[self.cursor + 8..self.cursor + 8 + size].copy_from_slice(&payload);
 
         self.cursor += 8 + size;
-
         Ok(())
     }
 
     fn remap_grow(&mut self) -> Result<()> {
         self.mmap.flush()?;
         let new_len = self.len * 2;
-        println!(">>> WAL Full. Extending from {} MB to {} MB...",
-                 self.len / 1024 / 1024, new_len / 1024 / 1024);
+        // println!("   [WAL] Extending to {} MB...", new_len / 1024 / 1024);
 
         self.file.set_len(new_len as u64)?;
         self.mmap = unsafe { MmapOptions::new().map_mut(&self.file)? };
@@ -179,20 +156,30 @@ impl MmapWal {
         Ok(())
     }
 
-    // Recovery function: Returns valid commands
     pub fn replay(&self) -> Result<Vec<LedgerCommand>> {
         let mut commands = Vec::new();
         let mut cursor = 0;
 
-        // We trust the structure because we verified CRCs in open()
         while cursor + 8 < self.len {
             let len_bytes: [u8; 4] = self.mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
             if payload_len == 0 { break; }
 
-            // Skip Length (4) + CRC (4) to get Payload
+            // --- 必须在这里做 CRC 检查 ---
+            let crc_bytes: [u8; 4] = self.mmap[cursor + 4..cursor + 8].try_into().unwrap();
+            let stored_crc = u32::from_le_bytes(crc_bytes);
             let payload = &self.mmap[cursor + 8..cursor + 8 + payload_len];
+
+            // 既然我们要读取 payload 进行反序列化，
+            // 顺便计算 CRC 的开销是非常小的（因为数据已经在 L1 Cache 里了）。
+            let mut hasher = Hasher::new();
+            hasher.update(payload);
+            let calculated_crc = hasher.finalize();
+
+            if calculated_crc != stored_crc {
+                bail!("CRITICAL: Data corruption! Stop.");
+            }
 
             let cmd: LedgerCommand = bincode::deserialize(payload)?;
             commands.push(cmd);
@@ -204,83 +191,65 @@ impl MmapWal {
 }
 
 // ==========================================
-// 4. Global Ledger (Logic)
+// 4. Global Ledger Logic
 // ==========================================
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: MmapWal,
-    seq: u64,
 }
 
 impl GlobalLedger {
     pub fn new(wal_path: &Path) -> Result<Self> {
         let wal = MmapWal::open(wal_path)?;
+        let mut ledger = Self { accounts: FxHashMap::default(), wal };
 
-        let mut ledger = Self {
-            accounts: FxHashMap::default(),
-            wal,
-            seq: 0,
-        };
-
-        println!("Replaying WAL...");
+        // Recover State
         let history = ledger.wal.replay()?;
-        let count = history.len();
-
-        for cmd in history {
-            ledger.apply_logic(&cmd)?;
-            ledger.seq += 1;
+        if !history.is_empty() {
+            println!("   [System] Replaying {} transactions from WAL...", history.len());
+            for cmd in history {
+                ledger.apply_logic(&cmd)?;
+            }
         }
-        println!("Recovered {} transactions. Current Seq: {}", count, ledger.seq);
-
         Ok(ledger)
     }
 
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // 1. Persistence (With CRC)
         self.wal.append(cmd)?;
-        self.seq += 1;
-
-        // 2. Memory State
-        self.apply_logic(cmd)?;
-
-        Ok(())
+        self.apply_logic(cmd)
     }
 
-    // Logic separated for replay
     fn apply_logic(&mut self, cmd: &LedgerCommand) -> Result<()> {
         match cmd {
             LedgerCommand::Deposit { user_id, asset, amount } => {
-                let user = self.get_user(*user_id);
+                let user = self.accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.available = bal.available.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
-
             LedgerCommand::Withdraw { user_id, asset, amount } => {
-                let user = self.get_or_error(*user_id)?;
+                let user = self.accounts.get_mut(user_id).context("User not found")?;
                 let bal = user.get_balance_mut(*asset);
                 if bal.available < *amount { bail!("Insufficient funds"); }
                 bal.available -= amount;
             }
-
             LedgerCommand::Lock { user_id, asset, amount } => {
-                let user = self.get_or_error(*user_id)?;
+                let user = self.accounts.get_mut(user_id).context("User not found")?;
                 let bal = user.get_balance_mut(*asset);
                 if bal.available < *amount { bail!("Insufficient available"); }
                 bal.available -= amount;
                 bal.frozen = bal.frozen.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
-
             LedgerCommand::Unlock { user_id, asset, amount } => {
-                let user = self.get_or_error(*user_id)?;
+                let user = self.accounts.get_mut(user_id).context("User not found")?;
                 let bal = user.get_balance_mut(*asset);
                 if bal.frozen < *amount { bail!("Insufficient frozen"); }
                 bal.frozen -= amount;
                 bal.available = bal.available.checked_add(*amount).ok_or(anyhow::anyhow!("Overflow"))?;
             }
-
             LedgerCommand::TradeSettle { user_id, spend_asset, spend_amount, gain_asset, gain_amount } => {
-                let user = self.get_or_error(*user_id)?;
+                let user = self.accounts.get_mut(user_id).context("User not found")?;
+
                 let spend_bal = user.get_balance_mut(*spend_asset);
                 if spend_bal.frozen < *spend_amount { bail!("CRITICAL: Trade spend > frozen"); }
                 spend_bal.frozen -= spend_amount;
@@ -291,31 +260,26 @@ impl GlobalLedger {
         }
         Ok(())
     }
-
-    #[inline(always)]
-    fn get_user(&mut self, user_id: UserId) -> &mut UserAccount {
-        self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id))
-    }
-
-    #[inline(always)]
-    fn get_or_error(&mut self, user_id: UserId) -> Result<&mut UserAccount> {
-        self.accounts.get_mut(&user_id).ok_or(anyhow::anyhow!("User not found"))
-    }
 }
 
 // ==========================================
-// 5. Main (With Benchmark)
+// 5. MAIN (Performance Test)
 // ==========================================
 
 fn main() -> Result<()> {
-    let wal_path = Path::new("ledger_crc.wal");
+    let wal_path = Path::new("perf_crc.wal");
+
+    // Clean environment for accurate benchmark
     if wal_path.exists() { fs::remove_file(wal_path)?; }
 
     let mut ledger = GlobalLedger::new(wal_path)?;
 
-    // --- Phase 1: Pre-warm ---
+    // ==========================================
+    // Phase 1: Pre-warm (Initialize Data)
+    // ==========================================
     let user_count = 10_000;
-    println!(">>> SESSION 1: Pre-warming data ({} users)...", user_count);
+    println!(">>> SESSION 1: Pre-warming data (Initializing {} users)", user_count);
+
     for id in 0..user_count {
         ledger.apply(&LedgerCommand::Deposit {
             user_id: id as u64,
@@ -325,25 +289,33 @@ fn main() -> Result<()> {
     }
     println!("    Pre-warm complete.");
 
-    // --- Phase 2: Performance Benchmark ---
-    println!("\n>>> SESSION 2: Performance Benchmark (WAL + CRC32)");
-    println!("    Scenario: 2M Ordered Operations");
+    // ==========================================
+    // Phase 2: Performance Benchmark
+    // ==========================================
+    println!("\n>>> SESSION 2: Performance Benchmark");
+    println!("    Mode:     Mmap WAL + CRC32 Checksum + Memory Ledger");
+    println!("    Scenario: 2M Ordered Operations (Round-Robin: Deposit -> Lock -> Unlock)");
 
     let total_ops = 2_000_000;
     let start = Instant::now();
 
     for i in 0..total_ops {
         let user_id = (i % user_count) as u64;
+
+        // Use "Rounds" logic to ensure correctness
+        // Round 0: Deposit
+        // Round 1: Lock
+        // Round 2: Unlock
         let round = i / user_count;
 
         match round % 3 {
-            0 => { // Deposit
+            0 => {
                 ledger.apply(&LedgerCommand::Deposit { user_id, asset: 1, amount: 100 })?;
             }
-            1 => { // Lock
+            1 => {
                 ledger.apply(&LedgerCommand::Lock { user_id, asset: 1, amount: 50 })?;
             }
-            _ => { // Unlock
+            _ => {
                 ledger.apply(&LedgerCommand::Unlock { user_id, asset: 1, amount: 50 })?;
             }
         }
@@ -359,10 +331,6 @@ fn main() -> Result<()> {
     println!("    Throughput:   {:.0} ops/sec", tps);
     println!("    Avg Latency:  {:.2?} / op", duration / total_ops as u32);
     println!("--------------------------------------------------");
-
-    // --- Phase 3: Integrity Check Demo ---
-    // In a real test, you could manually corrupt a byte in the file here
-    // and assert that re-opening it causes a Panic/Error.
 
     Ok(())
 }
