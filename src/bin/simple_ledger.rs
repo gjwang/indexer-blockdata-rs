@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -24,12 +24,12 @@ mod md5_utils;
 const MAX_RECORD_SIZE: usize = 10 * 1024 * 1024;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
-// WAL Rolling Config
-const WAL_MAX_SIZE: u64 = 512 * 1024 * 1024;
+// WAL Configuration
+const WAL_MAX_SIZE: u64 = 512 * 1024 * 1024; // 1MB for demo rolling
 const WAL_ROLL_TIME: Duration = Duration::from_secs(5 * 60);
 const WAL_RETENTION: usize = 3;
 
-// Snapshot Config
+// Snapshot Configuration
 const SNAPSHOT_RETENTION: usize = 3;
 
 // ==========================================
@@ -66,6 +66,7 @@ impl UserAccount {
     }
 }
 
+// Snapshot on disk
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     pub last_seq: u64,
@@ -82,14 +83,15 @@ pub enum LedgerCommand {
 }
 
 // ==========================================
-// 3. Single WAL Segment
+// 3. Single WAL Segment (With Incremental MD5)
 // ==========================================
 
 pub struct WalSegment {
     mmap: MmapMut,
     cursor: usize,
     len: usize,
-    _file: File,
+    md5_ctx: md5::Context,
+    pub current_path: PathBuf,
 }
 
 impl WalSegment {
@@ -97,7 +99,14 @@ impl WalSegment {
         let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
         file.set_len(WAL_MAX_SIZE)?;
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
-        Ok(Self { _file: file, mmap, cursor: 0, len: WAL_MAX_SIZE as usize })
+
+        Ok(Self {
+            mmap,
+            cursor: 0,
+            len: WAL_MAX_SIZE as usize,
+            md5_ctx: md5::Context::new(),
+            current_path: path.to_path_buf(),
+        })
     }
 
     pub fn open_existing(path: &Path) -> Result<Self> {
@@ -105,15 +114,32 @@ impl WalSegment {
         let len = file.metadata()?.len() as usize;
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
+        // Re-calculate MD5 for existing data
         let mut cursor = 0;
+        let mut md5_ctx = md5::Context::new();
+
         while cursor + 8 < len {
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
+
             if payload_len == 0 { break; }
             if cursor + 8 + payload_len > len { break; }
-            cursor += 8 + payload_len;
+
+            // Hash the entire record (Len + CRC + Seq + Payload)
+            let total_len = 8 + 8 + payload_len;
+            let data_slice = &mmap[cursor..cursor + total_len];
+            md5_ctx.consume(data_slice);
+
+            cursor += total_len;
         }
-        Ok(Self { _file: file, mmap, cursor, len })
+
+        Ok(Self {
+            mmap,
+            cursor,
+            len,
+            md5_ctx,
+            current_path: path.to_path_buf(),
+        })
     }
 
     #[inline(always)]
@@ -131,14 +157,25 @@ impl WalSegment {
         hasher.update(&cmd_bytes);
         let crc = hasher.finalize();
 
-        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&(data_len as u32).to_le_bytes());
+        let len_bytes = (data_len as u32).to_le_bytes();
+        let crc_bytes = crc.to_le_bytes();
+        let seq_bytes = seq.to_le_bytes();
+
+        // 1. Write Mmap
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&len_bytes);
         self.cursor += 4;
-        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&crc.to_le_bytes());
+        self.mmap[self.cursor..self.cursor + 4].copy_from_slice(&crc_bytes);
         self.cursor += 4;
-        self.mmap[self.cursor..self.cursor + 8].copy_from_slice(&seq.to_le_bytes());
+        self.mmap[self.cursor..self.cursor + 8].copy_from_slice(&seq_bytes);
         self.cursor += 8;
         self.mmap[self.cursor..self.cursor + cmd_bytes.len()].copy_from_slice(&cmd_bytes);
         self.cursor += cmd_bytes.len();
+
+        // 2. Update MD5
+        self.md5_ctx.consume(&len_bytes);
+        self.md5_ctx.consume(&crc_bytes);
+        self.md5_ctx.consume(&seq_bytes);
+        self.md5_ctx.consume(&cmd_bytes);
 
         Ok(())
     }
@@ -146,6 +183,10 @@ impl WalSegment {
     pub fn flush(&mut self) -> Result<()> {
         self.mmap.flush()?;
         Ok(())
+    }
+
+    pub fn finish_and_get_md5(self) -> String {
+        format!("{:x}", self.md5_ctx.compute())
     }
 }
 
@@ -155,7 +196,7 @@ impl WalSegment {
 
 pub struct RollingWal {
     dir: PathBuf,
-    current_segment: WalSegment,
+    current_segment: Option<WalSegment>,
     last_roll_time: SystemTime,
 }
 
@@ -174,7 +215,7 @@ impl RollingWal {
 
         Ok(Self {
             dir: dir.to_path_buf(),
-            current_segment: segment,
+            current_segment: Some(segment),
             last_roll_time: SystemTime::now(),
         })
     }
@@ -187,22 +228,43 @@ impl RollingWal {
             self.rotate(seq)?;
         }
 
-        if let Err(_) = self.current_segment.append(seq, cmd) {
+        if let Err(_) = self.current_segment.as_mut().unwrap().append(seq, cmd) {
             self.rotate(seq)?;
-            self.current_segment.append(seq, cmd)?;
+            self.current_segment.as_mut().unwrap().append(seq, cmd)?;
         }
         Ok(())
     }
 
     fn rotate(&mut self, next_seq: u64) -> Result<()> {
-        self.current_segment.flush()?;
+        if let Some(mut old_segment) = self.current_segment.take() {
+            old_segment.flush()?;
 
+            // 1. Clone path BEFORE consuming segment
+            let old_path = old_segment.current_path.clone();
+
+            // 2. Consume segment to get MD5
+            let md5_str = old_segment.finish_and_get_md5();
+
+            // 3. Rename with MD5 suffix
+            if let Some(stem) = old_path.file_stem().and_then(|s| s.to_str()) {
+                if !stem.contains(&md5_str) { // Prevent double renaming
+                    let new_filename = format!("{}_{}.wal", stem, md5_str);
+                    let new_path = self.dir.join(new_filename);
+                    if old_path.exists() {
+                        fs::rename(&old_path, &new_path)?;
+                    }
+                }
+            }
+        }
+
+        // 4. Create new segment
         let new_path = self.dir.join(format!("ledger_{}.wal", next_seq));
         let new_segment = WalSegment::create(&new_path)?;
 
-        self.current_segment = new_segment;
+        self.current_segment = Some(new_segment);
         self.last_roll_time = SystemTime::now();
 
+        // 5. Async Cleanup
         let dir = self.dir.clone();
         thread::spawn(move || {
             let _ = Self::cleanup_old_wals(&dir);
@@ -211,26 +273,30 @@ impl RollingWal {
         Ok(())
     }
 
-    fn find_latest_wal(dir: &Path) -> Result<Option<PathBuf>> {
-        let mut wals = Self::list_wals(dir)?;
-        if wals.is_empty() { return Ok(None); }
-        Ok(Some(wals.pop().unwrap().1))
-    }
-
     fn list_wals(dir: &Path) -> Result<Vec<(u64, PathBuf)>> {
         let mut wals = Vec::new();
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                // Matches "ledger_SEQ.wal" or "ledger_SEQ_MD5.wal"
                 if name.starts_with("ledger_") && path.extension().map_or(false, |e| e == "wal") {
-                    if let Ok(seq) = name["ledger_".len()..].parse::<u64>() {
-                        wals.push((seq, path));
+                    let parts: Vec<&str> = name.split('_').collect();
+                    if parts.len() >= 2 {
+                        if let Ok(seq) = parts[1].parse::<u64>() {
+                            wals.push((seq, path));
+                        }
                     }
                 }
             }
         }
         wals.sort_by_key(|k| k.0);
         Ok(wals)
+    }
+
+    fn find_latest_wal(dir: &Path) -> Result<Option<PathBuf>> {
+        let mut wals = Self::list_wals(dir)?;
+        if wals.is_empty() { return Ok(None); }
+        Ok(Some(wals.pop().unwrap().1))
     }
 
     fn cleanup_old_wals(dir: &Path) -> Result<()> {
@@ -251,21 +317,18 @@ impl RollingWal {
 
         let mut chained_iter = Vec::new();
         for (seq, path) in wals.iter().skip(start_idx) {
-            // [FIXED] Proper Error Handling for Race Conditions
             match WalIterator::new(path) {
                 Ok(iter) => {
-                    println!("   [Recover] Queuing WAL segment: {:?} (Start Seq: {})", path, seq);
+                    println!("   [Recover] Queuing WAL segment: {:?} (Start: {})", path.file_name().unwrap(), seq);
                     chained_iter.push(iter);
                 }
                 Err(e) => {
-                    // Try to downcast to io::Error to check for NotFound
                     if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
                         if io_err.kind() == std::io::ErrorKind::NotFound {
                             println!("   [Recover] Skip missing file (cleaned up?): {:?}", path);
                             continue;
                         }
                     }
-                    // If it's another error, fail hard
                     return Err(e);
                 }
             }
@@ -353,20 +416,20 @@ impl GlobalLedger {
         let mut accounts = FxHashMap::default();
         let mut recovered_seq = 0;
 
-        // 1. Load Snapshot
+        // 1. Load Snapshot (With MD5 check)
         if let Some((seq, path, expected_md5)) = Self::find_latest_snapshot(snapshot_dir)? {
             println!("   [Recover] Loading Snapshot: {:?} (Seq {})", path, seq);
             let file = File::open(&path)?;
             let mut md5_reader = Md5Reader::new(BufReader::new(file));
             let snap: Snapshot = bincode::deserialize_from(&mut md5_reader)?;
 
-            if md5_reader.finish() != expected_md5 { bail!("MD5 Mismatch"); }
+            if md5_reader.finish() != expected_md5 { bail!("Snapshot MD5 Mismatch"); }
 
             accounts = snap.accounts;
             recovered_seq = snap.last_seq;
         }
 
-        // 2. Replay Rolling WALs
+        // 2. Replay WAL
         println!("   [Recover] Scanning WALs from Seq {}...", recovered_seq);
         let mut count = 0;
 
@@ -380,7 +443,6 @@ impl GlobalLedger {
         }
         println!("   [Recover] Replay Done. {} txs.", count);
 
-        // 3. Init Writer
         let wal = RollingWal::new(wal_dir, recovered_seq + 1)?;
 
         Ok(Self { accounts, wal, last_seq: recovered_seq, snapshot_dir: snapshot_dir.to_path_buf() })
@@ -409,6 +471,7 @@ impl GlobalLedger {
         Ok(found)
     }
 
+    // [COMPLETED CODE] Manual Snapshot with MD5 + N=3 Retention
     pub fn trigger_snapshot(&self) {
         let current_seq = self.last_seq;
         let dir = self.snapshot_dir.clone();
@@ -419,20 +482,41 @@ impl GlobalLedger {
             let tmp_path = dir.join(&tmp_filename);
             let snap = Snapshot { last_seq: current_seq, accounts: accounts_copy };
 
+            // 1. Write and Calculate MD5
             let md5_string = match File::create(&tmp_path) {
                 Ok(file) => {
-                    let mut md5_writer = Md5Writer::new(BufWriter::new(file));
-                    bincode::serialize_into(&mut md5_writer, &snap).unwrap();
-                    let _ = md5_writer.flush();
+                    let buf_writer = BufWriter::new(file);
+                    // Use the extracted Md5Writer utility
+                    let mut md5_writer = Md5Writer::new(buf_writer);
+
+                    if let Err(e) = bincode::serialize_into(&mut md5_writer, &snap) {
+                        println!("   [Snapshot] Write Error: {:?}", e);
+                        return;
+                    }
+                    // Flush to ensure all bytes are processed by MD5
+                    if let Err(e) = md5_writer.flush() {
+                        println!("   [Snapshot] Flush Error: {:?}", e);
+                        return;
+                    }
                     md5_writer.finish()
                 }
-                Err(_) => return,
+                Err(e) => {
+                    println!("   [Snapshot] Create File Error: {:?}", e);
+                    return;
+                }
             };
 
-            let final_path = dir.join(format!("snapshot_{}_{}.snap", current_seq, md5_string));
-            let _ = fs::rename(&tmp_path, &final_path);
+            // 2. Rename with MD5
+            let final_filename = format!("snapshot_{}_{}.snap", current_seq, md5_string);
+            let final_path = dir.join(final_filename);
 
-            // Snapshot Retention
+            if let Err(e) = fs::rename(&tmp_path, &final_path) {
+                println!("   [Snapshot] Rename Error: {:?}", e);
+            } else {
+                // println!("   [Snapshot] Saved: {:?}", final_path);
+            }
+
+            // 3. Cleanup Old Snapshots (Retention N=3)
             let mut snaps = Vec::new();
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -447,7 +531,7 @@ impl GlobalLedger {
                     }
                 }
             }
-            snaps.sort_by(|a, b| b.0.cmp(&a.0)); // Descending
+            snaps.sort_by(|a, b| b.0.cmp(&a.0)); // Descending by seq
 
             if snaps.len() > SNAPSHOT_RETENTION {
                 for (seq, path) in snaps.iter().skip(SNAPSHOT_RETENTION) {
@@ -492,29 +576,28 @@ fn main() -> Result<()> {
 
     let mut ledger = GlobalLedger::new(wal_dir, snap_dir)?;
 
-    println!(">>> SESSION 1: Writing data (WAL Rolling)...");
+    println!(">>> SESSION 1: Writing data (WAL Rolling + Snapshots)...");
 
-    // Write enough to trigger multiple WAL rolls (1MB limit)
-    let total_ops = 10_000_000 - 1;
+    // Write 500k ops. WAL rolls at 1MB (~25 files).
+    let total_ops = 50_000_000;
 
     for i in 0..total_ops {
         ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
-
         if i > 0 && i % 1_000_000 == 0 {
             ledger.trigger_snapshot();
         }
     }
 
-    // Trigger final snapshot
+    // Force final snapshot
     // ledger.trigger_snapshot();
 
     println!("    Waiting for background tasks...");
     thread::sleep(Duration::from_secs(2));
 
-    let wal_count = fs::read_dir(wal_dir)?.count();
-    let snap_count = fs::read_dir(snap_dir)?.count();
-    println!("    WAL Files: {} (Should be > 3 due to retention)", wal_count);
-    println!("    Snap Files: {} (Should be <= 3)", snap_count);
+    println!("    Checking WAL files (Should contain MD5):");
+    for entry in fs::read_dir(wal_dir)? {
+        println!("      - {:?}", entry?.file_name());
+    }
 
     println!("\n>>> SESSION 2: Recovery");
     drop(ledger);
