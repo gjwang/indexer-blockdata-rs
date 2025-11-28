@@ -495,7 +495,7 @@ fn main() -> Result<()> {
     println!(">>> SESSION 1: Writing data (WAL Rolling)...");
 
     // Write enough to trigger multiple WAL rolls (1MB limit)
-    let total_ops = 10_000_123;
+    let total_ops = 10_000_000 - 1;
 
     for i in 0..total_ops {
         ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
@@ -506,7 +506,7 @@ fn main() -> Result<()> {
     }
 
     // Trigger final snapshot
-    ledger.trigger_snapshot();
+    // ledger.trigger_snapshot();
 
     println!("    Waiting for background tasks...");
     thread::sleep(Duration::from_secs(2));
