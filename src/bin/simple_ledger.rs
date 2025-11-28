@@ -579,7 +579,7 @@ fn main() -> Result<()> {
     println!(">>> SESSION 1: Writing data (WAL Rolling + Snapshots)...");
 
     // Write 500k ops. WAL rolls at 1MB (~25 files).
-    let total_ops = 50_000_000;
+    let total_ops = 50_100_123;
 
     for i in 0..total_ops {
         ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
@@ -611,5 +611,30 @@ fn main() -> Result<()> {
         println!("❌ FAILURE");
     }
 
+    {
+        println!("Recovered ledger Ready. Keep Going...");
+        let mut ledger = recovered;
+        for i in 0..total_ops {
+            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
+            if i > 0 && i % 1_000_000 == 0 {
+                ledger.trigger_snapshot();
+            }
+        }
+
+        println!("\n>>> SESSION 3: Recovery");
+        drop(ledger);
+        println!("    Waiting for background tasks...");
+        thread::sleep(Duration::from_secs(1));
+
+        let recovered = GlobalLedger::new(wal_dir, snap_dir)?;
+        println!("    Last Seq: {}", recovered.last_seq);
+
+        let total_ops = total_ops * 2;
+        if recovered.last_seq == total_ops as u64 {
+            println!("✅ SUCCESS last_seq:{}, total_ops={}", recovered.last_seq, total_ops);
+        } else {
+            println!("❌ FAILURE last_seq:{}, total_ops={}", recovered.last_seq, total_ops);
+        }
+    }
     Ok(())
 }
