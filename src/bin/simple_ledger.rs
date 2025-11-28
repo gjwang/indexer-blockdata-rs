@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
@@ -24,13 +24,13 @@ mod md5_utils;
 const MAX_RECORD_SIZE: usize = 10 * 1024 * 1024;
 const READ_BUFFER_SIZE: usize = 1024 * 1024;
 
-// WAL Configuration
-const WAL_MAX_SIZE: u64 = 1 * 1024 * 1024; // 1MB Roll
-const WAL_ROLL_TIME: Duration = Duration::from_secs(5 * 60); // 5 Min
+// WAL Rolling Config
+const WAL_MAX_SIZE: u64 = 512 * 1024 * 1024;
+const WAL_ROLL_TIME: Duration = Duration::from_secs(5 * 60);
 const WAL_RETENTION: usize = 3;
 
-// Snapshot Configuration
-const SNAPSHOT_RETENTION: usize = 3; // Keep latest 3
+// Snapshot Config
+const SNAPSHOT_RETENTION: usize = 3;
 
 // ==========================================
 // 2. Data Structures
@@ -66,7 +66,6 @@ impl UserAccount {
     }
 }
 
-// Snapshot on disk
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
     pub last_seq: u64,
@@ -90,7 +89,6 @@ pub struct WalSegment {
     mmap: MmapMut,
     cursor: usize,
     len: usize,
-    // Keep file handle alive
     _file: File,
 }
 
@@ -190,7 +188,6 @@ impl RollingWal {
         }
 
         if let Err(_) = self.current_segment.append(seq, cmd) {
-            // Full -> Roll
             self.rotate(seq)?;
             self.current_segment.append(seq, cmd)?;
         }
@@ -206,7 +203,6 @@ impl RollingWal {
         self.current_segment = new_segment;
         self.last_roll_time = SystemTime::now();
 
-        // Async Cleanup Old WALs
         let dir = self.dir.clone();
         thread::spawn(move || {
             let _ = Self::cleanup_old_wals(&dir);
@@ -254,8 +250,25 @@ impl RollingWal {
         let start_idx = wals.partition_point(|(seq, _)| *seq <= min_seq).saturating_sub(1);
 
         let mut chained_iter = Vec::new();
-        for (_, path) in wals.iter().skip(start_idx) {
-            chained_iter.push(WalIterator::new(path)?);
+        for (seq, path) in wals.iter().skip(start_idx) {
+            // [FIXED] Proper Error Handling for Race Conditions
+            match WalIterator::new(path) {
+                Ok(iter) => {
+                    println!("   [Recover] Queuing WAL segment: {:?} (Start Seq: {})", path, seq);
+                    chained_iter.push(iter);
+                }
+                Err(e) => {
+                    // Try to downcast to io::Error to check for NotFound
+                    if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
+                        if io_err.kind() == std::io::ErrorKind::NotFound {
+                            println!("   [Recover] Skip missing file (cleaned up?): {:?}", path);
+                            continue;
+                        }
+                    }
+                    // If it's another error, fail hard
+                    return Err(e);
+                }
+            }
         }
         Ok(chained_iter.into_iter().flatten())
     }
@@ -268,6 +281,7 @@ impl RollingWal {
 pub struct WalIterator {
     reader: BufReader<File>,
     cursor: u64,
+    path: PathBuf,
 }
 
 impl WalIterator {
@@ -275,7 +289,7 @@ impl WalIterator {
         let file = File::open(path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
         reader.seek(SeekFrom::Start(0))?;
-        Ok(Self { reader, cursor: 0 })
+        Ok(Self { reader, cursor: 0, path: path.to_path_buf() })
     }
 }
 
@@ -305,7 +319,7 @@ impl Iterator for WalIterator {
         hasher.update(&len_buf);
         hasher.update(&data_buf);
         if hasher.finalize() != stored_crc {
-            return Some(Err(anyhow::anyhow!("CRC Mismatch")));
+            return Some(Err(anyhow::anyhow!("CRC Mismatch in file {:?}", self.path)));
         }
 
         let (seq_bytes, cmd_bytes) = data_buf.split_at(8);
@@ -321,7 +335,7 @@ impl Iterator for WalIterator {
 }
 
 // ==========================================
-// 6. Global Ledger (Simplified Snapshots)
+// 6. Global Ledger
 // ==========================================
 
 pub struct GlobalLedger {
@@ -333,6 +347,7 @@ pub struct GlobalLedger {
 
 impl GlobalLedger {
     pub fn new(wal_dir: &Path, snapshot_dir: &Path) -> Result<Self> {
+        fs::create_dir_all(wal_dir)?;
         fs::create_dir_all(snapshot_dir)?;
 
         let mut accounts = FxHashMap::default();
@@ -394,7 +409,6 @@ impl GlobalLedger {
         Ok(found)
     }
 
-    // [SIMPLIFIED] Manual Trigger with Retention N=3
     pub fn trigger_snapshot(&self) {
         let current_seq = self.last_seq;
         let dir = self.snapshot_dir.clone();
@@ -418,7 +432,7 @@ impl GlobalLedger {
             let final_path = dir.join(format!("snapshot_{}_{}.snap", current_seq, md5_string));
             let _ = fs::rename(&tmp_path, &final_path);
 
-            // Snapshot Retention (Keep Latest N)
+            // Snapshot Retention
             let mut snaps = Vec::new();
             if let Ok(entries) = fs::read_dir(&dir) {
                 for entry in entries.flatten() {
@@ -433,10 +447,8 @@ impl GlobalLedger {
                     }
                 }
             }
-            // Sort Descending (Highest seq first)
-            snaps.sort_by(|a, b| b.0.cmp(&a.0));
+            snaps.sort_by(|a, b| b.0.cmp(&a.0)); // Descending
 
-            // Delete old ones
             if snaps.len() > SNAPSHOT_RETENTION {
                 for (seq, path) in snaps.iter().skip(SNAPSHOT_RETENTION) {
                     println!("   [Cleanup] Deleting old snapshot seq: {}", seq);
@@ -461,7 +473,6 @@ impl GlobalLedger {
                 let bal = user.get_balance_mut(*asset);
                 bal.available += amount;
             }
-            // ... (Simplified logic for brevity, full logic same as before)
             _ => {}
         }
         Ok(())
@@ -484,13 +495,12 @@ fn main() -> Result<()> {
     println!(">>> SESSION 1: Writing data (WAL Rolling)...");
 
     // Write enough to trigger multiple WAL rolls (1MB limit)
-    let total_ops = 500_000;
+    let total_ops = 10_000_123;
 
     for i in 0..total_ops {
         ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
 
-        // Trigger manual snapshot occasionally
-        if i > 0 && i % 100_000 == 0 {
+        if i > 0 && i % 1_000_000 == 0 {
             ledger.trigger_snapshot();
         }
     }
