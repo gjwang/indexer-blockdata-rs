@@ -113,7 +113,7 @@ async fn run_latency_test(
     consumer.subscribe(&[topic])?;
 
     println!("Step 2: Waiting for consumer to be ready (1 seconds)...\n");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // println!("Step 3: Consumer is listening, starting to send messages...\n");
     // let consume_task = consume_messages_realtime(consumer, send_times_for_consumer, latency_records_for_consumer, message_count);
