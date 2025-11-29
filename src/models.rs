@@ -35,3 +35,11 @@ pub struct PositionUpdate {
     pub leverage: f64,
     pub timestamp: i64,
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", content = "data")]
+pub enum UserUpdate {
+    Balance(BalanceUpdate),
+    Order(OrderUpdate),
+    Position(PositionUpdate),
+}

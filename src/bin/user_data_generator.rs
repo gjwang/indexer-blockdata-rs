@@ -1,6 +1,6 @@
 use clap::Parser;
 use fetcher::configure;
-use fetcher::models::BalanceUpdate;
+use fetcher::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate};
 use rand::Rng;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -48,21 +48,63 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut rng = rand::thread_rng();
 
     loop {
-        // Generate random balance update
-        let update = BalanceUpdate {
-            asset: "BTC".to_string(),
-            available: rng.gen_range(0.5..2.0),
-            locked: rng.gen_range(0.0..0.5),
-            total: 0.0, // Calculated below
-            timestamp: chrono::Utc::now().timestamp(),
+        let update_type = rng.gen_range(0..3);
+        let user_update = match update_type {
+            0 => {
+                // Balance Update
+                let available = rng.gen_range(0.5..2.0);
+                let locked = rng.gen_range(0.0..0.5);
+                UserUpdate::Balance(BalanceUpdate {
+                    asset: "BTC".to_string(),
+                    available,
+                    locked,
+                    total: available + locked,
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+            }
+            1 => {
+                // Order Update
+                let price = rng.gen_range(49000.0..51000.0);
+                let quantity = rng.gen_range(0.01..0.5);
+                UserUpdate::Order(OrderUpdate {
+                    order_id: format!("ord_{}", rng.gen_range(1000..9999)),
+                    symbol: "BTC/USDT".to_string(),
+                    side: if rng.gen_bool(0.5) { "buy".to_string() } else { "sell".to_string() },
+                    order_type: "limit".to_string(),
+                    status: "new".to_string(),
+                    price,
+                    quantity,
+                    filled_quantity: 0.0,
+                    remaining_quantity: quantity,
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+            }
+            _ => {
+                // Position Update
+                let entry_price = rng.gen_range(48000.0..50000.0);
+                let mark_price = rng.gen_range(49000.0..51000.0);
+                UserUpdate::Position(PositionUpdate {
+                    symbol: "BTC/USDT".to_string(),
+                    side: "long".to_string(),
+                    quantity: rng.gen_range(0.1..1.0),
+                    entry_price,
+                    mark_price,
+                    liquidation_price: entry_price * 0.8,
+                    unrealized_pnl: (mark_price - entry_price) * 0.1, // Simplified PnL
+                    leverage: 10.0,
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+            }
         };
-        let mut update = update;
-        update.total = update.available + update.locked;
 
-        let payload = serde_json::to_string(&update)?;
+        let payload = serde_json::to_string(&user_update)?;
         let key = user_id.clone();
 
-        println!("Sending update for user {}: {} BTC", user_id, update.total);
+        match &user_update {
+            UserUpdate::Balance(_) => println!("Sending Balance update for user {}", user_id),
+            UserUpdate::Order(_) => println!("Sending Order update for user {}", user_id),
+            UserUpdate::Position(_) => println!("Sending Position update for user {}", user_id),
+        }
 
         let record = FutureRecord::to(&kafka_topic)
             .key(&key)
