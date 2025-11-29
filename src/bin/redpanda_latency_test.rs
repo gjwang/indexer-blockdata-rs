@@ -45,7 +45,7 @@ struct LatencyStats {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let broker = "localhost:9092";
+    let broker = "localhost:9093";
     let topic = "latency-test-topic";
     let group_id = format!("latency-test-{}", chrono::Utc::now().timestamp());
 
