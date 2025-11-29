@@ -1,5 +1,6 @@
+
+use crate::models::{BalanceUpdate, OrderUpdate, PositionUpdate};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 
@@ -17,10 +18,10 @@ impl CentrifugoPublisher {
             .pool_max_idle_per_host(10)
             .pool_idle_timeout(Duration::from_secs(90))
             .tcp_keepalive(Duration::from_secs(60))
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(10))
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .expect("Failed to build HTTP client");
+            .unwrap_or_else(|_| Client::new());
 
         Self {
             client,
@@ -60,11 +61,13 @@ impl CentrifugoPublisher {
     }
 
     /// Generic publish method for any channel and data
-    pub async fn publish<T: Serialize>(
+    pub async fn publish<T: serde::Serialize>(
         &self,
         channel: &str,
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let publish_url = format!("{}/publish", self.api_url);
+        
         let body = json!({
             "channel": channel,
             "data": data
@@ -72,7 +75,7 @@ impl CentrifugoPublisher {
 
         let response = self
             .client
-            .post(&format!("{}/publish", self.api_url))
+            .post(&publish_url)
             .header("X-API-Key", &self.api_key)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -80,28 +83,29 @@ impl CentrifugoPublisher {
             .await?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Centrifugo publish failed: {} - {}", status, error_text).into());
+            let error_text = response.text().await?;
+            return Err(format!("Centrifugo publish error: {}", error_text).into());
         }
 
         Ok(())
     }
 
     /// Publish to multiple users at once (batch)
-    pub async fn publish_to_users<T: Serialize>(
+    pub async fn publish_to_users<T: serde::Serialize + Clone>(
         &self,
-        user_ids: &[&str],
+        user_ids: &[String],
         channel_suffix: &str,
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let commands: Vec<_> = user_ids
+        let batch_url = format!("{}/batch", self.api_url);
+        
+        let commands: Vec<serde_json::Value> = user_ids
             .iter()
             .map(|user_id| {
                 json!({
                     "publish": {
                         "channel": format!("user:{}#{}", user_id, channel_suffix),
-                        "data": data
+                        "data": data.clone()
                     }
                 })
             })
@@ -113,7 +117,7 @@ impl CentrifugoPublisher {
 
         let response = self
             .client
-            .post(&format!("{}/batch", self.api_url))
+            .post(&batch_url)
             .header("X-API-Key", &self.api_key)
             .header("Content-Type", "application/json")
             .json(&body)
@@ -121,57 +125,18 @@ impl CentrifugoPublisher {
             .await?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(format!("Centrifugo batch publish failed: {} - {}", status, error_text).into());
+            let error_text = response.text().await?;
+            return Err(format!("Centrifugo batch publish error: {}", error_text).into());
         }
 
         Ok(())
     }
 }
 
-/// Balance update event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BalanceUpdate {
-    pub asset: String,
-    pub available: f64,
-    pub locked: f64,
-    pub total: f64,
-    pub timestamp: i64,
-}
-
-/// Order update event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OrderUpdate {
-    pub order_id: String,
-    pub symbol: String,
-    pub side: String,        // "buy" or "sell"
-    pub order_type: String,  // "limit", "market", etc.
-    pub status: String,      // "new", "filled", "cancelled", etc.
-    pub price: f64,
-    pub quantity: f64,
-    pub filled_quantity: f64,
-    pub remaining_quantity: f64,
-    pub timestamp: i64,
-}
-
-/// Position update event
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PositionUpdate {
-    pub symbol: String,
-    pub side: String,           // "long" or "short"
-    pub quantity: f64,
-    pub entry_price: f64,
-    pub mark_price: f64,
-    pub liquidation_price: f64,
-    pub unrealized_pnl: f64,
-    pub leverage: f64,
-    pub timestamp: i64,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{BalanceUpdate, OrderUpdate, PositionUpdate}; // Import for test serialization
 
     #[tokio::test]
     async fn test_publisher_creation() {

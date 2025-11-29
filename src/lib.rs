@@ -6,3 +6,4 @@ pub mod scylla_service;
 pub mod simple_kv_storage;
 pub mod centrifugo_publisher;
 pub mod centrifugo_auth;
+pub mod models;

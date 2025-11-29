@@ -9,7 +9,8 @@ use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use fetcher::centrifugo_auth::{CentrifugoTokenGenerator, TokenResponse};
-use fetcher::centrifugo_publisher::{CentrifugoPublisher, BalanceUpdate, OrderUpdate};
+use fetcher::centrifugo_publisher::CentrifugoPublisher;
+use fetcher::models::{BalanceUpdate, OrderUpdate};
 
 /// Application state shared across handlers
 #[derive(Clone)]
