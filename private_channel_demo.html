@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Private Channel Demo</title>
+    <script src="https://unpkg.com/centrifuge@5.2.2/dist/centrifuge.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            opacity: 0.9;
+        }
+
+        .content {
+            padding: 30px;
+        }
+
+        .login-section,
+        .dashboard-section {
+            display: none;
+        }
+
+        .login-section.active,
+        .dashboard-section.active {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status.connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            border: 2px solid #e9ecef;
+        }
+
+        .card h3 {
+            color: #667eea;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .event-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .event {
+            background: white;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            font-size: 14px;
+        }
+
+        .event-time {
+            color: #6c757d;
+            font-size: 12px;
+            margin-bottom: 5px;
+        }
+
+        .event-data {
+            font-family: 'Courier New', monospace;
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 4px;
+            margin-top: 5px;
+            font-size: 12px;
+        }
+
+        .user-info {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .user-info strong {
+            color: #0066cc;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔐 Private Channel Demo</h1>
+            <p>User-specific real-time data streaming with Centrifugo</p>
+        </div>
+
+        <div class="content">
+            <!-- Login Section -->
+            <div class="login-section active" id="loginSection">
+                <h2>Login</h2>
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" placeholder="Enter username" value="demo_user">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" placeholder="Enter password" value="password">
+                </div>
+                <button onclick="login()">Login</button>
+            </div>
+
+            <!-- Dashboard Section -->
+            <div class="dashboard-section" id="dashboardSection">
+                <div class="user-info" id="userInfo"></div>
+
+                <div class="status connecting" id="status">Not Connected</div>
+
+                <button onclick="connect()" id="connectBtn">Connect to Centrifugo</button>
+                <button onclick="disconnect()" id="disconnectBtn" style="margin-left: 10px;"
+                    disabled>Disconnect</button>
+
+                <div class="grid">
+                    <div class="card">
+                        <h3>💰 Balance Updates</h3>
+                        <div class="event-list" id="balanceEvents">
+                            <p style="color: #6c757d; text-align: center;">No events yet</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>📊 Order Updates</h3>
+                        <div class="event-list" id="orderEvents">
+                            <p style="color: #6c757d; text-align: center;">No events yet</p>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h3>📈 Position Updates</h3>
+                        <div class="event-list" id="positionEvents">
+                            <p style="color: #6c757d; text-align: center;">No events yet</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:3000/api';
+        const WS_URL = 'ws://localhost:8000/connection/websocket';
+
+        let accessToken = null;
+        let userId = null;
+        let centrifuge = null;
+        let subscriptions = {};
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+                accessToken = data.access_token;
+                userId = data.user_id;
+
+                document.getElementById('loginSection').classList.remove('active');
+                document.getElementById('dashboardSection').classList.add('active');
+                document.getElementById('userInfo').innerHTML = `
+                    <strong>User ID:</strong> ${userId}<br>
+                    <strong>Status:</strong> Logged in
+                `;
+            } catch (error) {
+                alert('Login failed: ' + error.message);
+            }
+        }
+
+        async function getCentrifugoToken() {
+            const response = await fetch(`${API_BASE}/centrifugo/token`, {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`
+                }
+            });
+            const data = await response.json();
+            return data.centrifugo_token;
+        }
+
+        async function connect() {
+            const token = await getCentrifugoToken();
+
+            centrifuge = new Centrifuge(WS_URL, {
+                token: token,
+                getToken: async () => {
+                    return await getCentrifugoToken();
+                }
+            });
+
+            centrifuge.on('connected', (ctx) => {
+                updateStatus('Connected to Centrifugo', 'connected');
+                document.getElementById('connectBtn').disabled = true;
+                document.getElementById('disconnectBtn').disabled = false;
+                subscribeToChannels();
+            });
+
+            centrifuge.on('disconnected', (ctx) => {
+                updateStatus('Disconnected', 'disconnected');
+                document.getElementById('connectBtn').disabled = false;
+                document.getElementById('disconnectBtn').disabled = true;
+            });
+
+            centrifuge.connect();
+            updateStatus('Connecting...', 'connecting');
+        }
+
+        function subscribeToChannels() {
+            // Subscribe to balance updates
+            console.log(`Subscribing to user:${userId}#balance`);
+            const balanceSub = centrifuge.newSubscription(`user:${userId}#balance`);
+
+            balanceSub.on('publication', (ctx) => {
+                console.log('Balance update received:', ctx);
+                addEvent('balanceEvents', 'Balance Update', ctx.data);
+            });
+
+            balanceSub.on('subscribing', (ctx) => {
+                console.log('Subscribing to balance channel:', ctx);
+            });
+
+            balanceSub.on('subscribed', (ctx) => {
+                console.log('Subscribed to balance channel:', ctx);
+            });
+
+            balanceSub.on('error', (ctx) => {
+                console.error('Subscription error:', ctx);
+            });
+
+            balanceSub.subscribe();
+            subscriptions.balance = balanceSub;
+
+            // Subscribe to order updates
+            const orderSub = centrifuge.newSubscription(`user:${userId}#orders`);
+            orderSub.on('publication', (ctx) => {
+                addEvent('orderEvents', 'Order Update', ctx.data);
+            });
+            orderSub.subscribe();
+            subscriptions.orders = orderSub;
+
+            // Subscribe to position updates
+            const positionSub = centrifuge.newSubscription(`user:${userId}#positions`);
+            positionSub.on('publication', (ctx) => {
+                addEvent('positionEvents', 'Position Update', ctx.data);
+            });
+            positionSub.subscribe();
+            subscriptions.positions = positionSub;
+        }
+
+        function disconnect() {
+            if (centrifuge) {
+                centrifuge.disconnect();
+            }
+        }
+
+        function updateStatus(message, type) {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = `status ${type}`;
+        }
+
+        function addEvent(containerId, title, data) {
+            const container = document.getElementById(containerId);
+
+            // Clear "no events" message
+            if (container.querySelector('p')) {
+                container.innerHTML = '';
+            }
+
+            const eventEl = document.createElement('div');
+            eventEl.className = 'event';
+            eventEl.innerHTML = `
+                <div class="event-time">${new Date().toLocaleTimeString()}</div>
+                <strong>${title}</strong>
+                <div class="event-data">${JSON.stringify(data, null, 2)}</div>
+            `;
+
+            container.insertBefore(eventEl, container.firstChild);
+
+            // Keep only last 10 events
+            while (container.children.length > 10) {
+                container.removeChild(container.lastChild);
+            }
+        }
+    </script>
+</body>
+
+</html>

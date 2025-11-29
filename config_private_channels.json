@@ -6,7 +6,9 @@
         "allowed_origins": [
             "*"
         ],
-        "allow_anonymous_connect_without_token": true
+        "allow_anonymous_connect_without_token": true,
+        "user_subscribe_to_personal": true,
+        "user_personal_channel_namespace": "user"
     },
     "channel": {
         "namespaces": [
