@@ -5,7 +5,8 @@
         },
         "allowed_origins": [
             "*"
-        ]
+        ],
+        "allow_anonymous_connect_without_token": true
     },
     "channel": {
         "namespaces": [
@@ -16,6 +17,13 @@
                 "history_ttl": "300s",
                 "join_leave": true,
                 "presence": true
+            },
+            {
+                "name": "news2",
+                "allow_subscribe_for_client": true,
+                "allow_subscribe_for_anonymous": true,
+                "history_size": 100,
+                "history_ttl": "300s"
             }
         ]
     },

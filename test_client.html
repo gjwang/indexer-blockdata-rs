@@ -7,105 +7,289 @@
     <title>Centrifugo Test Client</title>
     <style>
         body {
-            font-family: sans-serif;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            margin: 0;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .control-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 5px;
+            color: #555;
+        }
+
+        select,
+        button {
+            padding: 10px 15px;
+            border-radius: 6px;
+            border: 2px solid #ddd;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        select {
+            width: 100%;
+            background: white;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        #status {
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        .status-connecting {
+            background: #fff3cd;
+            color: #856404;
+        }
+
+        .status-connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .status-disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        .status-subscribed {
+            background: #d1ecf1;
+            color: #0c5460;
         }
 
         #messages {
-            border: 1px solid #ccc;
-            padding: 10px;
-            height: 400px;
-            overflow-y: scroll;
+            border: 2px solid #e9ecef;
+            padding: 15px;
+            height: 450px;
+            overflow-y: auto;
             background: #f9f9f9;
+            border-radius: 8px;
         }
 
         .message {
-            border-bottom: 1px solid #eee;
-            padding: 5px 0;
+            background: white;
+            border-left: 4px solid #667eea;
+            padding: 12px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
         }
 
         .timestamp {
-            color: #888;
-            font-size: 0.8em;
-            margin-right: 10px;
+            color: #6c757d;
+            font-size: 0.85em;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .message-data {
+            font-family: 'Courier New', monospace;
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 4px;
+            overflow-x: auto;
+        }
+
+        .info {
+            background: #e7f3ff;
+            padding: 10px;
+            border-radius: 6px;
+            margin-bottom: 10px;
+            border-left: 4px solid #0066cc;
         }
     </style>
-    <script src="https://unpkg.com/centrifuge@5.0.1/dist/centrifuge.js"></script>
+    <script src="https://unpkg.com/centrifuge@5.2.2/dist/centrifuge.js"></script>
 </head>
 
 <body>
-    <h1>Centrifugo Stream: 'news'</h1>
-    <div id="status">Connecting...</div>
-    <div id="messages"></div>
+    <div class="container">
+        <h1>🚀 Centrifugo Test Client</h1>
+        <p style="color: #666;">Select a channel and connect to start receiving messages</p>
+
+        <div class="controls">
+            <div class="control-group">
+                <label for="channelSelect">Select Channel:</label>
+                <select id="channelSelect">
+                    <option value="news:updates">news:updates (Requires JWT Token)</option>
+                    <option value="news2:updates">news2:updates (Anonymous - No Token)</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <button id="connectBtn" onclick="connectToChannel()">Connect & Subscribe</button>
+                <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            </div>
+        </div>
+
+        <div id="status" class="status-connecting">Not Connected</div>
+        <div id="messages">
+            <div class="info">👆 Select a channel above and click "Connect & Subscribe" to start</div>
+        </div>
+    </div>
 
     <script>
         const container = document.getElementById('messages');
         const statusDiv = document.getElementById('status');
+        const channelSelect = document.getElementById('channelSelect');
+        const connectBtn = document.getElementById('connectBtn');
+        const disconnectBtn = document.getElementById('disconnectBtn');
 
-        // Connect to Centrifugo with Token
-        // Token generated for subject "rust_client" with secret "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"
-        // This token has a very long expiration time.
+        let centrifuge = null;
+        let currentSubscription = null;
+
+        // JWT Token for authenticated channels (news:*)
         const token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJydXN0X2NsaWVudCIsImV4cCI6MTE3NjQ0MjQwODF9.6VYR8h8nw7vRRsasXMvukzlO0o0i7Ea26f5XJb0jjmM";
 
-        const centrifuge = new Centrifuge('ws://localhost:8000/connection/websocket');
-        centrifuge.setToken(token);
+        function updateStatus(message, className) {
+            statusDiv.textContent = message;
+            statusDiv.className = className;
+        }
 
-        centrifuge.on('connected', function (ctx) {
-            statusDiv.textContent = "Connected to Centrifugo";
-            statusDiv.style.color = "green";
-        });
-
-        centrifuge.on('disconnected', function (ctx) {
-            statusDiv.textContent = "Disconnected: " + ctx.reason;
-            statusDiv.style.color = "red";
-        });
-
-        // Subscribe to channel
-        const sub = centrifuge.newSubscription('news:updates');
-
-        sub.on('subscribed', function (ctx) {
-            console.log('Subscribed to news:updates', ctx);
+        function addMessage(content, type = 'message') {
             const div = document.createElement('div');
-            div.className = 'status connected';
-            div.textContent = "Subscribed to channel 'news:updates'";
-            container.prepend(div);
-        });
+            div.className = type === 'info' ? 'info' : 'message';
 
-        sub.on('error', function (ctx) {
-            console.error('Subscription error:', ctx);
-            const div = document.createElement('div');
-            div.className = 'status disconnected';
-            div.textContent = "Subscription error: " + JSON.stringify(ctx);
-            container.prepend(div);
-        });
-
-        sub.on('unsubscribed', function (ctx) {
-            console.warn('Unsubscribed:', ctx);
-        });
-
-        sub.on('publication', function (ctx) {
-            console.log('Received publication:', ctx);
-            const div = document.createElement('div');
-            div.className = 'message';
-            const time = new Date().toLocaleTimeString();
-
-            let displayData = ctx.data;
-            if (ctx.data && ctx.data.content) {
-                try {
-                    // Try to parse the inner content if it's a string
-                    displayData = JSON.parse(ctx.data.content);
-                } catch (e) {
-                    displayData = ctx.data.content;
-                }
+            if (type === 'message') {
+                const time = new Date().toLocaleTimeString();
+                div.innerHTML = `
+                    <span class="timestamp">📨 ${time}</span>
+                    <div class="message-data">${JSON.stringify(content, null, 2)}</div>
+                `;
+            } else {
+                div.textContent = content;
             }
 
-            div.innerHTML = `<span class="timestamp">${time}</span> <span>${JSON.stringify(displayData, null, 2)}</span>`;
-            container.prepend(div);
+            container.insertBefore(div, container.firstChild);
+        }
+
+        function connectToChannel() {
+            const selectedChannel = channelSelect.value;
+            const isAnonymous = selectedChannel.startsWith('news2:');
+
+            // Clean up existing connection
+            if (centrifuge) {
+                centrifuge.disconnect();
+            }
+
+            container.innerHTML = '';
+            updateStatus('Connecting...', 'status-connecting');
+
+            // Create new Centrifuge instance
+            const config = {};
+            if (!isAnonymous) {
+                config.token = token;
+            }
+
+            centrifuge = new Centrifuge('ws://localhost:8000/connection/websocket', config);
+
+            centrifuge.on('connected', function (ctx) {
+                const authType = isAnonymous ? 'Anonymous' : 'Authenticated';
+                updateStatus(`✓ Connected (${authType})`, 'status-connected');
+                addMessage(`Connected to Centrifugo - ${authType} mode`, 'info');
+            });
+
+            centrifuge.on('disconnected', function (ctx) {
+                updateStatus('✗ Disconnected: ' + ctx.reason, 'status-disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+            });
+
+            // Subscribe to selected channel
+            currentSubscription = centrifuge.newSubscription(selectedChannel);
+
+            currentSubscription.on('subscribed', function (ctx) {
+                updateStatus(`✓ Subscribed to ${selectedChannel}`, 'status-subscribed');
+                addMessage(`Successfully subscribed to channel: ${selectedChannel}`, 'info');
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+            });
+
+            currentSubscription.on('error', function (ctx) {
+                console.error('Subscription error:', ctx);
+                updateStatus('✗ Subscription Error', 'status-disconnected');
+                addMessage(`Subscription error: ${JSON.stringify(ctx)}`, 'info');
+            });
+
+            currentSubscription.on('publication', function (ctx) {
+                console.log('Received publication:', ctx);
+                addMessage(ctx.data, 'message');
+            });
+
+            currentSubscription.subscribe();
+            centrifuge.connect();
+        }
+
+        function disconnect() {
+            if (centrifuge) {
+                centrifuge.disconnect();
+                updateStatus('Disconnected', 'status-disconnected');
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                addMessage('Disconnected from Centrifugo', 'info');
+            }
+        }
+
+        // Update button states on channel change
+        channelSelect.addEventListener('change', function () {
+            if (centrifuge && centrifuge.state === 'connected') {
+                addMessage('Channel changed. Click "Connect & Subscribe" to switch channels.', 'info');
+            }
         });
-
-        sub.subscribe();
-
-        centrifuge.connect();
     </script>
 </body>
 
