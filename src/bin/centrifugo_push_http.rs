@@ -82,9 +82,17 @@ async fn run_http_bridge(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let kafka_group_id = format!("{}-{}", base_group_id, chrono::Utc::now().timestamp());
 
-    // Create HTTP client
-    let client = reqwest::Client::new();
+    // Create optimized HTTP client with connection pooling
+    let client = reqwest::Client::builder()
+        .pool_max_idle_per_host(10)  // Keep 10 idle connections ready for reuse
+        .pool_idle_timeout(std::time::Duration::from_secs(90))  // Keep connections alive for 90s
+        .tcp_keepalive(std::time::Duration::from_secs(60))  // TCP keep-alive every 60s
+        .timeout(std::time::Duration::from_secs(30))  // Overall request timeout
+        .connect_timeout(std::time::Duration::from_secs(10))  // Connection timeout
+        .build()?;
     let publish_url = format!("{}/publish", centrifugo_url);
+    
+    println!("HTTP client configured with connection pooling:");
 
     println!("Centrifugo HTTP API URL: {}", publish_url);
     println!("Using API Key: {}...", &api_key.chars().take(10).collect::<String>());
