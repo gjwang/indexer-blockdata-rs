@@ -11,14 +11,16 @@
         "namespaces": [
             {
                 "name": "news",
-                "allow_publish_for_client": true,
                 "allow_subscribe_for_client": true,
-                "history_size": 1,
-                "history_ttl": "30s",
+                "history_size": 100,
+                "history_ttl": "300s",
                 "join_leave": true,
                 "presence": true
             }
         ]
+    },
+    "http_api": {
+        "key": "your_secure_api_key_here_change_this_in_production"
     },
     "admin": {
         "enabled": true,
