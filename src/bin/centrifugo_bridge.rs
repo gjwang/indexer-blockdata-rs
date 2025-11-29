@@ -94,17 +94,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
 
-                        // Deserialize payload as generic JSON
-                        match serde_json::from_str::<serde_json::Value>(payload_str) {
-                            Ok(json_payload) => {
-                                let result = publisher.publish_user_update(user_id, &json_payload).await;
+                        // Publish raw JSON directly without deserializing
+                        let result = publisher.publish_raw_json(user_id, payload_str).await;
 
-                                match result {
-                                    Ok(_) => println!("✓ Pushed to Centrifugo for user: {}", user_id),
-                                    Err(e) => eprintln!("✗ Centrifugo push failed: {}", e),
-                                }
-                            }
-                            Err(e) => eprintln!("✗ Failed to parse message as JSON: {}", e),
+                        match result {
+                            Ok(_) => println!("✓ Pushed to Centrifugo for user: {}", user_id),
+                            Err(e) => eprintln!("✗ Centrifugo push failed: {}", e),
                         }
                     }
                 }

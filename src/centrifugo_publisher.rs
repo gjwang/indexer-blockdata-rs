@@ -40,6 +40,39 @@ impl CentrifugoPublisher {
         self.publish(&channel, update).await
     }
 
+    /// Publish raw JSON string to the user's private channel
+    /// This avoids deserializing and re-serializing the payload
+    pub async fn publish_raw_json(
+        &self,
+        user_id: &str,
+        raw_json: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel = format!("user:{}", user_id);
+        
+        // We need to construct the body manually to avoid escaping the raw_json string
+        // The raw_json is already a valid JSON string, so we inject it directly into the data field
+        let body_str = format!(r#"{{"channel":"{}","data":{}}}"#, channel, raw_json);
+        let body: serde_json::Value = serde_json::from_str(&body_str)?;
+
+        let publish_url = format!("{}/publish", self.api_url);
+
+        let response = self
+            .client
+            .post(&publish_url)
+            .header("X-API-Key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(format!("Centrifugo publish error: {}", error_text).into());
+        }
+
+        Ok(())
+    }
+
     /// Publish balance update to a specific user's private channel
     pub async fn publish_balance_update(
         &self,
