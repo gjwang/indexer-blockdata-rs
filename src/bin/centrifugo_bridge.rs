@@ -1,7 +1,7 @@
 use clap::Parser;
 use fetcher::centrifugo_publisher::CentrifugoPublisher;
 use fetcher::configure;
-use fetcher::models::BalanceUpdate;
+use fetcher::models::UserUpdate;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message;
@@ -86,10 +86,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
 
                         // Deserialize payload
-                        match serde_json::from_str::<BalanceUpdate>(payload_str) {
-                            Ok(update) => {
-                                match publisher.publish_balance_update(user_id, update).await {
-                                    Ok(_) => println!("✓ Pushed to Centrifugo channel user:{}#balance", user_id),
+                        match serde_json::from_str::<UserUpdate>(payload_str) {
+                            Ok(user_update) => {
+                                let result = match user_update {
+                                    UserUpdate::Balance(update) => {
+                                        publisher.publish_balance_update(user_id, update).await
+                                    }
+                                    UserUpdate::Order(update) => {
+                                        publisher.publish_order_update(user_id, update).await
+                                    }
+                                    UserUpdate::Position(update) => {
+                                        publisher.publish_position_update(user_id, update).await
+                                    }
+                                };
+
+                                match result {
+                                    Ok(_) => println!("✓ Pushed to Centrifugo for user: {}", user_id),
                                     Err(e) => eprintln!("✗ Centrifugo push failed: {}", e),
                                 }
                             }
