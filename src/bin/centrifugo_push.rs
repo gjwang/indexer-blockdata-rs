@@ -42,7 +42,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let centrifugo_channel = args.channel.unwrap_or(config.centrifugo_channel);
     let kafka_broker = args.kafka_broker.unwrap_or(config.kafka_broker);
     let kafka_topic = args.kafka_topic.unwrap_or(config.kafka_topic);
-    let kafka_group_id = args.group_id.unwrap_or(config.kafka_group_id);
+    let base_group_id = args.group_id.unwrap_or(config.kafka_group_id);
+    let kafka_group_id = format!("{}-{}", base_group_id, chrono::Utc::now().timestamp());
 
     // 1. Connect to Centrifugo
     let url = Url::parse(&centrifugo_url)?;
@@ -83,19 +84,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // We need to handle reading from WS (to keep connection alive/handle pings) 
     // and reading from Kafka concurrently.
-    
+    let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(10));
+    ping_interval.tick().await; // Consume first tick
+    let mut command_id = 2; // Start from 2, as 1 was connect
+
     loop {
         tokio::select! {
+            // Send Keepalive Ping
+            _ = ping_interval.tick() => {
+                // Send dummy publish as ping to keep connection alive
+                // (Standard ping command is not supported/working in this client mode)
+                let ping_cmd = json!({
+                    "id": command_id,
+                    "publish": {
+                        "channel": "ping",
+                        "data": {}
+                    }
+                });
+                command_id += 1;
+
+                if let Err(e) = write.send(Message::Text(ping_cmd.to_string())).await {
+                     eprintln!("Failed to send ping to Centrifugo: {}", e);
+                     break;
+                }
+                // println!("Sent keepalive ping");
+            }
+
             // Handle incoming WebSocket messages (pings, replies, etc.)
             ws_msg = read.next() => {
                 match ws_msg {
                     Some(Ok(msg)) => {
+                        // println!("Received WebSocket message: {:?}", msg);
                         if msg.is_close() {
                             println!("Centrifugo connection closed");
                             break;
                         }
-                        // Ignore other messages for now, or log them
-                        // println!("Received from Centrifugo: {}", msg);
                     }
                     Some(Err(e)) => {
                         eprintln!("Centrifugo WebSocket error: {}", e);
@@ -116,8 +139,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if let Ok(payload_str) = std::str::from_utf8(payload) {
                                 println!("Received from Kafka: {}", payload_str);
 
-                                // Construct Publish command
+                                // Construct Publish command using Command style
                                 let publish_msg = json!({
+                                    "id": command_id,
                                     "publish": {
                                         "channel": centrifugo_channel,
                                         "data": {
@@ -125,8 +149,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         }
                                     }
                                 });
+                                command_id += 1;
 
-                                if let Err(e) = write.send(Message::Text(publish_msg.to_string())).await {
+                                let msg_str = publish_msg.to_string();
+                                println!("Sending to Centrifugo: {}", msg_str);
+
+                                if let Err(e) = write.send(Message::Text(msg_str)).await {
                                     eprintln!("Failed to send to Centrifugo: {}", e);
                                     break;
                                 }
