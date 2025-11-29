@@ -117,34 +117,33 @@ async fn run_bridge(
 
     loop {
         tokio::select! {
-            // Send Keepalive Ping
-            _ = ping_interval.tick() => {
-                // Send dummy publish as ping to keep connection alive
-                // (Standard ping command is not supported/working in this client mode)
-                let ping_cmd = json!({
-                    "id": command_id,
-                    "publish": {
-                        "channel": "ping",
-                        "data": {}
-                    }
-                });
-                command_id += 1;
-
-                if let Err(e) = write.send(Message::Text(ping_cmd.to_string())).await {
-                     eprintln!("Failed to send ping to Centrifugo: {}", e);
-                     return Err(Box::new(e));
-                }
-                // println!("Sent keepalive ping");
-            }
-
             // Handle incoming WebSocket messages (pings, replies, etc.)
             ws_msg = read.next() => {
                 match ws_msg {
                     Some(Ok(msg)) => {
-                        // println!("Received WebSocket message: {:?}", msg);
-                        if msg.is_close() {
-                            println!("Centrifugo connection closed");
-                            return Err("Centrifugo connection closed".into());
+                        match msg {
+                            Message::Text(text) => {
+                                // println!("Received Text: {}", text);
+                                if text == "{}" {
+                                    // println!("Received empty JSON (Ping) from server, sending Pong...");
+                                    if let Err(e) = write.send(Message::Text("{}".to_string())).await {
+                                        eprintln!("Failed to send Pong: {}", e);
+                                        return Err(Box::new(e));
+                                    }
+                                }
+                            }
+                            Message::Ping(data) => {
+                                // println!("Received Ping from server, sending Pong...");
+                                if let Err(e) = write.send(Message::Pong(data)).await {
+                                    eprintln!("Failed to send Pong: {}", e);
+                                    return Err(Box::new(e));
+                                }
+                            }
+                            Message::Close(frame) => {
+                                println!("Centrifugo connection closed: {:?}", frame);
+                                return Err("Centrifugo connection closed".into());
+                            }
+                            _ => {}
                         }
                     }
                     Some(Err(e)) => {
