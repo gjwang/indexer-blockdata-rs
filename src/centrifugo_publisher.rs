@@ -1,5 +1,5 @@
 
-use crate::models::{BalanceUpdate, OrderUpdate, PositionUpdate};
+use crate::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate};
 use reqwest::Client;
 use serde_json::json;
 use std::time::Duration;
@@ -30,14 +30,23 @@ impl CentrifugoPublisher {
         }
     }
 
+    /// Publish user update (Balance, Order, or Position) to the user's private channel
+    pub async fn publish_user_update(
+        &self,
+        user_id: &str,
+        update: UserUpdate,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let channel = format!("user:{}", user_id);
+        self.publish(&channel, &update).await
+    }
+
     /// Publish balance update to a specific user's private channel
     pub async fn publish_balance_update(
         &self,
         user_id: &str,
         balance_data: BalanceUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let channel = format!("user:{}#balance", user_id);
-        self.publish(&channel, &balance_data).await
+        self.publish_user_update(user_id, UserUpdate::Balance(balance_data)).await
     }
 
     /// Publish order update to a specific user's private channel
@@ -46,8 +55,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         order_data: OrderUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let channel = format!("user:{}#orders", user_id);
-        self.publish(&channel, &order_data).await
+        self.publish_user_update(user_id, UserUpdate::Order(order_data)).await
     }
 
     /// Publish position update to a specific user's private channel
@@ -56,8 +64,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         position_data: PositionUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let channel = format!("user:{}#positions", user_id);
-        self.publish(&channel, &position_data).await
+        self.publish_user_update(user_id, UserUpdate::Position(position_data)).await
     }
 
     /// Generic publish method for any channel and data

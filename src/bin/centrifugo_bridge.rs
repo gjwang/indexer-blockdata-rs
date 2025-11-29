@@ -88,17 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // Deserialize payload
                         match serde_json::from_str::<UserUpdate>(payload_str) {
                             Ok(user_update) => {
-                                let result = match user_update {
-                                    UserUpdate::Balance(update) => {
-                                        publisher.publish_balance_update(user_id, update).await
-                                    }
-                                    UserUpdate::Order(update) => {
-                                        publisher.publish_order_update(user_id, update).await
-                                    }
-                                    UserUpdate::Position(update) => {
-                                        publisher.publish_position_update(user_id, update).await
-                                    }
-                                };
+                                let result = publisher.publish_user_update(user_id, user_update).await;
 
                                 match result {
                                     Ok(_) => println!("✓ Pushed to Centrifugo for user: {}", user_id),
