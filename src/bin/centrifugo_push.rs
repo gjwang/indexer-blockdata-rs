@@ -38,17 +38,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let centrifugo_url = args.url.unwrap_or(config.centrifugo_url);
-    let centrifugo_channel = args.channel.unwrap_or(config.centrifugo_channel);
-    let kafka_broker = args.kafka_broker.unwrap_or(config.kafka_broker);
-    let kafka_topic = args.kafka_topic.unwrap_or(config.kafka_topic);
-    let base_group_id = args.group_id.unwrap_or(config.kafka_group_id);
+    let centrifugo_url = args.url.clone().unwrap_or(config.centrifugo_url.clone());
+    let centrifugo_channel = args.channel.clone().unwrap_or(config.centrifugo_channel.clone());
+    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka_broker.clone());
+    let kafka_topic = args.kafka_topic.clone().unwrap_or(config.kafka_topic.clone());
+    let base_group_id = args.group_id.clone().unwrap_or(config.kafka_group_id.clone());
+
+    loop {
+        println!("Starting bridge...");
+        if let Err(e) = run_bridge(
+            &centrifugo_url,
+            &centrifugo_channel,
+            &kafka_broker,
+            &kafka_topic,
+            &base_group_id,
+        ).await {
+            eprintln!("Bridge error: {}", e);
+        } else {
+            eprintln!("Bridge exited unexpectedly");
+        }
+
+        println!("Reconnecting in 1 seconds...");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+}
+
+async fn run_bridge(
+    centrifugo_url: &str,
+    centrifugo_channel: &str,
+    kafka_broker: &str,
+    kafka_topic: &str,
+    base_group_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let kafka_group_id = format!("{}-{}", base_group_id, chrono::Utc::now().timestamp());
 
     // 1. Connect to Centrifugo
-    let url = Url::parse(&centrifugo_url)?;
+    let url = Url::parse(centrifugo_url)?;
     println!("Connecting to Centrifugo at {}", url);
-    let (ws_stream, _) = connect_async(url).await.expect("Failed to connect to Centrifugo");
+    let (ws_stream, _) = connect_async(url).await?;
     println!("Connected to Centrifugo");
 
     let (mut write, mut read) = ws_stream.split();
@@ -70,13 +97,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 2. Connect to Redpanda
     println!("Connecting to Redpanda at {}", kafka_broker);
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", &kafka_broker)
+        .set("bootstrap.servers", kafka_broker)
         .set("group.id", &kafka_group_id)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
         .create()?;
 
-    consumer.subscribe(&[&kafka_topic])?;
+    consumer.subscribe(&[kafka_topic])?;
     println!("Subscribed to topic: {}", kafka_topic);
 
     // 3. Consume and Forward Loop
@@ -105,7 +132,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 if let Err(e) = write.send(Message::Text(ping_cmd.to_string())).await {
                      eprintln!("Failed to send ping to Centrifugo: {}", e);
-                     break;
+                     return Err(Box::new(e));
                 }
                 // println!("Sent keepalive ping");
             }
@@ -117,16 +144,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         // println!("Received WebSocket message: {:?}", msg);
                         if msg.is_close() {
                             println!("Centrifugo connection closed");
-                            break;
+                            return Err("Centrifugo connection closed".into());
                         }
                     }
                     Some(Err(e)) => {
                         eprintln!("Centrifugo WebSocket error: {}", e);
-                        break;
+                        return Err(Box::new(e));
                     }
                     None => {
                         println!("Centrifugo stream ended");
-                        break;
+                        return Err("Centrifugo stream ended".into());
                     }
                 }
             }
@@ -156,18 +183,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                                 if let Err(e) = write.send(Message::Text(msg_str)).await {
                                     eprintln!("Failed to send to Centrifugo: {}", e);
-                                    break;
+                                    return Err(Box::new(e));
                                 }
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Kafka receive error: {}", e);
+                        // Don't exit on Kafka error, just log it? Or maybe exit to reconnect?
+                        // For now, let's log and continue, unless it's fatal.
                     }
                 }
             }
         }
     }
-
-    Ok(())
 }
