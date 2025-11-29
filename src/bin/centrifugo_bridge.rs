@@ -1,7 +1,6 @@
 use clap::Parser;
 use fetcher::centrifugo_publisher::CentrifugoPublisher;
 use fetcher::configure;
-use fetcher::models::UserUpdate;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message;
@@ -95,17 +94,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             continue;
                         }
 
-                        // Deserialize payload
-                        match serde_json::from_str::<UserUpdate>(payload_str) {
-                            Ok(user_update) => {
-                                let result = publisher.publish_user_update(user_id, user_update).await;
+                        // Deserialize payload as generic JSON
+                        match serde_json::from_str::<serde_json::Value>(payload_str) {
+                            Ok(json_payload) => {
+                                let result = publisher.publish_user_update(user_id, &json_payload).await;
 
                                 match result {
                                     Ok(_) => println!("✓ Pushed to Centrifugo for user: {}", user_id),
                                     Err(e) => eprintln!("✗ Centrifugo push failed: {}", e),
                                 }
                             }
-                            Err(e) => eprintln!("✗ Failed to parse message: {}", e),
+                            Err(e) => eprintln!("✗ Failed to parse message as JSON: {}", e),
                         }
                     }
                 }

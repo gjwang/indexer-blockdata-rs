@@ -30,14 +30,14 @@ impl CentrifugoPublisher {
         }
     }
 
-    /// Publish user update (Balance, Order, or Position) to the user's private channel
-    pub async fn publish_user_update(
+    /// Publish user update to the user's private channel
+    pub async fn publish_user_update<T: serde::Serialize>(
         &self,
         user_id: &str,
-        update: UserUpdate,
+        update: &T,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let channel = format!("user:{}", user_id);
-        self.publish(&channel, &update).await
+        self.publish(&channel, update).await
     }
 
     /// Publish balance update to a specific user's private channel
@@ -46,7 +46,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         balance_data: BalanceUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, UserUpdate::Balance(balance_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Balance(balance_data)).await
     }
 
     /// Publish order update to a specific user's private channel
@@ -55,7 +55,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         order_data: OrderUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, UserUpdate::Order(order_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Order(order_data)).await
     }
 
     /// Publish position update to a specific user's private channel
@@ -64,7 +64,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         position_data: PositionUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, UserUpdate::Position(position_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Position(position_data)).await
     }
 
     /// Generic publish method for any channel and data
