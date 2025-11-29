@@ -324,45 +324,41 @@
         }
 
         function subscribeToChannels() {
-            // Subscribe to balance updates
-            console.log(`Subscribing to user:${userId}#balance`);
-            const balanceSub = centrifuge.newSubscription(`user:${userId}#balance`);
+            // Subscribe to single user channel
+            const channel = `user:${userId}`;
+            console.log(`Subscribing to ${channel}`);
+            const sub = centrifuge.newSubscription(channel);
 
-            balanceSub.on('publication', (ctx) => {
-                console.log('Balance update received:', ctx);
-                addEvent('balanceEvents', 'Balance Update', ctx.data);
+            sub.on('publication', (ctx) => {
+                console.log('Update received:', ctx);
+                const update = ctx.data;
+                
+                // Dispatch based on type
+                if (update.type === 'Balance') {
+                    addEvent('balanceEvents', 'Balance Update', update.data);
+                } else if (update.type === 'Order') {
+                    addEvent('orderEvents', 'Order Update', update.data);
+                } else if (update.type === 'Position') {
+                    addEvent('positionEvents', 'Position Update', update.data);
+                } else {
+                    console.warn('Unknown update type:', update);
+                }
             });
 
-            balanceSub.on('subscribing', (ctx) => {
-                console.log('Subscribing to balance channel:', ctx);
+            sub.on('subscribing', (ctx) => {
+                console.log('Subscribing to channel:', ctx);
             });
 
-            balanceSub.on('subscribed', (ctx) => {
-                console.log('Subscribed to balance channel:', ctx);
+            sub.on('subscribed', (ctx) => {
+                console.log('Subscribed to channel:', ctx);
             });
 
-            balanceSub.on('error', (ctx) => {
+            sub.on('error', (ctx) => {
                 console.error('Subscription error:', ctx);
             });
 
-            balanceSub.subscribe();
-            subscriptions.balance = balanceSub;
-
-            // Subscribe to order updates
-            const orderSub = centrifuge.newSubscription(`user:${userId}#orders`);
-            orderSub.on('publication', (ctx) => {
-                addEvent('orderEvents', 'Order Update', ctx.data);
-            });
-            orderSub.subscribe();
-            subscriptions.orders = orderSub;
-
-            // Subscribe to position updates
-            const positionSub = centrifuge.newSubscription(`user:${userId}#positions`);
-            positionSub.on('publication', (ctx) => {
-                addEvent('positionEvents', 'Position Update', ctx.data);
-            });
-            positionSub.subscribe();
-            subscriptions.positions = positionSub;
+            sub.subscribe();
+            subscriptions.main = sub;
         }
 
         function disconnect() {
