@@ -28,6 +28,10 @@ struct Args {
     /// Kafka Group ID
     #[arg(long)]
     group_id: Option<String>,
+
+    /// Use a random group ID (useful for development to avoid rebalance delays)
+    #[arg(long)]
+    random_group_id: bool,
 }
 
 #[tokio::main]
@@ -44,8 +48,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(config.kafka_broker.clone());
     let kafka_topic = args.kafka_topic.clone()
         .unwrap_or("user_updates".to_string());
-    let group_id = args.group_id.clone()
-        .unwrap_or("centrifugo-bridge".to_string());
+    
+    let group_id = if args.random_group_id {
+        format!("centrifugo-bridge-{}", uuid::Uuid::new_v4())
+    } else {
+        args.group_id.clone().unwrap_or("centrifugo-bridge".to_string())
+    };
 
     println!("=== Centrifugo Bridge ===");
     println!("Centrifugo URL: {}", centrifugo_url);
