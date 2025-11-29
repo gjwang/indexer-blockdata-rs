@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centrifugo Test Client</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 20px;
+        }
+
+        #messages {
+            border: 1px solid #ccc;
+            padding: 10px;
+            height: 400px;
+            overflow-y: scroll;
+            background: #f9f9f9;
+        }
+
+        .message {
+            border-bottom: 1px solid #eee;
+            padding: 5px 0;
+        }
+
+        .timestamp {
+            color: #888;
+            font-size: 0.8em;
+            margin-right: 10px;
+        }
+    </style>
+    <script src="https://unpkg.com/centrifuge@5.0.1/dist/centrifuge.js"></script>
+</head>
+
+<body>
+    <h1>Centrifugo Stream: 'news'</h1>
+    <div id="status">Connecting...</div>
+    <div id="messages"></div>
+
+    <script>
+        const container = document.getElementById('messages');
+        const statusDiv = document.getElementById('status');
+
+        // Connect to Centrifugo with Token
+        // Token generated for subject "rust_client" with secret "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"
+        // This token has a very long expiration time.
+        const token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJydXN0X2NsaWVudCIsImV4cCI6MTE3NjQ0MjQwODF9.6VYR8h8nw7vRRsasXMvukzlO0o0i7Ea26f5XJb0jjmM";
+
+        const centrifuge = new Centrifuge('ws://localhost:8000/connection/websocket');
+        centrifuge.setToken(token);
+
+        centrifuge.on('connected', function (ctx) {
+            statusDiv.textContent = "Connected to Centrifugo";
+            statusDiv.style.color = "green";
+        });
+
+        centrifuge.on('disconnected', function (ctx) {
+            statusDiv.textContent = "Disconnected: " + ctx.reason;
+            statusDiv.style.color = "red";
+        });
+
+        // Subscribe to channel
+        const sub = centrifuge.newSubscription('news:updates');
+
+        sub.on('subscribed', function (ctx) {
+            console.log('Subscribed to news:updates', ctx);
+            const div = document.createElement('div');
+            div.className = 'status connected';
+            div.textContent = "Subscribed to channel 'news:updates'";
+            container.prepend(div);
+        });
+
+        sub.on('error', function (ctx) {
+            console.error('Subscription error:', ctx);
+            const div = document.createElement('div');
+            div.className = 'status disconnected';
+            div.textContent = "Subscription error: " + JSON.stringify(ctx);
+            container.prepend(div);
+        });
+
+        sub.on('unsubscribed', function (ctx) {
+            console.warn('Unsubscribed:', ctx);
+        });
+
+        sub.on('publication', function (ctx) {
+            console.log('Received publication:', ctx);
+            const div = document.createElement('div');
+            div.className = 'message';
+            const time = new Date().toLocaleTimeString();
+
+            let displayData = ctx.data;
+            if (ctx.data && ctx.data.content) {
+                try {
+                    // Try to parse the inner content if it's a string
+                    displayData = JSON.parse(ctx.data.content);
+                } catch (e) {
+                    displayData = ctx.data.content;
+                }
+            }
+
+            div.innerHTML = `<span class="timestamp">${time}</span> <span>${JSON.stringify(displayData, null, 2)}</span>`;
+            container.prepend(div);
+        });
+
+        sub.subscribe();
+
+        centrifuge.connect();
+    </script>
+</body>
+
+</html>

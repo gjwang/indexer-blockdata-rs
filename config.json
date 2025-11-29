@@ -1,0 +1,29 @@
+{
+    "client": {
+        "token": {
+            "hmac_secret_key": "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"
+        },
+        "allowed_origins": [
+            "*"
+        ]
+    },
+    "channel": {
+        "namespaces": [
+            {
+                "name": "news",
+                "allow_publish_for_client": true,
+                "allow_subscribe_for_client": true,
+                "allow_publish_for_subscriber": true,
+                "history_size": 300,
+                "history_ttl": "300s",
+                "join_leave": true,
+                "presence": true
+            }
+        ]
+    },
+    "admin": {
+        "enabled": true,
+        "password": "admin_password",
+        "secret": "admin_secret"
+    }
+}

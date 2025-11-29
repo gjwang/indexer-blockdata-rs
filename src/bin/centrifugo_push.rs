@@ -63,6 +63,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+use jsonwebtoken::{encode, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Claims {
+    sub: String,
+    exp: usize,
+}
+
 async fn run_bridge(
     centrifugo_url: &str,
     centrifugo_channel: &str,
@@ -72,8 +81,20 @@ async fn run_bridge(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let kafka_group_id = format!("{}-{}", base_group_id, chrono::Utc::now().timestamp());
 
-    // 1. Connect to Centrifugo
+    // 1. Generate JWT Token
+    let now = chrono::Utc::now().timestamp() as usize;
+    let my_claims = Claims {
+        sub: "rust_client".to_owned(),
+        exp: now + 10000000000, // Long expiration
+    };
+    let secret = "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"; // TODO: Load from config
+    let token = encode(&Header::default(), &my_claims, &EncodingKey::from_secret(secret.as_ref()))?;
+    println!("Generated Token: {}", token);
+
+    // 2. Connect to Centrifugo
     let url = Url::parse(centrifugo_url)?;
+    // url.query_pairs_mut().append_pair("token", &token); // Don't put token in URL
+    
     println!("Connecting to Centrifugo at {}", url);
     let (ws_stream, _) = connect_async(url.to_string()).await?;
     println!("Connected to Centrifugo");
@@ -83,7 +104,9 @@ async fn run_bridge(
     // Send Connect command
     let connect_msg = json!({
         "id": 1,
-        "connect": {}
+        "connect": {
+            "token": token
+        }
     });
     write.send(Message::Text(connect_msg.to_string().into())).await?;
     println!("Sent connect message to Centrifugo");
@@ -94,7 +117,7 @@ async fn run_bridge(
         println!("Received Centrifugo connect reply: {}", msg);
     }
 
-    // 2. Connect to Redpanda
+    // 3. Connect to Redpanda
     println!("Connecting to Redpanda at {}", kafka_broker);
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", kafka_broker)
@@ -106,7 +129,7 @@ async fn run_bridge(
     consumer.subscribe(&[kafka_topic])?;
     println!("Subscribed to topic: {}", kafka_topic);
 
-    // 3. Consume and Forward Loop
+    // 4. Consume and Forward Loop
     println!("Starting consume loop...");
     
     // We need to handle reading from WS (to keep connection alive/handle pings) 
