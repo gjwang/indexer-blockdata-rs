@@ -75,7 +75,7 @@ async fn run_bridge(
     // 1. Connect to Centrifugo
     let url = Url::parse(centrifugo_url)?;
     println!("Connecting to Centrifugo at {}", url);
-    let (ws_stream, _) = connect_async(url).await?;
+    let (ws_stream, _) = connect_async(url.to_string()).await?;
     println!("Connected to Centrifugo");
 
     let (mut write, mut read) = ws_stream.split();
@@ -85,7 +85,7 @@ async fn run_bridge(
         "id": 1,
         "connect": {}
     });
-    write.send(Message::Text(connect_msg.to_string())).await?;
+    write.send(Message::Text(connect_msg.to_string().into())).await?;
     println!("Sent connect message to Centrifugo");
 
     // Wait for connect reply (simple check)
@@ -124,9 +124,9 @@ async fn run_bridge(
                         match msg {
                             Message::Text(text) => {
                                 // println!("Received Text: {}", text);
-                                if text == "{}" {
+                                if text.as_str() == "{}" {
                                     // println!("Received empty JSON (Ping) from server, sending Pong...");
-                                    if let Err(e) = write.send(Message::Text("{}".to_string())).await {
+                                    if let Err(e) = write.send(Message::Text("{}".into())).await {
                                         eprintln!("Failed to send Pong: {}", e);
                                         return Err(Box::new(e));
                                     }
@@ -180,7 +180,7 @@ async fn run_bridge(
                                 let msg_str = publish_msg.to_string();
                                 println!("Sending to Centrifugo: {}", msg_str);
 
-                                if let Err(e) = write.send(Message::Text(msg_str)).await {
+                                if let Err(e) = write.send(Message::Text(msg_str.into())).await {
                                     eprintln!("Failed to send to Centrifugo: {}", e);
                                     return Err(Box::new(e));
                                 }

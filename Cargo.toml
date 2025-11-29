@@ -17,7 +17,6 @@ path = "src/bin/scylla_demo.rs"
 serde = { version = "1.0.204", features = ["derive"] }
 serde_json = "1.0.121"
 tokio = { version = "1.39.2", features = ["rt", "rt-multi-thread", "macros"] }
-reqwest = { version = "0.12.5", features = ["json"] }
 dotenv = "0.15"
 ethers = { version = "2.0", features = ["rustls"] }
 eyre = "0.6"
@@ -38,8 +37,6 @@ rdkafka = { version = "0.36.2", features = ["cmake-build"] }
 env_logger = "0.11.5"
 bincode = "1.3.3"
 ulid = { version = "1.1.3", features = ["serde"] }
-tokio-tungstenite = "0.21"
-futures-util = "0.3"
 url = "2.5"
 crossbeam-channel = "0.5.13"
 rustc-hash = "2.0.0"
@@ -51,6 +48,8 @@ tikv-jemallocator = "0.6.0"
 nohash-hasher = "0.2.0"
 crc32fast = "1.3"
 md5 = "0.7.0"
+tokio-tungstenite = "0.28.0"
+futures-util = "0.3.31"
 
 [build-dependencies]
 flatc-rust = "0.2" # Helper to compile schema
