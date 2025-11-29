@@ -13,9 +13,8 @@
                 "name": "news",
                 "allow_publish_for_client": true,
                 "allow_subscribe_for_client": true,
-                "allow_publish_for_subscriber": true,
-                "history_size": 300,
-                "history_ttl": "300s",
+                "history_size": 1,
+                "history_ttl": "30s",
                 "join_leave": true,
                 "presence": true
             }
