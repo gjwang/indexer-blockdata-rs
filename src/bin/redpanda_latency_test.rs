@@ -43,21 +43,25 @@ struct LatencyStats {
     p99: Duration,
 }
 
+use fetcher::configure;
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    let broker = "localhost:9093";
-    let topic = "latency-test-topic";
-    let group_id = format!("latency-test-{}", chrono::Utc::now().timestamp());
+    let config = configure::load_config().expect("Failed to load config");
+    
+    let broker = config.kafka_broker;
+    let topic = config.kafka_topic;
+    let group_id = format!("{}-{}", config.kafka_group_id, chrono::Utc::now().timestamp());
 
     println!("=== Redpanda Latency Test ===");
     println!("Topic: {}", topic);
     println!("Group ID: {}\n", group_id);
 
-    let producer = create_producer(broker)?;
-    let consumer = create_consumer(broker, &group_id)?;
+    let producer = create_producer(&broker)?;
+    let consumer = create_consumer(&broker, &group_id)?;
 
     println!("Starting latency test with 100000 messages...\n");
-    run_latency_test(&producer, &consumer, topic, 100000).await?;
+    run_latency_test(&producer, &consumer, &topic, 100000).await?;
 
     Ok(())
 }
