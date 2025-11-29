@@ -13,7 +13,7 @@ use crate::configure::load_config;
 pub fn setup_logger() -> Result<(), Box<dyn Error>> {
     let config = load_config()?;
     // Get the log file path from the configuration
-    let log_file = config.get_string("log_file")?;
+    let log_file = config.log_file;
     println!("log_file={log_file}");
 
     // Create a stdout appender

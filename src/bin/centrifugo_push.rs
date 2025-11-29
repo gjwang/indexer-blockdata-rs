@@ -7,36 +7,45 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message as KafkaMessage;
 
+use fetcher::configure;
+
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Centrifugo WebSocket URL
-    #[arg(long, default_value = "ws://localhost:8000/connection/websocket")]
-    url: String,
+    #[arg(long)]
+    url: Option<String>,
 
     /// Channel to publish to
-    #[arg(long, default_value = "news")]
-    channel: String,
+    #[arg(long)]
+    channel: Option<String>,
 
     /// Kafka/Redpanda Broker List
-    #[arg(long, default_value = "localhost:9093")]
-    kafka_broker: String,
+    #[arg(long)]
+    kafka_broker: Option<String>,
 
     /// Kafka Topic to consume from
-    #[arg(long, default_value = "latency-test-topic")]
-    kafka_topic: String,
+    #[arg(long)]
+    kafka_topic: Option<String>,
 
     /// Kafka Group ID
-    #[arg(long, default_value = "centrifugo-pusher")]
-    group_id: String,
+    #[arg(long)]
+    group_id: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+    let config = configure::load_config().expect("Failed to load config");
+
+    let centrifugo_url = args.url.unwrap_or(config.centrifugo_url);
+    let centrifugo_channel = args.channel.unwrap_or(config.centrifugo_channel);
+    let kafka_broker = args.kafka_broker.unwrap_or(config.kafka_broker);
+    let kafka_topic = args.kafka_topic.unwrap_or(config.kafka_topic);
+    let kafka_group_id = args.group_id.unwrap_or(config.kafka_group_id);
 
     // 1. Connect to Centrifugo
-    let url = Url::parse(&args.url)?;
+    let url = Url::parse(&centrifugo_url)?;
     println!("Connecting to Centrifugo at {}", url);
     let (ws_stream, _) = connect_async(url).await.expect("Failed to connect to Centrifugo");
     println!("Connected to Centrifugo");
@@ -58,16 +67,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // 2. Connect to Redpanda
-    println!("Connecting to Redpanda at {}", args.kafka_broker);
+    println!("Connecting to Redpanda at {}", kafka_broker);
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("bootstrap.servers", &args.kafka_broker)
-        .set("group.id", &args.group_id)
+        .set("bootstrap.servers", &kafka_broker)
+        .set("group.id", &kafka_group_id)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
         .create()?;
 
-    consumer.subscribe(&[&args.kafka_topic])?;
-    println!("Subscribed to topic: {}", args.kafka_topic);
+    consumer.subscribe(&[&kafka_topic])?;
+    println!("Subscribed to topic: {}", kafka_topic);
 
     // 3. Consume and Forward Loop
     println!("Starting consume loop...");
@@ -110,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 // Construct Publish command
                                 let publish_msg = json!({
                                     "publish": {
-                                        "channel": args.channel,
+                                        "channel": centrifugo_channel,
                                         "data": {
                                             "content": payload_str
                                         }
