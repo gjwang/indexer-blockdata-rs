@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Anonymous Centrifugo Client - news2 Channel</title>
+    <script src="https://unpkg.com/centrifuge@5.2.2/dist/centrifuge.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background: #d4edda;
+            color: #155724;
+        }
+
+        .disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+
+        #messages {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .message {
+            padding: 10px;
+            margin: 5px 0;
+            background: white;
+            border-left: 4px solid #007bff;
+            border-radius: 3px;
+        }
+
+        .timestamp {
+            color: #6c757d;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🔓 Anonymous Client - news2:updates</h1>
+        <p><strong>No authentication required!</strong></p>
+
+        <div id="status" class="status disconnected">Disconnected</div>
+
+        <div id="messages">
+            <p style="color: #6c757d;">Waiting for messages...</p>
+        </div>
+    </div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const statusDiv = document.getElementById('status');
+
+        // Connect WITHOUT a token - anonymous connection
+        const centrifuge = new Centrifuge('ws://localhost:8000/connection/websocket', {
+            // No token needed for anonymous connection!
+        });
+
+        centrifuge.on('connected', function (ctx) {
+            console.log('Connected to Centrifugo:', ctx);
+            statusDiv.textContent = '✓ Connected (Anonymous)';
+            statusDiv.className = 'status connected';
+        });
+
+        centrifuge.on('disconnected', function (ctx) {
+            console.log('Disconnected:', ctx);
+            statusDiv.textContent = '✗ Disconnected';
+            statusDiv.className = 'status disconnected';
+        });
+
+        // Subscribe to news2:updates WITHOUT a subscription token
+        const sub = centrifuge.newSubscription('news2:updates');
+
+        sub.on('publication', function (ctx) {
+            console.log('Received message:', ctx.data);
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `
+                <div class="timestamp">${timestamp}</div>
+                <div><strong>ID:</strong> ${ctx.data.id}</div>
+                <div><strong>Content:</strong> ${ctx.data.content}</div>
+            `;
+
+            messagesDiv.insertBefore(messageDiv, messagesDiv.firstChild);
+        });
+
+        sub.on('subscribed', function (ctx) {
+            console.log('Subscribed to news2:updates');
+            messagesDiv.innerHTML = '<p style="color: #28a745;">✓ Subscribed to news2:updates - waiting for messages...</p>';
+        });
+
+        sub.subscribe();
+        centrifuge.connect();
+    </script>
+</body>
+
+</html>

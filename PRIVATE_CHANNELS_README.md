@@ -48,10 +48,13 @@ The API will start on `http://localhost:3000` with endpoints:
 - `POST /api/test/publish-balance` - Test balance update
 - `POST /api/test/publish-order` - Test order update
 
-### 4. Open the Demo Client
-
+### 2. Open Demo Client
 ```bash
-open private_channel_demo.html
+# Start HTTP server
+python3 -m http.server 8080
+
+# Open in browser
+open http://localhost:8080/web_clients/private_channel_demo.html
 ```
 
 1. Login with any username/password
