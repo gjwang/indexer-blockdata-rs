@@ -133,7 +133,7 @@ async fn run_bridge(
                                 }
                             }
                             Message::Ping(data) => {
-                                // println!("Received Ping from server, sending Pong...");
+                                println!("Received Ping from server, sending Pong...");
                                 if let Err(e) = write.send(Message::Pong(data)).await {
                                     eprintln!("Failed to send Pong: {}", e);
                                     return Err(Box::new(e));
