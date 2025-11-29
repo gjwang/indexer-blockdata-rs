@@ -111,12 +111,19 @@ async fn run_http_bridge(
                     if let Ok(payload_str) = std::str::from_utf8(payload) {
                         println!("Received from Kafka: {}", payload_str);
 
+                        // Parse JSON payload
+                        let data = match serde_json::from_str::<serde_json::Value>(payload_str) {
+                            Ok(json_data) => json_data,
+                            Err(e) => {
+                                eprintln!("✗ Failed to parse JSON payload: {}\n", e);
+                                continue;
+                            }
+                        };
+
                         // Publish via HTTP API
                         let body = json!({
                             "channel": centrifugo_channel,
-                            "data": {
-                                "content": payload_str
-                            }
+                            "data": data
                         });
 
                         match client
