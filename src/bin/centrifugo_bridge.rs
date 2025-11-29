@@ -62,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("group.id", &group_id)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
-        .set("session.timeout.ms", "5000")
+        .set("session.timeout.ms", "6000")
         .set("heartbeat.interval.ms", "2000")
         .create()?;
 
