@@ -42,6 +42,43 @@ impl CentrifugoPublisher {
 
     /// Publish raw JSON string to the user's private channel
     /// This avoids deserializing and re-serializing the payload
+    /// Helper method to send raw JSON request to Centrifugo
+    async fn send_raw_request(
+        &self,
+        endpoint: &str,
+        body: String,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let url = format!("{}/{}", self.api_url, endpoint);
+
+        let response = self
+            .client
+            .post(&url)
+            .header("X-API-Key", &self.api_key)
+            .header("Content-Type", "application/json")
+            .body(body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            return Err(format!("Centrifugo {} error: {}", endpoint, error_text).into());
+        }
+
+        Ok(())
+    }
+
+    /// Helper method to send JSON request to Centrifugo (wraps send_raw_request)
+    async fn send_request(
+        &self,
+        endpoint: &str,
+        body: &serde_json::Value,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body_str = serde_json::to_string(body)?;
+        self.send_raw_request(endpoint, body_str).await
+    }
+
+    /// Publish raw JSON string to the user's private channel
+    /// This avoids deserializing and re-serializing the payload
     pub async fn publish_raw_json(
         &self,
         user_id: &str,
@@ -52,25 +89,8 @@ impl CentrifugoPublisher {
         // We need to construct the body manually to avoid escaping the raw_json string
         // The raw_json is already a valid JSON string, so we inject it directly into the data field
         let body_str = format!(r#"{{"channel":"{}","data":{}}}"#, channel, raw_json);
-        let body: serde_json::Value = serde_json::from_str(&body_str)?;
-
-        let publish_url = format!("{}/publish", self.api_url);
-
-        let response = self
-            .client
-            .post(&publish_url)
-            .header("X-API-Key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(format!("Centrifugo publish error: {}", error_text).into());
-        }
-
-        Ok(())
+        
+        self.send_raw_request("publish", body_str).await
     }
 
     /// Publish balance update to a specific user's private channel
@@ -106,28 +126,12 @@ impl CentrifugoPublisher {
         channel: &str,
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let publish_url = format!("{}/publish", self.api_url);
-        
         let body = json!({
             "channel": channel,
             "data": data
         });
 
-        let response = self
-            .client
-            .post(&publish_url)
-            .header("X-API-Key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(format!("Centrifugo publish error: {}", error_text).into());
-        }
-
-        Ok(())
+        self.send_request("publish", &body).await
     }
 
     /// Publish to multiple users at once (batch)
@@ -137,8 +141,6 @@ impl CentrifugoPublisher {
         channel_suffix: &str,
         data: &T,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let batch_url = format!("{}/batch", self.api_url);
-        
         let commands: Vec<serde_json::Value> = user_ids
             .iter()
             .map(|user_id| {
@@ -155,21 +157,7 @@ impl CentrifugoPublisher {
             "commands": commands
         });
 
-        let response = self
-            .client
-            .post(&batch_url)
-            .header("X-API-Key", &self.api_key)
-            .header("Content-Type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            return Err(format!("Centrifugo batch publish error: {}", error_text).into());
-        }
-
-        Ok(())
+        self.send_request("batch", &body).await
     }
 }
 
