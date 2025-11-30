@@ -14,8 +14,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
-use rdkafka::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::Message;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -27,6 +27,7 @@ struct DemoMessage {
 
 #[derive(Debug, Clone)]
 struct LatencyRecord {
+    #[allow(dead_code)]
     msg_id: u32,
     send_time: Instant,
     receive_time: Option<Instant>,
@@ -48,10 +49,14 @@ use fetcher::configure;
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = configure::load_config().expect("Failed to load config");
-    
+
     let broker = config.kafka_broker;
     let topic = config.kafka_topic;
-    let group_id = format!("{}-{}", config.kafka_group_id, chrono::Utc::now().timestamp());
+    let group_id = format!(
+        "{}-{}",
+        config.kafka_group_id,
+        chrono::Utc::now().timestamp()
+    );
 
     println!("=== Redpanda Latency Test ===");
     println!("Topic: {}", topic);
@@ -65,7 +70,6 @@ async fn main() -> Result<()> {
 
     Ok(())
 }
-
 
 fn create_producer(broker: &str) -> Result<FutureProducer> {
     let producer: FutureProducer = ClientConfig::new()
@@ -103,11 +107,12 @@ async fn run_latency_test(
     topic: &str,
     message_count: usize,
 ) -> Result<()> {
-    let send_times: Arc<Mutex<HashMap<u32, (Instant, Duration)>>> = Arc::new(Mutex::new(HashMap::new()));
+    let send_times: Arc<Mutex<HashMap<u32, (Instant, Duration)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let latency_records: Arc<Mutex<Vec<LatencyRecord>>> = Arc::new(Mutex::new(Vec::new()));
 
-    let send_times_for_consumer = send_times.clone();
-    let latency_records_for_consumer = latency_records.clone();
+    let _send_times_for_consumer = send_times.clone();
+    let _latency_records_for_consumer = latency_records.clone();
 
     println!("Step 1: Starting consumer and subscribing to topic...");
     consumer.subscribe(&[topic])?;
@@ -145,14 +150,15 @@ async fn send_messages_realtime(
         let key = format!("key-{}", i);
 
         let send_start = Instant::now();
-        let record_msg = FutureRecord::to(topic)
-            .key(&key)
-            .payload(&payload);
+        let record_msg = FutureRecord::to(topic).key(&key).payload(&payload);
 
         match producer.send(record_msg, Duration::from_secs(10)).await {
             Ok(_) => {
                 let producer_latency = send_start.elapsed();
-                send_times.lock().await.insert(i as u32, (send_start, producer_latency));
+                send_times
+                    .lock()
+                    .await
+                    .insert(i as u32, (send_start, producer_latency));
 
                 if (i + 1) % 20 == 0 {
                     println!("  Sent {}/{} messages", i + 1, message_count);
@@ -169,6 +175,7 @@ async fn send_messages_realtime(
     println!("  Message sending completed");
 }
 
+#[allow(dead_code)]
 async fn consume_messages_realtime(
     consumer: &StreamConsumer,
     send_times: Arc<Mutex<HashMap<u32, (Instant, Duration)>>>,
@@ -195,7 +202,9 @@ async fn consume_messages_realtime(
                         if let Ok(demo_msg) = serde_json::from_str::<DemoMessage>(text) {
                             let send_times_map = send_times.lock().await;
 
-                            if let Some((send_time, producer_latency)) = send_times_map.get(&demo_msg.id) {
+                            if let Some((send_time, producer_latency)) =
+                                send_times_map.get(&demo_msg.id)
+                            {
                                 let mut records = latency_records.lock().await;
                                 records.push(LatencyRecord {
                                     msg_id: demo_msg.id,
@@ -207,7 +216,10 @@ async fn consume_messages_realtime(
                                 received_count += 1;
 
                                 if received_count % 20 == 0 {
-                                    println!("  Received {}/{} messages", received_count, expected_count);
+                                    println!(
+                                        "  Received {}/{} messages",
+                                        received_count, expected_count
+                                    );
                                 }
 
                                 if received_count >= expected_count {
@@ -226,7 +238,10 @@ async fn consume_messages_realtime(
             Err(_) => {
                 consecutive_timeouts += 1;
                 if consecutive_timeouts >= 5 && received_count > 0 {
-                    println!("  No messages for 5 seconds, stopping (received: {})", received_count);
+                    println!(
+                        "  No messages for 5 seconds, stopping (received: {})",
+                        received_count
+                    );
                     break;
                 }
             }
@@ -254,8 +269,10 @@ fn print_latency_stats(records: &[LatencyRecord], expected_count: usize) {
     println!("\nTest Statistics:");
     println!("  Total messages sent:     {}", expected_count);
     println!("  Successfully received:   {}", records.len());
-    println!("  Loss rate:               {:.2}%",
-             (expected_count - records.len()) as f64 / expected_count as f64 * 100.0);
+    println!(
+        "  Loss rate:               {:.2}%",
+        (expected_count - records.len()) as f64 / expected_count as f64 * 100.0
+    );
 
     if !producer_latencies.is_empty() {
         let producer_stats = calculate_stats(&producer_latencies);
@@ -269,14 +286,17 @@ fn print_latency_stats(records: &[LatencyRecord], expected_count: usize) {
         if !producer_latencies.is_empty() {
             let producer_stats = calculate_stats(&producer_latencies);
             let avg_network_consumer = e2e_stats.avg.saturating_sub(producer_stats.avg);
-            println!("\nNetwork + Consumer Latency (approx): {:?}", avg_network_consumer);
+            println!(
+                "\nNetwork + Consumer Latency (approx): {:?}",
+                avg_network_consumer
+            );
         }
     }
 
     println!("\n{}", "=".repeat(60));
 }
 
-fn calculate_stats(latencies: &Vec<Duration>) -> LatencyStats {
+fn calculate_stats(latencies: &[Duration]) -> LatencyStats {
     let mut sorted = latencies.to_vec();
     sorted.sort();
 

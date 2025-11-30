@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 mod float_as_string {
-    use serde::{self, Serializer, Deserialize, Deserializer};
+    use serde::{self, Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(value: &f64, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -34,9 +34,9 @@ pub struct BalanceUpdate {
 pub struct OrderUpdate {
     pub order_id: String,
     pub symbol: String,
-    pub side: String,        // "buy" or "sell"
-    pub order_type: String,  // "limit", "market", etc.
-    pub status: String,      // "new", "filled", "cancelled", etc.
+    pub side: String,       // "buy" or "sell"
+    pub order_type: String, // "limit", "market", etc.
+    pub status: String,     // "new", "filled", "cancelled", etc.
     #[serde(with = "float_as_string")]
     pub price: f64,
     #[serde(with = "float_as_string")]
@@ -50,7 +50,7 @@ pub struct OrderUpdate {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PositionUpdate {
     pub symbol: String,
-    pub side: String,           // "long" or "short"
+    pub side: String, // "long" or "short"
     #[serde(with = "float_as_string")]
     pub quantity: f64,
     #[serde(with = "float_as_string")]

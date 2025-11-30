@@ -8,9 +8,9 @@ use tokio::sync::Semaphore;
 // 配置参数
 const BROKERS: &str = "localhost:9092"; // Redpanda 地址
 const TOPIC: &str = "bench-test";
-const MSG_COUNT: usize = 1_000_000;      // 发送一百万条
-const MSG_SIZE: usize = 1024;            // 1KB 消息
-const MAX_INFLIGHT: usize = 10_000;      // 限制并发数，防止内存溢出
+const MSG_COUNT: usize = 1_000_000; // 发送一百万条
+const MSG_SIZE: usize = 1024; // 1KB 消息
+const MAX_INFLIGHT: usize = 10_000; // 限制并发数，防止内存溢出
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,10 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("bootstrap.servers", BROKERS)
         .set("message.timeout.ms", "5000")
         .set("queue.buffering.max.messages", "100000") // 增加本地队列深度
-        .set("batch.size", "65536")                    // 增加批次大小 (64KB)
-        .set("linger.ms", "10")                        // 稍微等待以凑够批次
-        .set("compression.type", "lz4")                // Redpanda 推荐使用 LZ4 或 Zstd
-        .set("acks", "1")                              // 1: Leader ack (折中), all: 最安全, 0: 最快
+        .set("batch.size", "65536") // 增加批次大小 (64KB)
+        .set("linger.ms", "10") // 稍微等待以凑够批次
+        .set("compression.type", "lz4") // Redpanda 推荐使用 LZ4 或 Zstd
+        .set("acks", "1") // 1: Leader ack (折中), all: 最安全, 0: 最快
         .create()
         .expect("Producer creation error");
 
@@ -55,7 +55,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .payload(&payload[..]) // 获取 Arc 内部数据的切片引用
                 .key(&key);
 
-            let _ = producer.send(record, std::time::Duration::from_secs(0)).await;
+            let _ = producer
+                .send(record, std::time::Duration::from_secs(0))
+                .await;
 
             drop(permit);
         });

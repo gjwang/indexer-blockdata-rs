@@ -1,7 +1,7 @@
-use std::path::Path;
-use std::fs;
-use fetcher::matching_engine_base::{MatchingEngine, SymbolManager, Side};
 use fetcher::ledger::LedgerCommand;
+use fetcher::matching_engine_base::{MatchingEngine, Side, SymbolManager};
+use std::fs;
+use std::path::Path;
 
 fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
     println!("--- User Balances ---");
@@ -9,7 +9,10 @@ fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
         if let Some(balances) = engine.ledger.get_user_balances(uid) {
             print!("User {}: ", uid);
             for (asset, bal) in balances {
-                print!("[Asset {}: Avail={}, Frozen={}] ", asset, bal.available, bal.frozen);
+                print!(
+                    "[Asset {}: Avail={}, Frozen={}] ",
+                    asset, bal.available, bal.frozen
+                );
             }
             println!();
         } else {
@@ -19,20 +22,45 @@ fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
     println!("---------------------");
 }
 
-fn assert_balance(engine: &MatchingEngine, user_id: u64, asset_id: u32, expected_avail: u64, expected_frozen: u64) {
-    let balances = engine.ledger.get_user_balances(user_id).expect("User not found");
-    let bal = balances.iter().find(|(a, _)| *a == asset_id).expect("Asset not found").1;
-    assert_eq!(bal.available, expected_avail, "User {} Asset {} Available mismatch", user_id, asset_id);
-    assert_eq!(bal.frozen, expected_frozen, "User {} Asset {} Frozen mismatch", user_id, asset_id);
+fn assert_balance(
+    engine: &MatchingEngine,
+    user_id: u64,
+    asset_id: u32,
+    expected_avail: u64,
+    expected_frozen: u64,
+) {
+    let balances = engine
+        .ledger
+        .get_user_balances(user_id)
+        .expect("User not found");
+    let bal = balances
+        .iter()
+        .find(|(a, _)| *a == asset_id)
+        .expect("Asset not found")
+        .1;
+    assert_eq!(
+        bal.available, expected_avail,
+        "User {} Asset {} Available mismatch",
+        user_id, asset_id
+    );
+    assert_eq!(
+        bal.frozen, expected_frozen,
+        "User {} Asset {} Frozen mismatch",
+        user_id, asset_id
+    );
 }
 
 fn main() {
     let wal_dir = Path::new("me_wal_data");
     let snap_dir = Path::new("me_snapshots");
-    
+
     // Clean up previous run
-    if wal_dir.exists() { let _ = fs::remove_dir_all(wal_dir); }
-    if snap_dir.exists() { let _ = fs::remove_dir_all(snap_dir); }
+    if wal_dir.exists() {
+        let _ = fs::remove_dir_all(wal_dir);
+    }
+    if snap_dir.exists() {
+        let _ = fs::remove_dir_all(snap_dir);
+    }
 
     let mut engine = MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create engine");
     let mut ulid_gen = fetcher::fast_ulid::FastUlidGen::new();
@@ -40,24 +68,66 @@ fn main() {
     // === Deposit Funds ===
     println!("=== Depositing Funds ===");
     // User 1: Seller of BTC (Asset 1).
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 10000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 1,
+            asset: 1,
+            amount: 10000,
+        })
+        .unwrap();
     // User 2: Seller of BTC.
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset: 1, amount: 10000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 2,
+            asset: 1,
+            amount: 10000,
+        })
+        .unwrap();
     // User 3: Buyer of BTC (Asset 2 = USDT).
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 3, asset: 2, amount: 100000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 3,
+            asset: 2,
+            amount: 100000,
+        })
+        .unwrap();
     // User 4: Buyer of BTC.
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 4, asset: 2, amount: 100000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 4,
+            asset: 2,
+            amount: 100000,
+        })
+        .unwrap();
     // User 101: Seller of ETH (Asset 3).
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 101, asset: 3, amount: 10000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 101,
+            asset: 3,
+            amount: 10000,
+        })
+        .unwrap();
     // User 201: Seller of SOL (Asset 4).
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 201, asset: 4, amount: 10000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 201,
+            asset: 4,
+            amount: 10000,
+        })
+        .unwrap();
     println!("Funds deposited.\n");
-    
+
     print_user_balances(&engine, &[1, 2, 3, 4, 101, 201]);
 
     // === Simulating Database Load at Startup ===
     println!("=== Loading symbols from database (simulated) ===");
-    
+
     // 1. Load Symbols via Manager
     let symbol_manager = SymbolManager::load_from_db();
 
@@ -68,23 +138,34 @@ fn main() {
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
-        println!("Loaded symbol: {} -> symbol_id: {} (Base: {}, Quote: {})", symbol, symbol_id, base, quote);
+        engine
+            .register_symbol(symbol_id, symbol.clone(), base, quote)
+            .unwrap();
+        println!(
+            "Loaded symbol: {} -> symbol_id: {} (Base: {}, Quote: {})",
+            symbol, symbol_id, base, quote
+        );
     }
-    
+
     println!("=== Symbol initialization complete ===\n");
 
     println!("\n>>> Trading BTC_USDT");
-    let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
+    let btc_id = symbol_manager
+        .get_id("BTC_USDT")
+        .expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
     let order_id_1 = ulid_gen.generate().0;
-    if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) { eprintln!("Order failed: {}", e); }
-    
+    if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) {
+        eprintln!("Order failed: {}", e);
+    }
+
     println!("Adding Sell Order: 101 @ 5 (User 2)");
     println!("Adding Sell Order: 101 @ 5 (User 2)");
     let order_id_2 = ulid_gen.generate().0;
-    if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) { eprintln!("Order failed: {}", e); }
+    if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) {
+        eprintln!("Order failed: {}", e);
+    }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2]);
@@ -92,45 +173,55 @@ fn main() {
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
     let order_id_3 = ulid_gen.generate().0;
-    if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) { eprintln!("Order failed: {}", e); }
+    if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) {
+        eprintln!("Order failed: {}", e);
+    }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 3]);
 
     println!(">>> Trading ETH_USDT");
-    let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
+    let eth_id = symbol_manager
+        .get_id("ETH_USDT")
+        .expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
     let order_id_4 = ulid_gen.generate().0;
-    if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) { eprintln!("Order failed: {}", e); }
-    
+    if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) {
+        eprintln!("Order failed: {}", e);
+    }
+
     engine.print_order_book(eth_id);
-    
+
     println!(">>> Trading BTC_USDT again (using ID directly)");
     println!("Adding Buy Order: 102 @ 10 (User 4)");
-    if let Err(e) = engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4) { eprintln!("Order failed: {}", e); }
+    if let Err(e) = engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4) {
+        eprintln!("Order failed: {}", e);
+    }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 4]);
 
     // Verify Balances
-    assert_balance(&engine, 1, 1, 9900, 0);   // User 1: BTC
-    assert_balance(&engine, 1, 2, 1000, 0);   // User 1: USDT
-    assert_balance(&engine, 2, 1, 9899, 0);   // User 2: BTC
-    assert_balance(&engine, 2, 2, 505, 0);    // User 2: USDT
-    assert_balance(&engine, 4, 1, 101, 0);    // User 4: BTC
+    assert_balance(&engine, 1, 1, 9900, 0); // User 1: BTC
+    assert_balance(&engine, 1, 2, 1000, 0); // User 1: USDT
+    assert_balance(&engine, 2, 1, 9899, 0); // User 2: BTC
+    assert_balance(&engine, 2, 2, 505, 0); // User 2: USDT
+    assert_balance(&engine, 4, 1, 101, 0); // User 4: BTC
     assert_balance(&engine, 4, 2, 98985, 10); // User 4: USDT
     println!(">>> Balance Assertions Passed!");
 
     // === Demonstrate Dynamic Symbol Addition ===
     println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5");
     let new_symbol = "SOL_USDT";
-    let new_id = 5; 
-    
+    let new_id = 5;
+
     // Register in Engine
-    engine.register_symbol(new_id, new_symbol.to_string(), 4, 2).unwrap();
+    engine
+        .register_symbol(new_id, new_symbol.to_string(), 4, 2)
+        .unwrap();
     println!("Registered {} with ID: {}", new_symbol, new_id);
-    
+
     println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
     let order_id_5 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(new_id, order_id_5, Side::Sell, 50, 100, 201) {
@@ -143,12 +234,26 @@ fn main() {
     // LOAD TEST
     // ==========================================
     println!("\n>>> STARTING LOAD TEST (1,000,000 Orders)");
-    
+
     // Deposit funds for load test users
     // User 1000: Whale Seller (Asset 1: BTC)
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1000, asset: 1, amount: 1_000_000_000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 1000,
+            asset: 1,
+            amount: 1_000_000_000,
+        })
+        .unwrap();
     // User 1001: Whale Buyer (Asset 2: USDT)
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1001, asset: 2, amount: 50_000_000_000 }).unwrap();
+    engine
+        .ledger
+        .apply(&LedgerCommand::Deposit {
+            user_id: 1001,
+            asset: 2,
+            amount: 50_000_000_000,
+        })
+        .unwrap();
 
     let start = std::time::Instant::now();
     let mut buy_orders = Vec::new();
@@ -177,13 +282,13 @@ fn main() {
         if let Err(e) = engine.add_order(btc_id, order_id, side, price, quantity, user_id) {
             // Simulate DB Persist (Order History)
             // db.insert_order_history(order_id, status="REJECTED", reason=e.to_string());
-            
+
             // Simulate WS Push (Private Notification)
             // centrifugo.publish(user_id, OrderUpdate { status: "REJECTED", reason: e.to_string() });
-            
+
             // For demo purposes, we just log it (but less verbosely for load test)
             if i % 1000 == 0 {
-                 eprintln!("[PERSIST] Order {} Rejected: {}", order_id, e);
+                eprintln!("[PERSIST] Order {} Rejected: {}", order_id, e);
             }
         }
 
@@ -194,14 +299,18 @@ fn main() {
         // If we place Sell 50000, it sits.
         // Then Buy 50000, it matches the Sell.
         // So simple_match_engine matches immediately! We don't need manual matching calls like me_wal.
-        
+
         // Cancel an order every 500 orders (if any exist in book)
         // Snapshot every 200k
         // Snapshot every 200k
         if i % snapshot_every_n_orders == 0 {
             let t = std::time::Instant::now();
             engine.trigger_cow_snapshot();
-            println!("    Forked at Order {}. Main Thread Paused: {:.2?}", i, t.elapsed());
+            println!(
+                "    Forked at Order {}. Main Thread Paused: {:.2?}",
+                i,
+                t.elapsed()
+            );
         }
     }
 
@@ -209,7 +318,10 @@ fn main() {
     println!("\n>>> LOAD TEST DONE");
     println!("    Total Orders: {}", total);
     println!("    Total Time: {:.2?}", dur);
-    println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
+    println!(
+        "    Throughput: {:.0} orders/sec",
+        total as f64 / dur.as_secs_f64()
+    );
 
     // Wait for children to finish
     std::thread::sleep(std::time::Duration::from_secs(1));

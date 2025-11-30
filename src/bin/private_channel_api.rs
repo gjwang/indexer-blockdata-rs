@@ -21,6 +21,7 @@ struct AppState {
 
 /// Simulated authenticated user (in production, extract from JWT middleware)
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 struct AuthenticatedUser {
     id: String,
     email: String,
@@ -74,9 +75,7 @@ async fn main() {
     println!("   POST /api/test/publish-balance - Test balance update");
     println!("   POST /api/test/publish-order - Test order update");
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
 

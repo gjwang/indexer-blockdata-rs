@@ -1,6 +1,6 @@
 use clap::Parser;
 use fetcher::configure;
-use fetcher::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate, StreamMessage};
+use fetcher::models::{BalanceUpdate, OrderUpdate, PositionUpdate, StreamMessage, UserUpdate};
 use rand::Rng;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -27,9 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let kafka_broker = args.kafka_broker.clone()
+    let kafka_broker = args
+        .kafka_broker
+        .clone()
         .unwrap_or(config.kafka_broker.clone());
-    let kafka_topic = args.kafka_topic.clone()
+    let kafka_topic = args
+        .kafka_topic
+        .clone()
         .unwrap_or("user_updates".to_string()); // Default to user_updates topic
     let user_id = args.user_id.clone();
 
@@ -46,17 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Producer created. Starting data generation loop...\n");
 
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     loop {
-        let update_type = rng.gen_range(0..3);
+        let update_type = rng.random_range(0..3);
         let ts_ms = chrono::Utc::now().timestamp_millis();
 
         let user_update = match update_type {
             0 => {
                 // Balance Update
-                let available = rng.gen_range(0.5..2.0);
-                let locked = rng.gen_range(0.0..0.5);
+                let available = rng.random_range(0.5..2.0);
+                let locked = rng.random_range(0.0..0.5);
                 UserUpdate::Balance(BalanceUpdate {
                     asset: "BTC".into(),
                     available,
@@ -66,12 +70,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             1 => {
                 // Order Update
-                let price = rng.gen_range(49000.0..51000.0);
-                let quantity = rng.gen_range(0.01..0.5);
+                let price = rng.random_range(49000.0..51000.0);
+                let quantity = rng.random_range(0.01..0.5);
                 UserUpdate::Order(OrderUpdate {
-                    order_id: format!("ord_{}", rng.gen_range(1000..9999)),
+                    order_id: format!("ord_{}", rng.random_range(1000..9999)),
                     symbol: "BTC_USDT".into(),
-                    side: if rng.gen_bool(0.5) { "buy".into() } else { "sell".into() },
+                    side: if rng.random_bool(0.5) {
+                        "buy".into()
+                    } else {
+                        "sell".into()
+                    },
                     order_type: "limit".into(),
                     status: "new".into(),
                     price,
@@ -82,12 +90,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => {
                 // Position Update
-                let entry_price = rng.gen_range(48000.0..50000.0);
-                let mark_price = rng.gen_range(49000.0..51000.0);
+                let entry_price = rng.random_range(48000.0..50000.0);
+                let mark_price = rng.random_range(49000.0..51000.0);
                 UserUpdate::Position(PositionUpdate {
                     symbol: "BTC_USDT".into(),
                     side: "long".into(),
-                    quantity: rng.gen_range(0.1..1.0),
+                    quantity: rng.random_range(0.1..1.0),
                     entry_price,
                     mark_price,
                     liquidation_price: entry_price * 0.8,
@@ -111,9 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             UserUpdate::Position(_) => println!("Sending Position update for user {}", user_id),
         }
 
-        let record = FutureRecord::to(&kafka_topic)
-            .key(&key)
-            .payload(&payload);
+        let record = FutureRecord::to(&kafka_topic).key(&key).payload(&payload);
 
         match producer.send(record, Duration::from_secs(5)).await {
             Ok(_) => println!("✓ Sent to Kafka"),
@@ -121,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Wait for a random interval between 1 and 3 seconds
-        let sleep_millis = rng.gen_range(1000..3000);
+        let sleep_millis = rng.random_range(1000..3000);
         tokio::time::sleep(Duration::from_millis(sleep_millis)).await;
     }
 }

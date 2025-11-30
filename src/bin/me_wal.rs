@@ -1,11 +1,11 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use memmap2::MmapMut;
+// use memmap2::MmapMut;
 use nix::unistd::{fork, ForkResult};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tikv_jemallocator::Jemalloc;
 
 // Use the shared library module
-use fetcher::order_wal::{Wal, LogEntry, WalSide};
+use fetcher::order_wal::{LogEntry, Wal, WalSide};
 
 // =================================================================
 // MEMORY ALLOCATOR CONFIG
@@ -30,7 +30,10 @@ static GLOBAL: Jemalloc = Jemalloc;
 // ==========================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum OrderSide { Buy, Sell }
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Order {
@@ -73,12 +76,12 @@ impl MatchingEngine {
         fs::create_dir_all(snapshot_dir)?;
         let orders = FxHashMap::default();
         let wal = Wal::open(wal_path, 0)?;
-        Ok(Self { 
-            orders, 
+        Ok(Self {
+            orders,
             match_sequence: 0,
             trade_history: Vec::new(),
-            wal, 
-            snapshot_dir: snapshot_dir.to_path_buf() 
+            wal,
+            snapshot_dir: snapshot_dir.to_path_buf(),
         })
     }
 
@@ -89,7 +92,10 @@ impl MatchingEngine {
             OrderSide::Sell => WalSide::Sell,
         };
 
-        let symbol_str = std::str::from_utf8(&order.symbol).unwrap_or("UNKNOWN").trim_matches('\0').to_string();
+        let symbol_str = std::str::from_utf8(&order.symbol)
+            .unwrap_or("UNKNOWN")
+            .trim_matches('\0')
+            .to_string();
 
         self.wal.append(LogEntry::PlaceOrder {
             order_id: order.id as u128, // Assuming input JSON has u64, cast to u128
@@ -104,7 +110,13 @@ impl MatchingEngine {
     }
 
     /// Simulate matching two orders and create a trade
-    pub fn match_orders(&mut self, buy_order_id: u64, sell_order_id: u64, price: u64, quantity: u64) -> Option<Trade> {
+    pub fn match_orders(
+        &mut self,
+        buy_order_id: u64,
+        sell_order_id: u64,
+        price: u64,
+        quantity: u64,
+    ) -> Option<Trade> {
         // Verify both orders exist
         if !self.orders.contains_key(&buy_order_id) || !self.orders.contains_key(&sell_order_id) {
             return None;
@@ -128,12 +140,14 @@ impl MatchingEngine {
             price: trade.price,
             quantity: trade.quantity,
         });
-        
+
         // Add to trade history
         self.trade_history.push(trade);
 
-        println!("Trade Executed: match_id={}, buy={}, sell={}, price={}, qty={}", 
-            trade.match_id, buy_order_id, sell_order_id, price, quantity);
+        println!(
+            "Trade Executed: match_id={}, buy={}, sell={}, price={}, qty={}",
+            trade.match_id, buy_order_id, sell_order_id, price, quantity
+        );
 
         Some(trade)
     }
@@ -150,7 +164,6 @@ impl MatchingEngine {
             false
         }
     }
-
 
     // =========================================================
     // THE "REDIS" COPY-ON-WRITE SNAPSHOT
@@ -190,7 +203,9 @@ impl MatchingEngine {
 
                 println!(
                     "   [Child PID {}] Snapshot {} Saved. Time: {:.2?}",
-                    std::process::id(), current_seq, start.elapsed()
+                    std::process::id(),
+                    current_seq,
+                    start.elapsed()
                 );
 
                 std::process::exit(0);
@@ -209,11 +224,18 @@ impl MatchingEngine {
 fn main() -> Result<()> {
     let wal_path = Path::new("cow.wal");
     let snap_dir = Path::new("cow_snaps");
-    if wal_path.exists() { fs::remove_file(wal_path)?; }
-    if snap_dir.exists() { fs::remove_dir_all(snap_dir)?; }
+    if wal_path.exists() {
+        fs::remove_file(wal_path)?;
+    }
+    if snap_dir.exists() {
+        fs::remove_dir_all(snap_dir)?;
+    }
 
     let total = 1_000_000;
-    println!(">>> STARTING MATCHING ENGINE WITH TRADE TRACKING ({} Orders)", total);
+    println!(
+        ">>> STARTING MATCHING ENGINE WITH TRADE TRACKING ({} Orders)",
+        total
+    );
 
     let mut engine = MatchingEngine::new(wal_path, snap_dir)?;
     let start = Instant::now();
@@ -224,10 +246,14 @@ fn main() -> Result<()> {
     let mut sell_orders = Vec::new();
 
     for i in 1..=total {
-        let side = if i % 2 == 0 { OrderSide::Buy } else { OrderSide::Sell };
+        let side = if i % 2 == 0 {
+            OrderSide::Buy
+        } else {
+            OrderSide::Sell
+        };
         // Use u64 ID (simulated by i)
-        let order_id = i as u64;
-        
+        let order_id = i;
+
         let order = Order {
             id: order_id,
             symbol,
@@ -268,7 +294,11 @@ fn main() -> Result<()> {
             let t = Instant::now();
             engine.trigger_cow_snapshot();
             // This print proves the Main Thread barely paused
-            println!("    Forked at Order {}. Main Thread Paused: {:.2?}", i, t.elapsed());
+            println!(
+                "    Forked at Order {}. Main Thread Paused: {:.2?}",
+                i,
+                t.elapsed()
+            );
         }
     }
 
@@ -278,7 +308,10 @@ fn main() -> Result<()> {
     println!("    Total Trades: {}", engine.trade_history.len());
     println!("    Last Match ID: {}", engine.match_sequence);
     println!("    Total Time: {:.2?}", dur);
-    println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
+    println!(
+        "    Throughput: {:.0} orders/sec",
+        total as f64 / dur.as_secs_f64()
+    );
 
     // Wait for children to finish (for demo purposes)
     thread::sleep(Duration::from_secs(3));

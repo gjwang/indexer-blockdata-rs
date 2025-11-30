@@ -1,6 +1,7 @@
-use flate2::Compression;
+#![allow(dead_code)]
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use flate2::Compression;
 use serde_json::Value;
 use std::io::{self, Read, Write};
 
@@ -29,7 +30,6 @@ pub fn decompress_json(compressed_data: &[u8]) -> io::Result<Value> {
 
     Ok(decompressed_json)
 }
-
 
 // fn main() -> io::Result<()> {
 //     // Sample JSON data

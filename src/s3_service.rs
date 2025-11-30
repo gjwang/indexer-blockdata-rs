@@ -1,11 +1,11 @@
 use std::error::Error;
 use std::fs::File;
-use std::io::{Write};
+use std::io::Write;
 use std::path::Path;
 
 use bytes::Bytes;
-use s3::{Bucket, Region};
 use s3::creds::Credentials;
+use s3::{Bucket, Region};
 
 pub struct S3Service {
     bucket: Bucket,
@@ -25,8 +25,8 @@ impl S3Service {
         };
 
         let credentials = Credentials::new(
-            Some(&aws_access_key_id),
-            Some(&aws_secret_access_key),
+            Some(aws_access_key_id),
+            Some(aws_secret_access_key),
             None,
             None,
             None,
@@ -64,10 +64,7 @@ impl S3Service {
         Ok(())
     }
 
-    pub async fn get_object(
-        &self,
-        object_key: &str,
-    ) -> Result<Bytes, Box<dyn std::error::Error>> {
+    pub async fn get_object(&self, object_key: &str) -> Result<Bytes, Box<dyn std::error::Error>> {
         let response = self.bucket.get_object(object_key).await?;
 
         if response.status_code() == 200 {

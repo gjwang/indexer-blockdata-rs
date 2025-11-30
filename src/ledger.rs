@@ -51,14 +51,23 @@ pub struct UserAccount {
 
 impl UserAccount {
     pub fn new(user_id: UserId) -> Self {
-        Self { user_id, assets: Vec::with_capacity(8) }
+        Self {
+            user_id,
+            assets: Vec::with_capacity(8),
+        }
     }
     #[inline(always)]
     pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
         if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
             return &mut self.assets[index].1;
         }
-        self.assets.push((asset, Balance { available: 0, frozen: 0 }));
+        self.assets.push((
+            asset,
+            Balance {
+                available: 0,
+                frozen: 0,
+            },
+        ));
         &mut self.assets.last_mut().unwrap().1
     }
 }
@@ -72,11 +81,33 @@ pub struct Snapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LedgerCommand {
-    Deposit { user_id: UserId, asset: AssetId, amount: u64 },
-    Withdraw { user_id: UserId, asset: AssetId, amount: u64 },
-    Lock { user_id: UserId, asset: AssetId, amount: u64 },
-    Unlock { user_id: UserId, asset: AssetId, amount: u64 },
-    TradeSettle { user_id: UserId, spend_asset: AssetId, spend_amount: u64, gain_asset: AssetId, gain_amount: u64 },
+    Deposit {
+        user_id: UserId,
+        asset: AssetId,
+        amount: u64,
+    },
+    Withdraw {
+        user_id: UserId,
+        asset: AssetId,
+        amount: u64,
+    },
+    Lock {
+        user_id: UserId,
+        asset: AssetId,
+        amount: u64,
+    },
+    Unlock {
+        user_id: UserId,
+        asset: AssetId,
+        amount: u64,
+    },
+    TradeSettle {
+        user_id: UserId,
+        spend_asset: AssetId,
+        spend_amount: u64,
+        gain_asset: AssetId,
+        gain_amount: u64,
+    },
 }
 
 // ==========================================
@@ -93,7 +124,12 @@ pub struct WalSegment {
 
 impl WalSegment {
     pub fn create(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).create(true).open(path)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
         file.set_len(WAL_MAX_SIZE)?;
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
@@ -119,8 +155,12 @@ impl WalSegment {
             let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
             let payload_len = u32::from_le_bytes(len_bytes) as usize;
 
-            if payload_len == 0 { break; }
-            if cursor + 8 + payload_len > len { break; }
+            if payload_len == 0 {
+                break;
+            }
+            if cursor + 8 + payload_len > len {
+                break;
+            }
 
             // Hash the entire record (Len + CRC + Seq + Payload)
             let total_len = 8 + 8 + payload_len;
@@ -169,9 +209,9 @@ impl WalSegment {
         self.cursor += cmd_bytes.len();
 
         // 2. Update MD5
-        self.md5_ctx.consume(&len_bytes);
-        self.md5_ctx.consume(&crc_bytes);
-        self.md5_ctx.consume(&seq_bytes);
+        self.md5_ctx.consume(len_bytes);
+        self.md5_ctx.consume(crc_bytes);
+        self.md5_ctx.consume(seq_bytes);
         self.md5_ctx.consume(&cmd_bytes);
 
         Ok(())
@@ -199,7 +239,9 @@ pub struct RollingWal {
 
 impl RollingWal {
     pub fn new(dir: &Path, start_seq: u64) -> Result<Self> {
-        if !dir.exists() { fs::create_dir_all(dir)?; }
+        if !dir.exists() {
+            fs::create_dir_all(dir)?;
+        }
 
         let segment = if let Some(last_file) = Self::find_latest_wal(dir)? {
             println!("   [WAL] Resuming from: {:?}", last_file);
@@ -218,14 +260,17 @@ impl RollingWal {
     }
 
     pub fn append(&mut self, seq: u64, cmd: &LedgerCommand) -> Result<()> {
-        let time_trigger = SystemTime::now().duration_since(self.last_roll_time).unwrap_or(Duration::ZERO) >= WAL_ROLL_TIME;
+        let time_trigger = SystemTime::now()
+            .duration_since(self.last_roll_time)
+            .unwrap_or(Duration::ZERO)
+            >= WAL_ROLL_TIME;
 
         if time_trigger {
             println!("   [WAL] Trigger: Time limit. Rolling...");
             self.rotate(seq)?;
         }
 
-        if let Err(_) = self.current_segment.as_mut().unwrap().append(seq, cmd) {
+        if self.current_segment.as_mut().unwrap().append(seq, cmd).is_err() {
             self.rotate(seq)?;
             self.current_segment.as_mut().unwrap().append(seq, cmd)?;
         }
@@ -244,7 +289,8 @@ impl RollingWal {
 
             // 3. Rename with MD5 suffix
             if let Some(stem) = old_path.file_stem().and_then(|s| s.to_str()) {
-                if !stem.contains(&md5_str) { // Prevent double renaming
+                if !stem.contains(&md5_str) {
+                    // Prevent double renaming
                     let new_filename = format!("{}_{}.wal", stem, md5_str);
                     let new_path = self.dir.join(new_filename);
                     if old_path.exists() {
@@ -276,7 +322,7 @@ impl RollingWal {
             let path = entry?.path();
             if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
                 // Matches "ledger_SEQ.wal" or "ledger_SEQ_MD5.wal"
-                if name.starts_with("ledger_") && path.extension().map_or(false, |e| e == "wal") {
+                if name.starts_with("ledger_") && path.extension().is_some_and(|e| e == "wal") {
                     let parts: Vec<&str> = name.split('_').collect();
                     if parts.len() >= 2 {
                         if let Ok(seq) = parts[1].parse::<u64>() {
@@ -292,7 +338,9 @@ impl RollingWal {
 
     fn find_latest_wal(dir: &Path) -> Result<Option<PathBuf>> {
         let mut wals = Self::list_wals(dir)?;
-        if wals.is_empty() { return Ok(None); }
+        if wals.is_empty() {
+            return Ok(None);
+        }
         Ok(Some(wals.pop().unwrap().1))
     }
 
@@ -308,15 +356,24 @@ impl RollingWal {
         Ok(())
     }
 
-    pub fn replay_iter(dir: &Path, min_seq: u64) -> Result<impl Iterator<Item=Result<(u64, LedgerCommand)>>> {
+    pub fn replay_iter(
+        dir: &Path,
+        min_seq: u64,
+    ) -> Result<impl Iterator<Item = Result<(u64, LedgerCommand)>>> {
         let wals = Self::list_wals(dir)?;
-        let start_idx = wals.partition_point(|(seq, _)| *seq <= min_seq).saturating_sub(1);
+        let start_idx = wals
+            .partition_point(|(seq, _)| *seq <= min_seq)
+            .saturating_sub(1);
 
         let mut chained_iter = Vec::new();
         for (seq, path) in wals.iter().skip(start_idx) {
             match WalIterator::new(path) {
                 Ok(iter) => {
-                    println!("   [Recover] Queuing WAL segment: {:?} (Start: {})", path.file_name().unwrap(), seq);
+                    println!(
+                        "   [Recover] Queuing WAL segment: {:?} (Start: {})",
+                        path.file_name().unwrap(),
+                        seq
+                    );
                     chained_iter.push(iter);
                 }
                 Err(e) => {
@@ -349,7 +406,11 @@ impl WalIterator {
         let file = File::open(path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
         reader.seek(SeekFrom::Start(0))?;
-        Ok(Self { reader, cursor: 0, path: path.to_path_buf() })
+        Ok(Self {
+            reader,
+            cursor: 0,
+            path: path.to_path_buf(),
+        })
     }
 }
 
@@ -365,15 +426,23 @@ impl Iterator for WalIterator {
         }
 
         let payload_len = u32::from_le_bytes(len_buf) as usize;
-        if payload_len > MAX_RECORD_SIZE { return Some(Err(anyhow::anyhow!("Record too large"))); }
-        if payload_len == 0 { return None; }
+        if payload_len > MAX_RECORD_SIZE {
+            return Some(Err(anyhow::anyhow!("Record too large")));
+        }
+        if payload_len == 0 {
+            return None;
+        }
 
         let mut crc_buf = [0u8; 4];
-        if let Err(e) = self.reader.read_exact(&mut crc_buf) { return Some(Err(e.into())); }
+        if let Err(e) = self.reader.read_exact(&mut crc_buf) {
+            return Some(Err(e.into()));
+        }
         let stored_crc = u32::from_le_bytes(crc_buf);
 
         let mut data_buf = vec![0u8; payload_len];
-        if let Err(e) = self.reader.read_exact(&mut data_buf) { return Some(Err(e.into())); }
+        if let Err(e) = self.reader.read_exact(&mut data_buf) {
+            return Some(Err(e.into()));
+        }
 
         let mut hasher = Hasher::new();
         hasher.update(&len_buf);
@@ -420,7 +489,9 @@ impl GlobalLedger {
             let mut md5_reader = Md5Reader::new(BufReader::new(file));
             let snap: Snapshot = bincode::deserialize_from(&mut md5_reader)?;
 
-            if md5_reader.finish() != expected_md5 { bail!("Snapshot MD5 Mismatch"); }
+            if md5_reader.finish() != expected_md5 {
+                bail!("Snapshot MD5 Mismatch");
+            }
 
             accounts = snap.accounts;
             recovered_seq = snap.last_seq;
@@ -432,8 +503,12 @@ impl GlobalLedger {
 
         for res in RollingWal::replay_iter(wal_dir, recovered_seq)? {
             let (seq, cmd) = res?;
-            if seq <= recovered_seq { continue; }
-            if seq != recovered_seq + 1 { bail!("Gap! Expected {}, Found {}", recovered_seq+1, seq); }
+            if seq <= recovered_seq {
+                continue;
+            }
+            if seq != recovered_seq + 1 {
+                bail!("Gap! Expected {}, Found {}", recovered_seq + 1, seq);
+            }
             Self::apply_transaction(&mut accounts, &cmd)?;
             recovered_seq = seq;
             count += 1;
@@ -442,12 +517,22 @@ impl GlobalLedger {
 
         let wal = RollingWal::new(wal_dir, recovered_seq + 1)?;
 
-        Ok(Self { accounts, wal, last_seq: recovered_seq, snapshot_dir: snapshot_dir.to_path_buf() })
+        Ok(Self {
+            accounts,
+            wal,
+            last_seq: recovered_seq,
+            snapshot_dir: snapshot_dir.to_path_buf(),
+        })
     }
 
     /// Create Ledger from an existing state (e.g. from a unified snapshot)
     /// This skips the internal WAL replay and Snapshot loading of the Ledger itself.
-    pub fn from_state(wal_dir: &Path, snapshot_dir: &Path, accounts: FxHashMap<UserId, UserAccount>, last_seq: u64) -> Result<Self> {
+    pub fn from_state(
+        wal_dir: &Path,
+        snapshot_dir: &Path,
+        accounts: FxHashMap<UserId, UserAccount>,
+        last_seq: u64,
+    ) -> Result<Self> {
         fs::create_dir_all(wal_dir)?;
         fs::create_dir_all(snapshot_dir)?;
 
@@ -468,7 +553,8 @@ impl GlobalLedger {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                if name.starts_with("snapshot_") && path.extension().map_or(false, |e| e == "snap") {
+                if name.starts_with("snapshot_") && path.extension().is_some_and(|e| e == "snap")
+                {
                     let parts: Vec<&str> = name.split('_').collect();
                     if parts.len() == 3 {
                         if let Ok(seq) = parts[1].parse::<u64>() {
@@ -494,7 +580,10 @@ impl GlobalLedger {
         thread::spawn(move || {
             let tmp_filename = format!("snapshot_{}.tmp", current_seq);
             let tmp_path = dir.join(&tmp_filename);
-            let snap = Snapshot { last_seq: current_seq, accounts: accounts_copy };
+            let snap = Snapshot {
+                last_seq: current_seq,
+                accounts: accounts_copy,
+            };
 
             // 1. Write and Calculate MD5
             let md5_string = match File::create(&tmp_path) {
@@ -536,10 +625,14 @@ impl GlobalLedger {
                 for entry in entries.flatten() {
                     let p = entry.path();
                     if let Some(name) = p.file_stem().and_then(|s| s.to_str()) {
-                        if name.starts_with("snapshot_") && p.extension().map_or(false, |e| e == "snap") {
+                        if name.starts_with("snapshot_")
+                            && p.extension().is_some_and(|e| e == "snap")
+                        {
                             let parts: Vec<&str> = name.split('_').collect();
                             if parts.len() == 3 {
-                                if let Ok(seq) = parts[1].parse::<u64>() { snaps.push((seq, p)); }
+                                if let Ok(seq) = parts[1].parse::<u64>() {
+                                    snaps.push((seq, p));
+                                }
                             }
                         }
                     }
@@ -568,59 +661,120 @@ impl GlobalLedger {
         Ok(())
     }
 
-    fn apply_transaction(accounts: &mut FxHashMap<UserId, UserAccount>, cmd: &LedgerCommand) -> Result<()> {
+    fn apply_transaction(
+        accounts: &mut FxHashMap<UserId, UserAccount>,
+        cmd: &LedgerCommand,
+    ) -> Result<()> {
         match cmd {
-            LedgerCommand::Deposit { user_id, asset, amount } => {
-                let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
+            LedgerCommand::Deposit {
+                user_id,
+                asset,
+                amount,
+            } => {
+                let user = accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.available += amount;
             }
-            LedgerCommand::Withdraw { user_id, asset, amount } => {
-                let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
+            LedgerCommand::Withdraw {
+                user_id,
+                asset,
+                amount,
+            } => {
+                let user = accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 if bal.available < *amount {
-                    anyhow::bail!("Insufficient funds for withdraw: User {} Asset {}", user_id, asset);
+                    anyhow::bail!(
+                        "Insufficient funds for withdraw: User {} Asset {}",
+                        user_id,
+                        asset
+                    );
                 }
                 bal.available -= amount;
             }
-            LedgerCommand::Lock { user_id, asset, amount } => {
-                let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
+            LedgerCommand::Lock {
+                user_id,
+                asset,
+                amount,
+            } => {
+                let user = accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 if bal.available < *amount {
-                    anyhow::bail!("Insufficient funds for lock: User {} Asset {}", user_id, asset);
+                    anyhow::bail!(
+                        "Insufficient funds for lock: User {} Asset {}",
+                        user_id,
+                        asset
+                    );
                 }
                 bal.available -= amount;
                 bal.frozen += amount;
             }
-            LedgerCommand::Unlock { user_id, asset, amount } => {
-                let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
+            LedgerCommand::Unlock {
+                user_id,
+                asset,
+                amount,
+            } => {
+                let user = accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 if bal.frozen < *amount {
-                    anyhow::bail!("Insufficient frozen funds for unlock: User {} Asset {}", user_id, asset);
+                    anyhow::bail!(
+                        "Insufficient frozen funds for unlock: User {} Asset {}",
+                        user_id,
+                        asset
+                    );
                 }
                 bal.frozen -= amount;
                 bal.available += amount;
             }
-            LedgerCommand::TradeSettle { user_id, spend_asset, spend_amount, gain_asset, gain_amount } => {
-                let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
-                
+            LedgerCommand::TradeSettle {
+                user_id,
+                spend_asset,
+                spend_amount,
+                gain_asset,
+                gain_amount,
+            } => {
+                let user = accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| UserAccount::new(*user_id));
+
                 // Use indices to avoid multiple mutable borrows
                 let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset);
-                
+
                 if let Some(idx) = spend_idx {
                     if user.assets[idx].1.frozen < *spend_amount {
-                         anyhow::bail!("Insufficient frozen funds for settle: User {} Asset {}", user_id, spend_asset);
+                        anyhow::bail!(
+                            "Insufficient frozen funds for settle: User {} Asset {}",
+                            user_id,
+                            spend_asset
+                        );
                     }
                     user.assets[idx].1.frozen -= spend_amount;
                 } else {
-                     anyhow::bail!("Asset not found for spend: User {} Asset {}", user_id, spend_asset);
+                    anyhow::bail!(
+                        "Asset not found for spend: User {} Asset {}",
+                        user_id,
+                        spend_asset
+                    );
                 }
-                
+
                 let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset);
                 if let Some(idx) = gain_idx {
                     user.assets[idx].1.available += gain_amount;
                 } else {
-                    user.assets.push((*gain_asset, Balance { available: *gain_amount, frozen: 0 }));
+                    user.assets.push((
+                        *gain_asset,
+                        Balance {
+                            available: *gain_amount,
+                            frozen: 0,
+                        },
+                    ));
                 }
             }
         }

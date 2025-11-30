@@ -11,5 +11,6 @@ fn main() {
         inputs: &[Path::new("wal.fbs")],
         out_dir: Path::new(&out_dir), // Write to target/debug/build/...
         ..Default::default()
-    }).expect("flatc failed - Do you have 'flatc' installed and in your PATH?");
+    })
+    .expect("flatc failed - Do you have 'flatc' installed and in your PATH?");
 }

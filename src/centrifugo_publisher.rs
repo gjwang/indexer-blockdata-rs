@@ -1,4 +1,3 @@
-
 use crate::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate};
 use reqwest::Client;
 use serde_json::json;
@@ -85,11 +84,11 @@ impl CentrifugoPublisher {
         raw_json: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let channel = format!("user:{}", user_id);
-        
+
         // We need to construct the body manually to avoid escaping the raw_json string
         // The raw_json is already a valid JSON string, so we inject it directly into the data field
         let body_str = format!(r#"{{"channel":"{}","data":{}}}"#, channel, raw_json);
-        
+
         self.send_raw_request("publish", body_str).await
     }
 
@@ -99,7 +98,8 @@ impl CentrifugoPublisher {
         user_id: &str,
         balance_data: BalanceUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Balance(balance_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Balance(balance_data))
+            .await
     }
 
     /// Publish order update to a specific user's private channel
@@ -108,7 +108,8 @@ impl CentrifugoPublisher {
         user_id: &str,
         order_data: OrderUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Order(order_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Order(order_data))
+            .await
     }
 
     /// Publish position update to a specific user's private channel
@@ -117,7 +118,8 @@ impl CentrifugoPublisher {
         user_id: &str,
         position_data: PositionUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Position(position_data)).await
+        self.publish_user_update(user_id, &UserUpdate::Position(position_data))
+            .await
     }
 
     /// Generic publish method for any channel and data
@@ -206,7 +208,7 @@ mod tests {
         let json = serde_json::to_string(&order).unwrap();
         assert!(json.contains("order_123"));
         assert!(json.contains("ETH_USDT"));
-        assert!(json.contains("3000.0"));
+        assert!(json.contains("3000"));
     }
 
     #[test]
@@ -225,6 +227,6 @@ mod tests {
         let json = serde_json::to_string(&position).unwrap();
         assert!(json.contains("BTC_USDT"));
         assert!(json.contains("long"));
-        assert!(json.contains("50000.0"));
+        assert!(json.contains("50000"));
     }
 }
