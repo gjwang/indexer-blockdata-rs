@@ -224,7 +224,26 @@ impl MatchingEngine {
         }
     }
 
-    /// Register a new symbol and return its ID
+    /// Initialize symbols from database (simulated for testing)
+    /// In production, this would query the database and load existing symbol mappings
+    pub fn init_symbols(&mut self, symbols: Vec<String>) -> Result<(), String> {
+        for symbol in symbols {
+            if self.symbol_to_id.contains_key(&symbol) {
+                return Err(format!("Duplicate symbol in initialization: {}", symbol));
+            }
+            
+            let symbol_id = self.order_books.len();
+            self.symbol_to_id.insert(symbol.clone(), symbol_id);
+            self.order_books.push(OrderBook::new(symbol));
+            
+            println!("Loaded symbol: {} -> ID: {}", 
+                self.order_books[symbol_id].symbol, symbol_id);
+        }
+        Ok(())
+    }
+
+    /// Register a new symbol at runtime (for dynamic symbol addition)
+    /// In production, this would also persist to database
     pub fn add_symbol(&mut self, symbol: String) -> Result<usize, String> {
         if self.symbol_to_id.contains_key(&symbol) {
             return Err(format!("Symbol {} already exists", symbol));
@@ -233,6 +252,10 @@ impl MatchingEngine {
         let symbol_id = self.order_books.len();
         self.symbol_to_id.insert(symbol.clone(), symbol_id);
         self.order_books.push(OrderBook::new(symbol));
+        
+        // In production: Save to database here
+        // db.insert("symbols", symbol_id, symbol)?;
+        
         Ok(symbol_id)
     }
 
@@ -270,12 +293,19 @@ impl MatchingEngine {
 fn main() {
     let mut engine = MatchingEngine::new();
 
-    // Register symbols and get their IDs
-    let btc_id = engine.add_symbol("BTC_USDT".to_string()).unwrap();
-    let eth_id = engine.add_symbol("ETH_USDT".to_string()).unwrap();
+    // === Simulating Database Load at Startup ===
+    // In production, this would be: let symbols = db.query("SELECT symbol FROM symbols ORDER BY id")?;
+    println!("=== Initializing symbols from database (simulated) ===");
+    let initial_symbols = vec![
+        "BTC_USDT".to_string(),
+        "ETH_USDT".to_string(),
+    ];
+    engine.init_symbols(initial_symbols).unwrap();
     
-    println!("Registered BTC_USDT with ID: {}", btc_id);
-    println!("Registered ETH_USDT with ID: {}", eth_id);
+    // Cache the IDs for fast access
+    let btc_id = *engine.symbol_to_id.get("BTC_USDT").unwrap();
+    let _eth_id = *engine.symbol_to_id.get("ETH_USDT").unwrap();
+    println!("=== Symbol initialization complete ===\n");
 
     println!("\n>>> Trading BTC_USDT");
     println!("Adding Sell Order: 100 @ 10");
