@@ -253,19 +253,30 @@ impl OrderBook {
     }
 }
 
+use crate::order_wal::{OrderWal, RawOrder, WalSide};
+
 pub struct MatchingEngine {
     pub order_books: Vec<Option<OrderBook>>,
     pub ledger: GlobalLedger,
     pub asset_map: FxHashMap<usize, (u32, u32)>,
+    pub order_wal: OrderWal,
 }
 
 impl MatchingEngine {
     pub fn new(wal_dir: &std::path::Path, snap_dir: &std::path::Path) -> Result<Self, String> {
         let ledger = GlobalLedger::new(wal_dir, snap_dir).map_err(|e| e.to_string())?;
+        
+        if !wal_dir.exists() {
+            std::fs::create_dir_all(wal_dir).map_err(|e| e.to_string())?;
+        }
+        let order_wal_path = wal_dir.join("orders.wal");
+        let order_wal = OrderWal::open(&order_wal_path).map_err(|e| e.to_string())?;
+
         Ok(MatchingEngine {
             order_books: Vec::new(),
             ledger,
             asset_map: FxHashMap::default(),
+            order_wal,
         })
     }
 
@@ -287,6 +298,23 @@ impl MatchingEngine {
     /// Add order using symbol ID
     pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
         let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or("Asset map not found")?;
+        
+        // WAL Append
+        let wal_side = match side {
+            Side::Buy => WalSide::Buy,
+            Side::Sell => WalSide::Sell,
+        };
+        
+        self.order_wal.append(RawOrder {
+            order_id,
+            user_id,
+            symbol_id: symbol_id as u64,
+            side: wal_side,
+            price,
+            quantity,
+            timestamp: 0, 
+            _pad: [0; 15],
+        });
         
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
