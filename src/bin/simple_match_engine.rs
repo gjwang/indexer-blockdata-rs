@@ -126,4 +126,79 @@ fn main() {
     engine.add_order(new_id, 201, Side::Sell, 50, 100, 201).unwrap();
     engine.print_order_book(new_id);
     print_user_balances(&engine, &[201]);
+
+    // ==========================================
+    // LOAD TEST
+    // ==========================================
+    println!("\n>>> STARTING LOAD TEST (1,000,000 Orders)");
+    
+    // Deposit funds for load test users
+    // User 1000: Whale Seller (Asset 1: BTC)
+    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1000, asset: 1, amount: 1_000_000_000 }).unwrap();
+    // User 1001: Whale Buyer (Asset 2: USDT)
+    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1001, asset: 2, amount: 50_000_000_000 }).unwrap();
+
+    let total = 1_000_000;
+    let start = std::time::Instant::now();
+    let mut buy_orders = Vec::new();
+    let mut sell_orders = Vec::new();
+
+    // Start ID from 10000 to avoid conflict with previous manual orders
+    let start_id = 10000;
+
+    for i in 1..=total {
+        let order_id = start_id + i;
+        let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
+        let user_id = if side == Side::Buy { 1001 } else { 1000 };
+        let price = 50000;
+        let quantity = 1;
+
+        // Store order IDs for matching/cancelling
+        if side == Side::Buy {
+            buy_orders.push(order_id);
+        } else {
+            sell_orders.push(order_id);
+        }
+
+        // Place Order
+        engine.add_order(btc_id, order_id, side, price, quantity, user_id).unwrap();
+
+        // Match orders every 100 orders
+        // Note: In simple_match_engine, matching happens automatically inside add_order if prices cross.
+        // But here we are placing both sides at same price (50000), so they SHOULD match immediately if we alternate.
+        // However, our loop alternates Buy/Sell.
+        // If we place Sell 50000, it sits.
+        // Then Buy 50000, it matches the Sell.
+        // So simple_match_engine matches immediately! We don't need manual matching calls like me_wal.
+        
+        // Cancel an order every 500 orders (if any exist in book)
+        if i % 500 == 0 {
+            // Since they match immediately, we might not have many orders in the book unless we place non-matching ones.
+            // Let's place a non-matching order to cancel.
+            let cancel_id = order_id + 1_000_000; // Unique ID
+            // Place a Buy low or Sell high so it doesn't match
+            let (c_side, c_price) = (Side::Buy, 100); 
+            engine.add_order(btc_id, cancel_id, c_side, c_price, 1, 1001).unwrap();
+            
+            if engine.cancel_order(btc_id, cancel_id).unwrap() {
+                 // println!("    Cancelled Order {}", cancel_id);
+            }
+        }
+
+        // Snapshot every 200k
+        if i % 200_000 == 0 {
+            let t = std::time::Instant::now();
+            engine.trigger_cow_snapshot();
+            println!("    Forked at Order {}. Main Thread Paused: {:.2?}", i, t.elapsed());
+        }
+    }
+
+    let dur = start.elapsed();
+    println!("\n>>> LOAD TEST DONE");
+    println!("    Total Orders: {}", total);
+    println!("    Total Time: {:.2?}", dur);
+    println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
+
+    // Wait for children to finish
+    std::thread::sleep(std::time::Duration::from_secs(3));
 }
