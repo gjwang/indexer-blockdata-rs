@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, VecDeque};
 
 
@@ -8,36 +7,11 @@ pub enum Side {
     Sell,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Price(u64);
-
-impl Price {
-    pub fn new(value: u64) -> Self {
-        Price(value)
-    }
-
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-}
-
-impl PartialOrd for Price {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.0.cmp(&other.0))
-    }
-}
-
-impl Ord for Price {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.0.cmp(&other.0)
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: u64,
     pub side: Side,
-    pub price: Price,
+    pub price: u64,
     pub quantity: u64,
     pub timestamp: u64,
 }
@@ -46,15 +20,15 @@ pub struct Order {
 pub struct Trade {
     pub buy_order_id: u64,
     pub sell_order_id: u64,
-    pub price: Price,
+    pub price: u64,
     pub quantity: u64,
 }
 
 pub struct OrderBook {
     // Bids: High to Low. We use Reverse for BTreeMap to iterate from highest price.
-    bids: BTreeMap<std::cmp::Reverse<Price>, VecDeque<Order>>,
+    bids: BTreeMap<std::cmp::Reverse<u64>, VecDeque<Order>>,
     // Asks: Low to High.
-    asks: BTreeMap<Price, VecDeque<Order>>,
+    asks: BTreeMap<u64, VecDeque<Order>>,
     trade_history: Vec<Trade>,
     order_counter: u64,
 }
@@ -74,7 +48,7 @@ impl OrderBook {
         let order = Order {
             id: self.order_counter,
             side,
-            price: Price::new(price),
+            price,
             quantity,
             timestamp: self.order_counter, // Using counter as logical timestamp
         };
@@ -94,7 +68,7 @@ impl OrderBook {
                     let mut best_ask_price = None;
                     if let Some((price, _)) = self.asks.iter().next() {
                         if price <= &order.price {
-                            best_ask_price = Some(price.clone());
+                            best_ask_price = Some(*price);
                         }
                     }
 
@@ -139,7 +113,7 @@ impl OrderBook {
                     let mut best_bid_price = None;
                     if let Some((std::cmp::Reverse(price), _)) = self.bids.iter().next() {
                         if price >= &order.price {
-                            best_bid_price = Some(price.clone());
+                            best_bid_price = Some(*price);
                         }
                     }
 
@@ -210,13 +184,13 @@ impl OrderBook {
         println!("ASKS:");
         for (price, orders) in self.asks.iter().rev() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
-            println!("  Price: {} | Qty: {} | Orders: {}", price.value(), total_qty, orders.len());
+            println!("  Price: {} | Qty: {} | Orders: {}", price, total_qty, orders.len());
         }
         println!("------------------");
         println!("BIDS:");
         for (std::cmp::Reverse(price), orders) in self.bids.iter() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
-            println!("  Price: {} | Qty: {} | Orders: {}", price.value(), total_qty, orders.len());
+            println!("  Price: {} | Qty: {} | Orders: {}", price, total_qty, orders.len());
         }
         println!("------------------\n");
     }
