@@ -56,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let update_type = rng.gen_range(0..3);
-        let send_timestamp = if enable_latency {
+        let ts_ms = if enable_latency {
             Some(chrono::Utc::now().timestamp_millis())
         } else {
             None
@@ -73,7 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     locked,
                     total: available + locked,
                     timestamp: chrono::Utc::now().timestamp(),
-                    send_timestamp,
+                    ts_ms,
                 })
             }
             1 => {
@@ -91,7 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     filled_quantity: 0.0,
                     remaining_quantity: quantity,
                     timestamp: chrono::Utc::now().timestamp(),
-                    send_timestamp,
+                    ts_ms,
                 })
             }
             _ => {
@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     unrealized_pnl: (mark_price - entry_price) * 0.1, // Simplified PnL
                     leverage: 10.0,
                     timestamp: chrono::Utc::now().timestamp(),
-                    send_timestamp,
+                    ts_ms,
                 })
             }
         };

@@ -384,8 +384,8 @@
             const now = Date.now();
             let latencyHtml = '';
 
-            if (data.send_timestamp) {
-                const latency = now - data.send_timestamp;
+            if (data.ts_ms) {
+                const latency = now - data.ts_ms;
                 latencyHtml = `<span style="float: right; font-size: 11px; color: ${latency > 1000 ? 'red' : 'green'};">Latency: ${latency}ms</span>`;
             }
 

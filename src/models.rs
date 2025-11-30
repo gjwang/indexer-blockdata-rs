@@ -8,7 +8,7 @@ pub struct BalanceUpdate {
     pub total: f64,
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_timestamp: Option<i64>,
+    pub ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -24,7 +24,7 @@ pub struct OrderUpdate {
     pub remaining_quantity: f64,
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_timestamp: Option<i64>,
+    pub ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -39,7 +39,7 @@ pub struct PositionUpdate {
     pub leverage: f64,
     pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub send_timestamp: Option<i64>,
+    pub ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
