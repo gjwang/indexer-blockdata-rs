@@ -273,7 +273,13 @@ impl RollingWal {
             self.rotate(seq)?;
         }
 
-        if self.current_segment.as_mut().unwrap().append(seq, cmd).is_err() {
+        if self
+            .current_segment
+            .as_mut()
+            .unwrap()
+            .append(seq, cmd)
+            .is_err()
+        {
             self.rotate(seq)?;
             self.current_segment.as_mut().unwrap().append(seq, cmd)?;
         }
@@ -534,8 +540,7 @@ impl GlobalLedger {
         for entry in fs::read_dir(dir)? {
             let path = entry?.path();
             if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                if name.starts_with("snapshot_") && path.extension().is_some_and(|e| e == "snap")
-                {
+                if name.starts_with("snapshot_") && path.extension().is_some_and(|e| e == "snap") {
                     let parts: Vec<&str> = name.split('_').collect();
                     if parts.len() == 3 {
                         if let Ok(seq) = parts[1].parse::<u64>() {

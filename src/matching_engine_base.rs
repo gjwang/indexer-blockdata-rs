@@ -302,10 +302,7 @@ impl OrderBook {
                         .push_back(order);
                 }
                 Side::Sell => {
-                    self.asks
-                        .entry(order.price)
-                        .or_default()
-                        .push_back(order);
+                    self.asks.entry(order.price).or_default().push_back(order);
                 }
             }
         }
@@ -754,10 +751,7 @@ impl MatchingEngine {
             .as_mut()
             .ok_or_else(|| OrderError::Other(format!("Symbol ID {} is not active", symbol_id)))?;
 
-        if let Some(_cancelled_order) = book
-            .cancel_order(order_id)
-            .map_err(OrderError::Other)?
-        {
+        if let Some(_cancelled_order) = book.cancel_order(order_id).map_err(OrderError::Other)? {
             // TODO: Unlock funds!
             // We need to know the order details (price, quantity, side, user_id) to unlock.
             // `OrderBook::cancel_order` currently returns `bool`.
