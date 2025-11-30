@@ -45,7 +45,7 @@ mod tests {
             amount: 500,
         }).unwrap();
         
-        //    // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
+        // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
         let result = engine.add_order(0, 1, Side::Buy, 10, 100, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
