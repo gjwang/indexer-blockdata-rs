@@ -63,9 +63,10 @@ async fn get_block_data(
     Ok(block_json)
 }
 
-#[cached(time = 10)]
-async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, Box<dyn std::error::Error>> {
-    let block_number_end = i64::try_from(client.get_block_number().await?)?;
+#[cached(time = 10, key = "String", convert = r#"{ "latest_block".to_string() }"#)]
+async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, String> {
+    let block_number_end = client.get_block_number().await.map_err(|e| e.to_string())?;
+    let block_number_end = i64::try_from(block_number_end).map_err(|e| e.to_string())?;
     info!("get_latest_block_number block_number_end={block_number_end}");
     Ok(block_number_end)
 }
@@ -105,7 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if _block_number_end == -1 {
         //use LatestBlockNumber value as block_number_end
         // block_number_end = i64::try_from(client.get_block_number().await?)?;
-        block_number_end = get_latest_block_number(client.clone()).await?;
+        block_number_end = get_latest_block_number(client.clone()).await.map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         info!("LatestBlockNumber: {}", block_number_end);
         kv_db.insert("block_number_end", block_number_end)?;
     } else if _block_number_end == -2 {
@@ -143,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !is_reverse_indexing {
             // block_number_end = i64::try_from(client.get_block_number().await?)?;
-            block_number_end = get_latest_block_number(client.clone()).await?;
+            block_number_end = get_latest_block_number(client.clone()).await.map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
             info!("LatestBlockNumber: {}", block_number_end);
         } else {
             block_number_end = kv_db.get("block_number_end", -1);
