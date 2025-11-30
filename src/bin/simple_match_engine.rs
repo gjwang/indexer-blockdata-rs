@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
+use rustc_hash::FxHashMap;
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -211,51 +212,72 @@ impl OrderBook {
 }
 
 pub struct MatchingEngine {
-    order_books: HashMap<String, OrderBook>,
+    order_books: Vec<OrderBook>,
+    symbol_to_id: FxHashMap<String, usize>,  // 2-3x faster than std::HashMap!
 }
 
 impl MatchingEngine {
     pub fn new() -> Self {
         MatchingEngine {
-            order_books: HashMap::new(),
+            order_books: Vec::new(),
+            symbol_to_id: FxHashMap::default(),
         }
     }
 
-    pub fn add_symbol(&mut self, symbol: String) -> Result<(), String> {
-        if self.order_books.contains_key(&symbol) {
+    /// Register a new symbol and return its ID
+    pub fn add_symbol(&mut self, symbol: String) -> Result<usize, String> {
+        if self.symbol_to_id.contains_key(&symbol) {
             return Err(format!("Symbol {} already exists", symbol));
         }
         
-        self.order_books.insert(symbol.clone(), OrderBook::new(symbol));
-        Ok(())
+        let symbol_id = self.order_books.len();
+        self.symbol_to_id.insert(symbol.clone(), symbol_id);
+        self.order_books.push(OrderBook::new(symbol));
+        Ok(symbol_id)
     }
 
+    /// Fast path: Add order using symbol ID (for high-frequency trading)
+    pub fn add_order_by_id(&mut self, symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+        let book = self.order_books.get_mut(symbol_id)
+            .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+        
+        // Clone symbol to avoid borrow conflict
+        let symbol = book.symbol.clone();
+        book.add_order(&symbol, side, price, quantity)
+    }
+
+    /// Convenient path: Add order using symbol string
     pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
-        let book = self.order_books.get_mut(symbol)
+        let symbol_id = self.symbol_to_id.get(symbol)
             .ok_or_else(|| format!("Symbol {} not found", symbol))?;
         
-        book.add_order(symbol, side, price, quantity)
+        self.add_order_by_id(*symbol_id, side, price, quantity)
     }
 
     pub fn print_order_book(&self, symbol: &str) {
-        if let Some(book) = self.order_books.get(symbol) {
-            println!("\n--- Order Book for {} ---", symbol);
-            book.print_book();
-            println!("----------------------------------\n");
-        } else {
-            println!("Symbol {} not found", symbol);
+        if let Some(&symbol_id) = self.symbol_to_id.get(symbol) {
+            if let Some(book) = self.order_books.get(symbol_id) {
+                println!("\n--- Order Book for {} (ID: {}) ---", symbol, symbol_id);
+                book.print_book();
+                println!("----------------------------------\n");
+                return;
+            }
         }
+        println!("Symbol {} not found", symbol);
     }
 }
 
 fn main() {
     let mut engine = MatchingEngine::new();
 
-    // Add assets using symbols - returns auto-generated asset_ids
-    engine.add_symbol("BTC_USDT".to_string()).unwrap();
-    engine.add_symbol("ETH_USDT".to_string()).unwrap();
+    // Register symbols and get their IDs
+    let btc_id = engine.add_symbol("BTC_USDT".to_string()).unwrap();
+    let eth_id = engine.add_symbol("ETH_USDT".to_string()).unwrap();
+    
+    println!("Registered BTC_USDT with ID: {}", btc_id);
+    println!("Registered ETH_USDT with ID: {}", eth_id);
 
-    println!(">>> Trading BTC_USDT");
+    println!("\n>>> Trading BTC_USDT");
     println!("Adding Sell Order: 100 @ 10");
     engine.add_order("BTC_USDT", Side::Sell, 100, 10).unwrap();
     
@@ -275,9 +297,10 @@ fn main() {
     
     engine.print_order_book("ETH_USDT");
     
-    println!(">>> Trading BTC_USDT again");
+    println!(">>> Trading BTC_USDT again (using FAST path with symbol_id)");
     println!("Adding Buy Order: 102 @ 10 (Should match remaining 2 @ 100 and 5 @ 101, rest 3 on book)");
-    engine.add_order("BTC_USDT", Side::Buy, 102, 10).unwrap();
+    // Fast path: use symbol ID directly for high-frequency trading!
+    engine.add_order_by_id(btc_id, Side::Buy, 102, 10).unwrap();
 
     engine.print_order_book("BTC_USDT");
 }
