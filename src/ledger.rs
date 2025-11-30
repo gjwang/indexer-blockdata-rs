@@ -401,7 +401,7 @@ impl Iterator for WalIterator {
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: RollingWal,
-    last_seq: u64,
+    pub last_seq: u64,
     snapshot_dir: PathBuf,
 }
 
@@ -443,6 +443,23 @@ impl GlobalLedger {
         let wal = RollingWal::new(wal_dir, recovered_seq + 1)?;
 
         Ok(Self { accounts, wal, last_seq: recovered_seq, snapshot_dir: snapshot_dir.to_path_buf() })
+    }
+
+    /// Create Ledger from an existing state (e.g. from a unified snapshot)
+    /// This skips the internal WAL replay and Snapshot loading of the Ledger itself.
+    pub fn from_state(wal_dir: &Path, snapshot_dir: &Path, accounts: FxHashMap<UserId, UserAccount>, last_seq: u64) -> Result<Self> {
+        fs::create_dir_all(wal_dir)?;
+        fs::create_dir_all(snapshot_dir)?;
+
+        // Initialize WAL for appending from the next sequence
+        let wal = RollingWal::new(wal_dir, last_seq + 1)?;
+
+        Ok(Self {
+            accounts,
+            wal,
+            last_seq,
+            snapshot_dir: snapshot_dir.to_path_buf(),
+        })
     }
 
     fn find_latest_snapshot(dir: &Path) -> Result<Option<(u64, PathBuf, String)>> {

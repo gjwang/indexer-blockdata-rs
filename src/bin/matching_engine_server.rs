@@ -201,5 +201,5 @@ fn main() {
     println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
 
     // Wait for children to finish
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(1));
 }

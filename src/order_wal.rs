@@ -173,4 +173,83 @@ impl Wal {
         let _ = self.tx.send(entry);
         self.current_seq += 1;
     }
+
+    pub fn replay_iter(path: &Path) -> Result<WalIterator> {
+        WalIterator::new(path)
+    }
+}
+
+pub struct WalIterator {
+    mmap: memmap2::Mmap,
+    cursor: usize,
+    len: usize,
+}
+
+impl WalIterator {
+    pub fn new(path: &Path) -> Result<Self> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        let len = file.metadata()?.len() as usize;
+        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        Ok(Self { mmap, cursor: 0, len })
+    }
+}
+
+impl Iterator for WalIterator {
+    type Item = (u64, LogEntry);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.cursor + 4 >= self.len {
+            return None;
+        }
+
+        let len_bytes: [u8; 4] = self.mmap[self.cursor..self.cursor + 4].try_into().unwrap();
+        let len = u32::from_le_bytes(len_bytes) as usize;
+
+        if len == 0 || self.cursor + 4 + len > self.len {
+            return None;
+        }
+
+        self.cursor += 4;
+        let buf = &self.mmap[self.cursor..self.cursor + len];
+        self.cursor += len;
+
+        let frame = flatbuffers::root::<WalFrame>(buf).ok()?;
+        let seq = frame.seq();
+        
+        match frame.entry_type() {
+            EntryType::Order => {
+                let order = frame.entry_as_order()?;
+                Some((seq, LogEntry::PlaceOrder {
+                    order_id: order.id()?.lo(),
+                    symbol: order.symbol()?.to_string(),
+                    side: match order.side() {
+                        FbsSide::Buy => WalSide::Buy,
+                        FbsSide::Sell => WalSide::Sell,
+                        _ => return None,
+                    },
+                    price: order.price(),
+                    quantity: order.quantity(),
+                    user_id: order.user_id(),
+                    timestamp: order.timestamp(),
+                }))
+            }
+            EntryType::Cancel => {
+                let cancel = frame.entry_as_cancel()?;
+                Some((seq, LogEntry::CancelOrder {
+                    id: cancel.id()?.lo(),
+                }))
+            }
+            EntryType::Trade => {
+                 let trade = frame.entry_as_trade()?;
+                 Some((seq, LogEntry::Trade {
+                     match_id: trade.match_id(),
+                     buy_order_id: trade.buy_order_id()?.lo(),
+                     sell_order_id: trade.sell_order_id()?.lo(),
+                     price: trade.price(),
+                     quantity: trade.quantity(),
+                 }))
+            }
+            _ => None,
+        }
+    }
 }
