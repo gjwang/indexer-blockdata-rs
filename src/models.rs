@@ -75,7 +75,7 @@ pub enum UserUpdate {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StreamMessage {
-    pub ts_ms: i64,
     #[serde(flatten)]
     pub update: UserUpdate,
+    pub ts_ms: i64,
 }
