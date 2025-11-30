@@ -182,7 +182,6 @@ mod tests {
             available: 1.5,
             locked: 0.2,
             total: 1.7,
-            timestamp: 1732900000,
         };
 
         let json = serde_json::to_string(&balance).unwrap();
@@ -194,7 +193,7 @@ mod tests {
     fn test_order_update_serialization() {
         let order = OrderUpdate {
             order_id: "order_123".to_string(),
-            symbol: "ETH/USDT".to_string(),
+            symbol: "ETH_USDT".to_string(),
             side: "buy".to_string(),
             order_type: "limit".to_string(),
             status: "new".to_string(),
@@ -202,19 +201,18 @@ mod tests {
             quantity: 1.5,
             filled_quantity: 0.0,
             remaining_quantity: 1.5,
-            timestamp: 1732900000,
         };
 
         let json = serde_json::to_string(&order).unwrap();
         assert!(json.contains("order_123"));
-        assert!(json.contains("ETH/USDT"));
+        assert!(json.contains("ETH_USDT"));
         assert!(json.contains("3000.0"));
     }
 
     #[test]
     fn test_position_update_serialization() {
         let position = PositionUpdate {
-            symbol: "BTC/USDT".to_string(),
+            symbol: "BTC_USDT".to_string(),
             side: "long".to_string(),
             quantity: 0.5,
             entry_price: 50000.0,
@@ -222,11 +220,10 @@ mod tests {
             liquidation_price: 40000.0,
             unrealized_pnl: 500.0,
             leverage: 10.0,
-            timestamp: 1732900000,
         };
 
         let json = serde_json::to_string(&position).unwrap();
-        assert!(json.contains("BTC/USDT"));
+        assert!(json.contains("BTC_USDT"));
         assert!(json.contains("long"));
         assert!(json.contains("50000.0"));
     }

@@ -80,7 +80,7 @@ curl -X POST http://localhost:3000/api/test/publish-order \
   -d '{
     "user_id": "12345",
     "order_id": "order_001",
-    "symbol": "BTC/USDT",
+    "symbol": "BTC_USDT",
     "side": "buy",
     "status": "filled",
     "price": 50000,
