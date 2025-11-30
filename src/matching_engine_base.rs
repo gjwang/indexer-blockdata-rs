@@ -342,6 +342,7 @@ pub struct EngineSnapshot {
     pub ledger_accounts: FxHashMap<u64, UserAccount>,
     pub ledger_seq: u64,
     pub order_wal_seq: u64,
+    pub processed_order_ids: FxHashSet<u64>,
 }
 
 pub struct MatchingEngine {
@@ -350,6 +351,7 @@ pub struct MatchingEngine {
     pub asset_map: FxHashMap<usize, (u32, u32)>,
     pub order_wal: Wal,
     pub trade_wal: Wal,
+    pub processed_order_ids: FxHashSet<u64>,
     pub snapshot_dir: std::path::PathBuf,
 }
 
@@ -366,7 +368,11 @@ impl MatchingEngine {
         let trade_wal_path = wal_dir.join("trades.wal");
         
         // 1. Try Load Snapshot
-        let (mut order_books, mut accounts, mut ledger_seq, mut order_wal_seq) = (Vec::new(), FxHashMap::default(), 0, 0);
+        let mut order_books = Vec::new();
+        let mut accounts = FxHashMap::default();
+        let mut ledger_seq = 0;
+        let mut order_wal_seq = 0;
+        let mut processed_order_ids = FxHashSet::default();
         
         // Find latest snapshot
         let mut max_seq = 0;
@@ -399,6 +405,7 @@ impl MatchingEngine {
             accounts = snap.ledger_accounts;
             ledger_seq = snap.ledger_seq;
             order_wal_seq = snap.order_wal_seq;
+            processed_order_ids = snap.processed_order_ids;
             println!("   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}", order_wal_seq, ledger_seq);
         }
 
@@ -429,6 +436,7 @@ impl MatchingEngine {
             asset_map: FxHashMap::default(),
             order_wal,
             trade_wal,
+            processed_order_ids,
             snapshot_dir: snap_dir.to_path_buf(),
         };
 
@@ -443,6 +451,7 @@ impl MatchingEngine {
                      
                      match entry {
                          LogEntry::PlaceOrder { order_id, symbol, side, price, quantity, user_id, .. } => {
+                             engine.processed_order_ids.insert(order_id);
                              // Find symbol_id from symbol string
                              // Note: We might need to register symbol if not exists?
                              // For now, assume symbols are pre-registered or we scan WAL for registration?
@@ -503,11 +512,24 @@ impl MatchingEngine {
         let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        // 1.5 Validate Duplicate Order ID
+        // 1.5 Validate Duplicate Order ID (TODO: ULID Time-Window Strategy)
+        // Current Implementation: Simple HashSet check (Memory Intensive)
+        // Future Implementation Plan:
+        // 1. Parse ULID from `order_id` (u128 or string representation needed).
+        // 2. Extract timestamp from ULID.
+        // 3. Compare with `last_processed_timestamp` (High Water Mark).
+        //    - If `order_ts < last_processed_ts - window`: Reject as Stale/Duplicate.
+        //    - If `order_ts > now + drift`: Reject as Future/Clock Skew.
+        // 4. Check `recent_ids` cache (e.g., last 5s) for exact duplicates within the window.
+        // 5. During WAL Replay: Skip these checks (trust WAL), but update `last_processed_ts`.
         if let Some(Some(book)) = self.order_books.get(symbol_id) {
              if book.active_order_ids.contains(&order_id) {
                  return Err(OrderError::DuplicateOrderId { order_id });
              }
+        }
+        // Also check the global processed set (if we decide to keep it for now)
+        if self.processed_order_ids.contains(&order_id) {
+             return Err(OrderError::DuplicateOrderId { order_id });
         }
 
         // 2. Validate Balance
@@ -679,6 +701,7 @@ impl MatchingEngine {
                     ledger_accounts: self.ledger.get_accounts().clone(),
                     ledger_seq: self.ledger.last_seq, // Assuming GlobalLedger exposes last_seq? It does.
                     order_wal_seq: current_seq,
+                    processed_order_ids: self.processed_order_ids.clone(),
                 };
 
                 if let Ok(file) = File::create(&path) {
