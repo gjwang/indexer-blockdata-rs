@@ -10,7 +10,7 @@ use tower_http::cors::CorsLayer;
 
 use fetcher::centrifugo_auth::{CentrifugoTokenGenerator, TokenResponse};
 use fetcher::centrifugo_publisher::CentrifugoPublisher;
-use fetcher::models::{BalanceUpdate, OrderUpdate};
+use fetcher::models::{BalanceUpdate, OrderUpdate, StreamMessage, UserUpdate};
 
 /// Application state shared across handlers
 #[derive(Clone)]
@@ -140,12 +140,17 @@ async fn test_publish_balance(
         available: payload.available,
         locked: payload.locked,
         total: payload.available + payload.locked,
+    };
+
+    let user_update = UserUpdate::Balance(balance);
+    let stream_message = StreamMessage {
         ts_ms: None,
+        update: user_update,
     };
 
     state
         .publisher
-        .publish_balance_update(&payload.user_id, balance)
+        .publish_user_update(&payload.user_id, &stream_message)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
@@ -181,12 +186,17 @@ async fn test_publish_order(
         quantity: payload.quantity,
         filled_quantity: 0.0,
         remaining_quantity: payload.quantity,
+    };
+
+    let user_update = UserUpdate::Order(order);
+    let stream_message = StreamMessage {
         ts_ms: None,
+        update: user_update,
     };
 
     state
         .publisher
-        .publish_order_update(&payload.user_id, order)
+        .publish_user_update(&payload.user_id, &stream_message)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 

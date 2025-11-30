@@ -1,6 +1,6 @@
 use clap::Parser;
 use fetcher::configure;
-use fetcher::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate};
+use fetcher::models::{BalanceUpdate, OrderUpdate, PositionUpdate, UserUpdate, StreamMessage};
 use rand::Rng;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -72,7 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     available,
                     locked,
                     total: available + locked,
-                    ts_ms,
                 })
             }
             1 => {
@@ -89,7 +88,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     quantity,
                     filled_quantity: 0.0,
                     remaining_quantity: quantity,
-                    ts_ms,
                 })
             }
             _ => {
@@ -105,12 +103,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     liquidation_price: entry_price * 0.8,
                     unrealized_pnl: (mark_price - entry_price) * 0.1, // Simplified PnL
                     leverage: 10.0,
-                    ts_ms,
                 })
             }
         };
 
-        let payload = serde_json::to_string(&user_update)?;
+        let stream_message = StreamMessage {
+            ts_ms,
+            update: user_update.clone(),
+        };
+
+        let payload = serde_json::to_string(&stream_message)?;
         let key = user_id.clone();
 
         match &user_update {
