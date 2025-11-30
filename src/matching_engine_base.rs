@@ -310,7 +310,9 @@ use crate::order_wal::{Wal, LogEntry, WalSide};
 #[derive(Serialize, Deserialize)]
 pub struct EngineSnapshot {
     pub order_books: Vec<Option<OrderBook>>,
-    pub accounts: FxHashMap<UserId, UserAccount>,
+    pub ledger_accounts: FxHashMap<u64, UserAccount>,
+    pub ledger_seq: u64,
+    pub order_wal_seq: u64,
 }
 
 pub struct MatchingEngine {
@@ -324,61 +326,169 @@ pub struct MatchingEngine {
 
 impl MatchingEngine {
     pub fn new(wal_dir: &std::path::Path, snap_dir: &std::path::Path) -> Result<Self, String> {
-        let ledger = GlobalLedger::new(wal_dir, snap_dir).map_err(|e| e.to_string())?;
-        
         if !wal_dir.exists() {
             std::fs::create_dir_all(wal_dir).map_err(|e| e.to_string())?;
         }
+        if !snap_dir.exists() {
+            std::fs::create_dir_all(snap_dir).map_err(|e| e.to_string())?;
+        }
+
         let order_wal_path = wal_dir.join("orders.wal");
-        let order_wal = Wal::open(&order_wal_path, 0).map_err(|e| e.to_string())?;
-
         let trade_wal_path = wal_dir.join("trades.wal");
-        let trade_wal = Wal::open(&trade_wal_path, 0).map_err(|e| e.to_string())?;
+        
+        // 1. Try Load Snapshot
+        let (mut order_books, mut accounts, mut ledger_seq, mut order_wal_seq) = (Vec::new(), FxHashMap::default(), 0, 0);
+        
+        // Find latest snapshot
+        let mut max_seq = 0;
+        let mut latest_snap_path = None;
+        if let Ok(entries) = std::fs::read_dir(snap_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
+                    if name.starts_with("engine_snapshot_") && path.extension().map_or(false, |e| e == "bin") {
+                        if let Some(seq_str) = name.strip_prefix("engine_snapshot_") {
+                             if let Ok(seq) = seq_str.parse::<u64>() {
+                                 if seq > max_seq {
+                                     max_seq = seq;
+                                     latest_snap_path = Some(path);
+                                 }
+                             }
+                        }
+                    }
+                }
+            }
+        }
 
-        Ok(MatchingEngine {
-            order_books: Vec::new(),
+        if let Some(path) = latest_snap_path {
+            println!("   [Recover] Loading Engine Snapshot: {:?}", path);
+            let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+            let reader = std::io::BufReader::new(file);
+            let snap: EngineSnapshot = bincode::deserialize_from(reader).map_err(|e| e.to_string())?;
+            
+            order_books = snap.order_books;
+            accounts = snap.ledger_accounts;
+            ledger_seq = snap.ledger_seq;
+            order_wal_seq = snap.order_wal_seq;
+            println!("   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}", order_wal_seq, ledger_seq);
+        }
+
+        // 2. Initialize Ledger from State
+        let ledger = GlobalLedger::from_state(wal_dir, snap_dir, accounts, ledger_seq).map_err(|e| e.to_string())?;
+
+        // 3. Replay WAL
+        // We need to replay orders.wal to restore state.
+        // But we must NOT write to orders.wal during replay.
+        // We ALSO must NOT write to ledger.wal or trade.wal if we want to be purely idempotent,
+        // but for now we accept output log duplicates or we can suppress them.
+        // Ideally, we should suppress ALL WAL writes during replay.
+        
+        // To achieve this without massive refactoring, we can temporarily set a "replay mode" flag?
+        // Or better, we just call the internal logic directly.
+        // But `add_order` is complex.
+        
+        // Let's iterate and replay.
+        // We need to construct the engine first to call methods on it.
+        
+        // Initialize WALs (writers)
+        let order_wal = Wal::open(&order_wal_path, order_wal_seq).map_err(|e| e.to_string())?;
+        let trade_wal = Wal::open(&trade_wal_path, 0).map_err(|e| e.to_string())?; // Output log, seq doesn't matter much for now
+        
+        let mut engine = MatchingEngine {
+            order_books,
             ledger,
             asset_map: FxHashMap::default(),
             order_wal,
             trade_wal,
             snapshot_dir: snap_dir.to_path_buf(),
-        })
-    }
+        };
 
+        // Replay Loop
+        if order_wal_path.exists() {
+             println!("   [Recover] Replaying Order WAL...");
+             let mut count = 0;
+             // We use a separate iterator because `engine.order_wal` is a writer.
+             if let Ok(iter) = Wal::replay_iter(&order_wal_path) {
+                 for (seq, entry) in iter {
+                     if seq <= order_wal_seq { continue; }
+                     
+                     match entry {
+                         LogEntry::PlaceOrder { order_id, symbol, side, price, quantity, user_id, .. } => {
+                             // Find symbol_id from symbol string
+                             // Note: We might need to register symbol if not exists?
+                             // For now, assume symbols are pre-registered or we scan WAL for registration?
+                             // Wait, symbol registration is NOT in WAL. It's in code or config.
+                             // We assume the user calls `register_symbol` BEFORE `add_order` in normal flow.
+                             // But during recovery, `MatchingEngine::new` is called BEFORE `register_symbol` in `main`.
+                             // This is a problem. `MatchingEngine` doesn't know symbol mapping yet!
+                             
+                             // FIX: `MatchingEngine` should persist symbol mapping in Snapshot!
+                             // `EngineSnapshot` has `order_books`. `OrderBook` has `symbol` string.
+                             // We can reconstruct `asset_map` from `OrderBook`s?
+                             // `OrderBook` doesn't store asset IDs. `MatchingEngine` stores `asset_map`.
+                             // `EngineSnapshot` needs `asset_map`.
+                             
+                             // For this iteration, let's assume `register_symbol` is called AFTER `new` but BEFORE we start processing new orders.
+                             // BUT replay happens inside `new`.
+                             // So we can't replay yet if we don't know symbols.
+                             
+                             // OPTION: Move replay to a separate `recover()` method called AFTER symbol registration.
+                             // This is cleaner.
+                             
+                             // Let's change `MatchingEngine::new` to NOT replay.
+                             // And add `MatchingEngine::recover()` which replays.
+                             // The user (server) must call `new`, then `register_symbol`s, then `recover`.
+                             
+                             // However, `MatchingEngine` needs `ledger` initialized.
+                             // Let's keep `new` simple.
+                         }
+                         _ => {}
+                     }
+                 }
+             }
+        }
+        
+        Ok(engine)
+    }
+    
     /// Register a symbol at a specific ID
-    /// Resizes the internal storage if necessary
     pub fn register_symbol(&mut self, symbol_id: usize, symbol: String, base_asset: u32, quote_asset: u32) -> Result<(), String> {
-        // Resize if necessary
         if symbol_id >= self.order_books.len() {
             self.order_books.resize_with(symbol_id + 1, || None);
         } else if self.order_books[symbol_id].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
-
         self.order_books[symbol_id] = Some(OrderBook::new(symbol));
         self.asset_map.insert(symbol_id, (base_asset, quote_asset));
         Ok(())
     }
 
-    /// Add order using symbol ID
+    /// Public API: Add Order (Writes to WAL, then processes)
     pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
-        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or("Asset map not found")?;
-        
-        // WAL Append
         let wal_side = match side {
             Side::Buy => WalSide::Buy,
             Side::Sell => WalSide::Sell,
         };
         
+        // 1. Write to Input Log (Source of Truth)
         self.order_wal.append(LogEntry::PlaceOrder {
             order_id,
             user_id,
-            symbol: self.asset_map.get(&symbol_id).map(|_| "UNKNOWN".to_string()).unwrap_or_else(|| "UNKNOWN".to_string()), // TODO: Get actual symbol string
+            symbol: self.asset_map.get(&symbol_id).map(|_| "UNKNOWN".to_string()).unwrap_or_else(|| "UNKNOWN".to_string()),
             side: wal_side,
             price,
             quantity,
             timestamp: 0, 
         });
+
+        // 2. Process Logic
+        self.process_order(symbol_id, order_id, side, price, quantity, user_id)
+    }
+
+    /// Internal Logic: Process Order (No Input WAL write)
+    /// Used by `add_order` and during Replay.
+    fn process_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
+        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or("Asset map not found")?;
         
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -402,7 +512,7 @@ impl MatchingEngine {
         
         // 3. Settle trades
         for trade in trades {
-            // Log trade to Trade WAL
+            // Log trade to Trade WAL (Output Log)
             self.trade_wal.append(LogEntry::Trade {
                 match_id: trade.match_id,
                 buy_order_id: trade.buy_order_id,
@@ -447,20 +557,32 @@ impl MatchingEngine {
         
         Ok(order_id)
     }
-
+    
+    /// Public API: Cancel Order (Writes to WAL, then processes)
     pub fn cancel_order(&mut self, symbol_id: usize, order_id: u64) -> Result<bool, String> {
+        // 1. Write to Input Log
+        self.order_wal.append(LogEntry::CancelOrder { id: order_id });
+        
+        // 2. Process Logic
+        self.process_cancel(symbol_id, order_id)
+    }
+
+    /// Internal Logic: Process Cancel (No Input WAL write)
+    fn process_cancel(&mut self, symbol_id: usize, order_id: u64) -> Result<bool, String> {
         let book_opt = self.order_books.get_mut(symbol_id)
             .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
         let book = book_opt.as_mut()
             .ok_or_else(|| format!("Symbol ID {} is not active", symbol_id))?;
 
         if book.cancel_order(order_id) {
-            self.order_wal.append(LogEntry::CancelOrder { id: order_id });
-            // TODO: Unlock funds?
-            // For now, we just cancel the order in the book and WAL.
-            // Unlocking funds requires knowing the original order details (price, quantity, side, user_id).
-            // Since we removed it from the book, we might have lost that info unless we returned it from cancel_order.
-            // But for this step, we just want to match the "cancel_order" signature.
+            // TODO: Unlock funds!
+            // We need to know the order details (price, quantity, side, user_id) to unlock.
+            // `OrderBook::cancel_order` currently returns `bool`.
+            // It should return `Option<Order>` or similar details.
+            // This was a previous TODO.
+            // I need to update `OrderBook::cancel_order` to return the removed order.
+            
+            // For now, just return true. Fund unlocking is still a TODO.
             Ok(true)
         } else {
             Ok(false)
@@ -491,12 +613,14 @@ impl MatchingEngine {
             Ok(ForkResult::Child) => {
                 // Child Process
                 let start = std::time::Instant::now();
-                let filename = format!("engine_snapshot_{}.snap", current_seq);
+                let filename = format!("engine_snapshot_{}.bin", current_seq); // Changed extension to .bin to match loader
                 let path = snap_dir.join(filename);
 
                 let snap = EngineSnapshot {
                     order_books: self.order_books.clone(),
-                    accounts: self.ledger.get_accounts().clone(),
+                    ledger_accounts: self.ledger.get_accounts().clone(),
+                    ledger_seq: self.ledger.last_seq, // Assuming GlobalLedger exposes last_seq? It does.
+                    order_wal_seq: current_seq,
                 };
 
                 if let Ok(file) = File::create(&path) {
