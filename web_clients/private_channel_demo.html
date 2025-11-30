@@ -335,11 +335,11 @@
 
                 // Dispatch based on type
                 if (update.type === 'Balance') {
-                    addEvent('balanceEvents', 'Balance Update', update.data);
+                    addEvent('balanceEvents', 'Balance Update', update.data, update.ts_ms);
                 } else if (update.type === 'Order') {
-                    addEvent('orderEvents', 'Order Update', update.data);
+                    addEvent('orderEvents', 'Order Update', update.data, update.ts_ms);
                 } else if (update.type === 'Position') {
-                    addEvent('positionEvents', 'Position Update', update.data);
+                    addEvent('positionEvents', 'Position Update', update.data, update.ts_ms);
                 } else {
                     console.warn('Unknown update type:', update);
                 }
@@ -373,7 +373,7 @@
             statusEl.className = `status ${type}`;
         }
 
-        function addEvent(containerId, title, data) {
+        function addEvent(containerId, title, data, ts_ms) {
             const container = document.getElementById(containerId);
 
             // Clear "no events" message
@@ -384,8 +384,8 @@
             const now = Date.now();
             let latencyHtml = '';
 
-            if (data.ts_ms) {
-                const latency = now - data.ts_ms;
+            if (ts_ms) {
+                const latency = now - ts_ms;
                 latencyHtml = `<span style="float: right; font-size: 11px; color: ${latency > 1000 ? 'red' : 'green'};">Latency: ${latency}ms</span>`;
             }
 
