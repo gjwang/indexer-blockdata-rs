@@ -47,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &kafka_broker)
         .set("message.timeout.ms", "5000")
+        .set("linger.ms", "0")
         .create()?;
 
     println!("Producer created. Starting data generation loop...\n");

@@ -73,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("heartbeat.interval.ms", "15000")
         .set("max.poll.interval.ms", "30000")
         .set("socket.keepalive.enable", "true")
+        .set("fetch.wait.max.ms", "1")
         .create()?;
 
     consumer.subscribe(&[&kafka_topic])?;
