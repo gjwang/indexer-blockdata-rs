@@ -144,7 +144,7 @@ async fn test_publish_balance(
 
     let user_update = UserUpdate::Balance(balance);
     let stream_message = StreamMessage {
-        ts_ms: None,
+        ts_ms: chrono::Utc::now().timestamp_millis(),
         update: user_update,
     };
 
@@ -190,7 +190,7 @@ async fn test_publish_order(
 
     let user_update = UserUpdate::Order(order);
     let stream_message = StreamMessage {
-        ts_ms: None,
+        ts_ms: chrono::Utc::now().timestamp_millis(),
         update: user_update,
     };
 
