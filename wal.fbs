@@ -1,0 +1,40 @@
+// wal.fbs
+namespace wal_schema;
+
+// Structs are faster than Tables (Fixed memory layout, like C structs)
+struct UlidStruct {
+  hi: uint64;
+  lo: uint64;
+}
+
+enum OrderSide : byte { Buy = 0, Sell = 1 }
+
+table Order {
+  id: UlidStruct;
+  symbol: string;
+  side: OrderSide;
+  price: uint64;
+  quantity: uint64;
+}
+
+table Cancel {
+  id: UlidStruct;
+}
+
+table Trade {
+  match_id: uint64;
+  buy_order_id: UlidStruct;
+  sell_order_id: UlidStruct;
+  price: uint64;
+  quantity: uint64;
+}
+
+// Union allows us to store Order, Cancel, or Trade
+union EntryType { Order, Cancel, Trade }
+
+table WalFrame {
+  seq: uint64;
+  entry: EntryType;
+}
+
+root_type WalFrame;
