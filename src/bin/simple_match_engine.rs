@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,44 +212,36 @@ impl OrderBook {
 
 pub struct MatchingEngine {
     order_books: Vec<OrderBook>,
-    symbol_to_id: HashMap<String, u64>,
-    id_to_symbol: HashMap<u64, String>,
 }
 
 impl MatchingEngine {
     pub fn new() -> Self {
         MatchingEngine {
             order_books: Vec::new(),
-            symbol_to_id: HashMap::new(),
-            id_to_symbol: HashMap::new(),
         }
     }
 
-    pub fn add_asset(&mut self, symbol: String) -> u64 {
-        if self.symbol_to_id.contains_key(&symbol) {
+    pub fn add_symbol(&mut self, symbol: String) {
+        // Check if symbol already exists
+        if self.order_books.iter().any(|book| book.symbol == symbol) {
             panic!("Symbol {} already exists", symbol);
         }
         
-        let asset_id = self.order_books.len() as u64;
-        self.symbol_to_id.insert(symbol.clone(), asset_id);
-        self.id_to_symbol.insert(asset_id, symbol.clone());
         self.order_books.push(OrderBook::new(symbol));
-        
-        asset_id
     }
 
     pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
-        let asset_id = self.symbol_to_id.get(symbol)
+        let book = self.order_books.iter_mut()
+            .find(|book| book.symbol == symbol)
             .ok_or_else(|| format!("Symbol {} not found", symbol))?;
         
-        let book = &mut self.order_books[*asset_id as usize];
         book.add_order(symbol, side, price, quantity)
     }
 
     pub fn print_order_book(&self, symbol: &str) {
-        if let Some(&asset_id) = self.symbol_to_id.get(symbol) {
-            println!("\n--- Order Book for {} (ID: {}) ---", symbol, asset_id);
-            self.order_books[asset_id as usize].print_book();
+        if let Some((index, book)) = self.order_books.iter().enumerate().find(|(_, book)| book.symbol == symbol) {
+            println!("\n--- Order Book for {} (ID: {}) ---", symbol, index);
+            book.print_book();
             println!("----------------------------------\n");
         } else {
             println!("Symbol {} not found", symbol);
@@ -261,8 +253,8 @@ fn main() {
     let mut engine = MatchingEngine::new();
 
     // Add assets using symbols - returns auto-generated asset_ids
-    engine.add_asset("BTC_USDT".to_string());
-    engine.add_asset("ETH_USDT".to_string());
+    engine.add_symbol("BTC_USDT".to_string());
+    engine.add_symbol("ETH_USDT".to_string());
 
     println!(">>> Trading BTC_USDT");
     println!("Adding Sell Order: 100 @ 10");
