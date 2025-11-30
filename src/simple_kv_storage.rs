@@ -1,6 +1,6 @@
 use std::convert::TryInto;
 
-use sled::{Db, IVec};
+use sled::Db;
 
 pub struct SledDb {
     db: Db,
