@@ -472,7 +472,27 @@ impl MatchingEngine {
             Side::Sell => WalSide::Sell,
         };
         
-        // 1. Write to Input Log (Source of Truth)
+        // 1. Validate Symbol
+        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id)
+            .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+
+        // 2. Validate Balance
+        let (required_asset, required_amount) = match side {
+            Side::Buy => (quote_asset, price * quantity),
+            Side::Sell => (base_asset, quantity),
+        };
+
+        let accounts = self.ledger.get_accounts();
+        let balance = accounts.get(&user_id)
+            .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
+            .map(|(_, b)| b.available)
+            .unwrap_or(0);
+
+        if balance < required_amount {
+             return Err(format!("Insufficient funds: User {} needs {} of Asset {}, has {}", user_id, required_amount, required_asset, balance));
+        }
+
+        // 3. Write to Input Log (Source of Truth)
         self.order_wal.append(LogEntry::PlaceOrder {
             order_id,
             user_id,
