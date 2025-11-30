@@ -224,21 +224,42 @@ impl MatchingEngine {
         }
     }
 
-    /// Initialize symbols from database (simulated for testing)
-    /// In production, this would query the database and load existing symbol mappings
-    pub fn init_symbols(&mut self, symbols: Vec<String>) -> Result<(), String> {
-        for symbol in symbols {
-            if self.symbol_to_id.contains_key(&symbol) {
-                return Err(format!("Duplicate symbol in initialization: {}", symbol));
+    /// Initialize engine with pre-loaded symbol mappings (from database)
+    /// symbol_map: HashMap from external source (DB) mapping symbol -> symbol_id
+    /// Symbols are inserted into order_books Vec at their designated symbol_id positions
+    pub fn init_with_symbols(&mut self, symbol_map: FxHashMap<String, usize>) -> Result<(), String> {
+        if !self.order_books.is_empty() || !self.symbol_to_id.is_empty() {
+            return Err("Engine already initialized".to_string());
+        }
+
+        // Find max symbol_id to size the Vec properly
+        let max_id = symbol_map.values().max().copied().unwrap_or(0);
+        
+        // Pre-allocate Vec to fit all symbols
+        self.order_books.reserve(max_id + 1);
+        
+        // Sort symbols by ID to insert in order
+        let mut symbols_by_id: Vec<(usize, String)> = symbol_map.iter()
+            .map(|(sym, &id)| (id, sym.clone()))
+            .collect();
+        symbols_by_id.sort_by_key(|(id, _)| *id);
+        
+        // Insert symbols in ID order
+        for (expected_id, symbol) in symbols_by_id {
+            if self.order_books.len() != expected_id {
+                return Err(format!(
+                    "Symbol ID gap detected: expected next ID {}, got {}",
+                    self.order_books.len(), expected_id
+                ));
             }
             
-            let symbol_id = self.order_books.len();
-            self.symbol_to_id.insert(symbol.clone(), symbol_id);
-            self.order_books.push(OrderBook::new(symbol));
-            
-            println!("Loaded symbol: {} -> ID: {}", 
-                self.order_books[symbol_id].symbol, symbol_id);
+            self.order_books.push(OrderBook::new(symbol.clone()));
+            println!("Loaded symbol: {} -> ID: {}", symbol, expected_id);
         }
+        
+        // Store the symbol mapping
+        self.symbol_to_id = symbol_map;
+        
         Ok(())
     }
 
@@ -294,13 +315,17 @@ fn main() {
     let mut engine = MatchingEngine::new();
 
     // === Simulating Database Load at Startup ===
-    // In production, this would be: let symbols = db.query("SELECT symbol FROM symbols ORDER BY id")?;
-    println!("=== Initializing symbols from database (simulated) ===");
-    let initial_symbols = vec![
-        "BTC_USDT".to_string(),
-        "ETH_USDT".to_string(),
-    ];
-    engine.init_symbols(initial_symbols).unwrap();
+    // In production, this would query DB:
+    // SELECT symbol_id, symbol FROM trading_symbols WHERE active = true ORDER BY symbol_id
+    println!("=== Loading symbols from database (simulated) ===");
+    
+    // Build symbol map from "database" - symbol_id determined by DB, not engine
+    let mut symbol_map = FxHashMap::default();
+    symbol_map.insert("BTC_USDT".to_string(), 0);  // DB says: BTC_USDT has ID 0
+    symbol_map.insert("ETH_USDT".to_string(), 1);  // DB says: ETH_USDT has ID 1
+    
+    // Initialize engine with external symbol mappings
+    engine.init_with_symbols(symbol_map).unwrap();
     
     // Cache the IDs for fast access
     let btc_id = *engine.symbol_to_id.get("BTC_USDT").unwrap();
