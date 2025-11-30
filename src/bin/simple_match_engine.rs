@@ -3,6 +3,22 @@ use std::fs;
 use fetcher::matching_engine::{MatchingEngine, SymbolManager, Side};
 use fetcher::ledger::LedgerCommand;
 
+fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
+    println!("--- User Balances ---");
+    for &uid in user_ids {
+        if let Some(balances) = engine.ledger.get_user_balances(uid) {
+            print!("User {}: ", uid);
+            for (asset, bal) in balances {
+                print!("[Asset {}: Avail={}, Frozen={}] ", asset, bal.available, bal.frozen);
+            }
+            println!();
+        } else {
+            println!("User {}: No account", uid);
+        }
+    }
+    println!("---------------------");
+}
+
 fn main() {
     let wal_dir = Path::new("me_wal_data");
     let snap_dir = Path::new("me_snapshots");
@@ -28,6 +44,8 @@ fn main() {
     // User 201: Seller of SOL (Asset 4).
     engine.ledger.apply(&LedgerCommand::Deposit { user_id: 201, asset: 4, amount: 10000 }).unwrap();
     println!("Funds deposited.\n");
+    
+    print_user_balances(&engine, &[1, 2, 3, 4, 101, 201]);
 
     // === Simulating Database Load at Startup ===
     println!("=== Loading symbols from database (simulated) ===");
@@ -51,30 +69,33 @@ fn main() {
     println!("\n>>> Trading BTC_USDT");
     let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
-    engine.add_order(btc_id, 1, Side::Sell, 100, 10, 1).unwrap();
+    engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1).unwrap();
     
     println!("Adding Sell Order: 101 @ 5 (User 2)");
-    engine.add_order(btc_id, 2, Side::Sell, 101, 5, 2).unwrap();
+    engine.add_order(btc_id, 2, Side::Sell, 5, 101, 2).unwrap();
 
     engine.print_order_book(btc_id);
+    print_user_balances(&engine, &[1, 2]);
 
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    engine.add_order(btc_id, 3, Side::Buy, 100, 8, 3).unwrap();
+    engine.add_order(btc_id, 3, Side::Buy, 8, 100, 3).unwrap();
 
     engine.print_order_book(btc_id);
+    print_user_balances(&engine, &[1, 2, 3]);
 
     println!(">>> Trading ETH_USDT");
     let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    engine.add_order(eth_id, 101, Side::Sell, 2000, 50, 101).unwrap();
+    engine.add_order(eth_id, 101, Side::Sell, 50, 2000, 101).unwrap();
     
     engine.print_order_book(eth_id);
     
     println!(">>> Trading BTC_USDT again (using ID directly)");
     println!("Adding Buy Order: 102 @ 10 (User 4)");
-    engine.add_order(btc_id, 4, Side::Buy, 102, 10, 4).unwrap();
+    engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4).unwrap();
 
     engine.print_order_book(btc_id);
+    print_user_balances(&engine, &[1, 2, 4]);
 
     // === Demonstrate Dynamic Symbol Addition ===
     println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5");
@@ -88,4 +109,5 @@ fn main() {
     println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
     engine.add_order(new_id, 201, Side::Sell, 50, 100, 201).unwrap();
     engine.print_order_book(new_id);
+    print_user_balances(&engine, &[201]);
 }

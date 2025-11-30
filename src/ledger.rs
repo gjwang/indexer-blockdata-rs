@@ -539,6 +539,10 @@ impl GlobalLedger {
         });
     }
 
+    pub fn get_user_balances(&self, user_id: UserId) -> Option<Vec<(AssetId, Balance)>> {
+        self.accounts.get(&user_id).map(|u| u.assets.clone())
+    }
+
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
         let new_seq = self.last_seq + 1;
         self.wal.append(new_seq, cmd)?;
