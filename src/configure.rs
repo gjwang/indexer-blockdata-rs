@@ -27,10 +27,9 @@ pub fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("kafka_broker", "localhost:9093")?
         .set_default("kafka_topic", "latency-test-topic")?
         .set_default("kafka_group_id", "centrifugo-pusher")?
-        
         // Kafka Tuning Defaults
-        .set_default("kafka_linger_ms", "0")?
-        .set_default("kafka_fetch_wait_max_ms", "1")?
+        .set_default("kafka_linger_ms", "3")?
+        .set_default("kafka_fetch_wait_max_ms", "3")?
         .set_default("kafka_session_timeout_ms", "10000")?
         .set_default("kafka_heartbeat_interval_ms", "3000")?
         .set_default("kafka_max_poll_interval_ms", "30000")?
