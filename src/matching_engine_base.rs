@@ -105,30 +105,6 @@ impl OrderBook {
         }
     }
 
-    pub fn add_order(&mut self, order_id: u64, symbol: &str, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
-        // Validate symbol matches this OrderBook
-        if symbol != self.symbol {
-            return Err(format!("Symbol mismatch: expected '{}', got '{}'", self.symbol, symbol));
-        }
-        
-        // prevent duplicate order_id
-        if self.active_order_ids.contains(&order_id) {
-            return Err(format!("Duplicate order ID: {}", order_id));
-        }
-
-        self.order_counter += 1;
-        let order = Order {
-            order_id,
-            user_id,
-            symbol: self.symbol.clone(),
-            side,
-            price,
-            quantity,
-            timestamp: self.order_counter, // Using counter as logical timestamp
-        };
-
-        Ok(self.match_order(order))
-    }
 
     pub fn add_order_by_symbol_id(&mut self, order_id: u64, _symbol_id: usize, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
         // Validate order_id, can not duplicate insert
@@ -526,6 +502,13 @@ impl MatchingEngine {
         // 1. Validate Symbol
         let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
+
+        // 1.5 Validate Duplicate Order ID
+        if let Some(Some(book)) = self.order_books.get(symbol_id) {
+             if book.active_order_ids.contains(&order_id) {
+                 return Err(OrderError::DuplicateOrderId { order_id });
+             }
+        }
 
         // 2. Validate Balance
         let (required_asset, required_amount) = match side {
