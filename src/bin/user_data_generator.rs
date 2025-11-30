@@ -72,7 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     available,
                     locked,
                     total: available + locked,
-                    timestamp: chrono::Utc::now().timestamp(),
                     ts_ms,
                 })
             }
@@ -90,7 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     quantity,
                     filled_quantity: 0.0,
                     remaining_quantity: quantity,
-                    timestamp: chrono::Utc::now().timestamp(),
                     ts_ms,
                 })
             }
@@ -107,7 +105,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     liquidation_price: entry_price * 0.8,
                     unrealized_pnl: (mark_price - entry_price) * 0.1, // Simplified PnL
                     leverage: 10.0,
-                    timestamp: chrono::Utc::now().timestamp(),
                     ts_ms,
                 })
             }
