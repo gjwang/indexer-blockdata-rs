@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -10,6 +10,7 @@ pub enum Side {
 #[derive(Debug, Clone)]
 pub struct Order {
     pub id: u64,
+    pub asset_id: u64,
     pub side: Side,
     pub price: u64,
     pub quantity: u64,
@@ -18,6 +19,7 @@ pub struct Order {
 
 #[derive(Debug, Clone)]
 pub struct Trade {
+    pub match_id: u64,
     pub buy_order_id: u64,
     pub sell_order_id: u64,
     pub price: u64,
@@ -31,6 +33,7 @@ pub struct OrderBook {
     asks: BTreeMap<u64, VecDeque<Order>>,
     trade_history: Vec<Trade>,
     order_counter: u64,
+    match_sequence: u64,
 }
 
 impl OrderBook {
@@ -40,13 +43,15 @@ impl OrderBook {
             asks: BTreeMap::new(),
             trade_history: Vec::new(),
             order_counter: 0,
+            match_sequence: 0,
         }
     }
 
-    pub fn add_order(&mut self, side: Side, price: u64, quantity: u64) -> u64 {
+    pub fn add_order(&mut self, asset_id: u64, side: Side, price: u64, quantity: u64) -> u64 {
         self.order_counter += 1;
         let order = Order {
             id: self.order_counter,
+            asset_id,
             side,
             price,
             quantity,
@@ -77,7 +82,9 @@ impl OrderBook {
                         while let Some(mut best_ask) = orders_at_price.pop_front() {
                             let trade_quantity = u64::min(order.quantity, best_ask.quantity);
                             
+                            self.match_sequence += 1;
                             trades.push(Trade {
+                                match_id: self.match_sequence,
                                 buy_order_id: order.id,
                                 sell_order_id: best_ask.id,
                                 price: best_ask.price, // Trade happens at maker's price
@@ -122,7 +129,9 @@ impl OrderBook {
                         while let Some(mut best_bid) = orders_at_price.pop_front() {
                             let trade_quantity = u64::min(order.quantity, best_bid.quantity);
 
+                            self.match_sequence += 1;
                             trades.push(Trade {
+                                match_id: self.match_sequence,
                                 buy_order_id: best_bid.id,
                                 sell_order_id: order.id,
                                 price: best_bid.price,
@@ -180,7 +189,6 @@ impl OrderBook {
     }
 
     pub fn print_book(&self) {
-        println!("\n--- Order Book ---");
         println!("ASKS:");
         for (price, orders) in self.asks.iter().rev() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
@@ -192,28 +200,85 @@ impl OrderBook {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
             println!("  Price: {} | Qty: {} | Orders: {}", price, total_qty, orders.len());
         }
-        println!("------------------\n");
+    }
+}
+
+pub struct MatchingEngine {
+    order_books: Vec<OrderBook>,
+    asset_map: HashMap<u64, String>,
+}
+
+impl MatchingEngine {
+    pub fn new() -> Self {
+        MatchingEngine {
+            order_books: Vec::new(),
+            asset_map: HashMap::new(),
+        }
+    }
+
+    pub fn add_asset(&mut self, asset_id: u64, name: String) {
+        if self.asset_map.contains_key(&asset_id) {
+            panic!("Asset ID already exists");
+        }
+        self.asset_map.insert(asset_id, name);
+        // Ensure vector is large enough
+        if asset_id as usize >= self.order_books.len() {
+            self.order_books.resize_with(asset_id as usize + 1, OrderBook::new);
+        }
+    }
+
+    pub fn add_order(&mut self, asset_id: u64, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+        if !self.asset_map.contains_key(&asset_id) {
+            return Err(format!("Asset ID {} not found", asset_id));
+        }
+        
+        let book = &mut self.order_books[asset_id as usize];
+        Ok(book.add_order(asset_id, side, price, quantity))
+    }
+
+    pub fn print_order_book(&self, asset_id: u64) {
+        if let Some(name) = self.asset_map.get(&asset_id) {
+            println!("\n--- Order Book for {} (ID: {}) ---", name, asset_id);
+            self.order_books[asset_id as usize].print_book();
+            println!("----------------------------------\n");
+        } else {
+            println!("Asset ID {} not found", asset_id);
+        }
     }
 }
 
 fn main() {
-    let mut engine = OrderBook::new();
+    let mut engine = MatchingEngine::new();
 
+    let btc_id = 1;
+    let eth_id = 2;
+
+    engine.add_asset(btc_id, "BTC_USDT".to_string());
+    engine.add_asset(eth_id, "ETH_USDT".to_string());
+
+    println!(">>> Trading BTC_USDT");
     println!("Adding Sell Order: 100 @ 10");
-    engine.add_order(Side::Sell, 100, 10);
+    engine.add_order(btc_id, Side::Sell, 100, 10).unwrap();
     
     println!("Adding Sell Order: 101 @ 5");
-    engine.add_order(Side::Sell, 101, 5);
+    engine.add_order(btc_id, Side::Sell, 101, 5).unwrap();
 
-    engine.print_book();
+    engine.print_order_book(btc_id);
 
     println!("Adding Buy Order: 100 @ 8 (Should match partial 100)");
-    engine.add_order(Side::Buy, 100, 8);
+    engine.add_order(btc_id, Side::Buy, 100, 8).unwrap();
 
-    engine.print_book();
+    engine.print_order_book(btc_id);
 
+    println!(">>> Trading ETH_USDT");
+    println!("Adding Sell Order: 2000 @ 50");
+    engine.add_order(eth_id, Side::Sell, 2000, 50).unwrap();
+    
+    engine.print_order_book(eth_id);
+    
+    println!(">>> Trading BTC_USDT again");
     println!("Adding Buy Order: 102 @ 10 (Should match remaining 2 @ 100 and 5 @ 101, rest 3 on book)");
-    engine.add_order(Side::Buy, 102, 10);
+    engine.add_order(btc_id, Side::Buy, 102, 10).unwrap();
 
-    engine.print_book();
+    engine.print_order_book(btc_id);
 }
