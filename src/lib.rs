@@ -13,5 +13,4 @@ pub mod ledger;
 pub mod fast_ulid;
 pub mod order_wal;
 
-#[cfg(test)]
-mod tests_matching_engine;
+

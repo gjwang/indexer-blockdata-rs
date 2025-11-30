@@ -12,6 +12,15 @@ pub enum Side {
     Sell,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderStatus {
+    New,
+    PartiallyFilled,
+    Filled,
+    Cancelled,
+    Rejected(String),
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
     pub order_id: u64,
