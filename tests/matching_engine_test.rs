@@ -1,4 +1,4 @@
-use fetcher::matching_engine::{MatchingEngine, SymbolManager, Side};
+use fetcher::matching_engine_base::{MatchingEngine, SymbolManager, Side};
 use fetcher::ledger::LedgerCommand;
 use std::path::PathBuf;
 use std::fs;
