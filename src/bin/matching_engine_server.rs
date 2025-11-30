@@ -35,6 +35,7 @@ fn main() {
     if snap_dir.exists() { let _ = fs::remove_dir_all(snap_dir); }
 
     let mut engine = MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create engine");
+    let mut ulid_gen = fetcher::fast_ulid::FastUlidGen::new();
 
     // === Deposit Funds ===
     println!("=== Depositing Funds ===");
@@ -76,16 +77,22 @@ fn main() {
     println!("\n>>> Trading BTC_USDT");
     let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
-    if let Err(e) = engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1) { eprintln!("Order failed: {}", e); }
+    println!("Adding Sell Order: 100 @ 10 (User 1)");
+    let order_id_1 = ulid_gen.generate().0 as u64;
+    if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) { eprintln!("Order failed: {}", e); }
     
     println!("Adding Sell Order: 101 @ 5 (User 2)");
-    if let Err(e) = engine.add_order(btc_id, 2, Side::Sell, 5, 101, 2) { eprintln!("Order failed: {}", e); }
+    println!("Adding Sell Order: 101 @ 5 (User 2)");
+    let order_id_2 = ulid_gen.generate().0 as u64;
+    if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2]);
 
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    if let Err(e) = engine.add_order(btc_id, 3, Side::Buy, 8, 100, 3) { eprintln!("Order failed: {}", e); }
+    println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
+    let order_id_3 = ulid_gen.generate().0 as u64;
+    if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 3]);
@@ -93,7 +100,9 @@ fn main() {
     println!(">>> Trading ETH_USDT");
     let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    if let Err(e) = engine.add_order(eth_id, 101, Side::Sell, 50, 2000, 101) { eprintln!("Order failed: {}", e); }
+    println!("Adding Sell Order: 2000 @ 50 (User 101)");
+    let order_id_4 = ulid_gen.generate().0 as u64;
+    if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) { eprintln!("Order failed: {}", e); }
     
     engine.print_order_book(eth_id);
     
@@ -123,7 +132,8 @@ fn main() {
     println!("Registered {} with ID: {}", new_symbol, new_id);
     
     println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
-    if let Err(e) = engine.add_order(new_id, 201, Side::Sell, 50, 100, 201) {
+    let order_id_5 = ulid_gen.generate().0 as u64;
+    if let Err(e) = engine.add_order(new_id, order_id_5, Side::Sell, 50, 100, 201) {
         eprintln!("Order failed: {}", e);
     }
     engine.print_order_book(new_id);
@@ -150,7 +160,7 @@ fn main() {
     let snapshot_every_n_orders = 1_000;
 
     for i in 1..=total {
-        let order_id = start_id + i;
+        let order_id = ulid_gen.generate().0 as u64;
         let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
         let user_id = if side == Side::Buy { 1001 } else { 1000 };
         let price = 50000;
