@@ -27,7 +27,6 @@ pub struct Trade {
 }
 
 pub struct OrderBook {
-    asset_id: u64,
     symbol: String,
     // Bids: High to Low. We use Reverse for BTreeMap to iterate from highest price.
     bids: BTreeMap<std::cmp::Reverse<u64>, VecDeque<Order>>,
@@ -39,9 +38,8 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(asset_id: u64, symbol: String) -> Self {
+    pub fn new(symbol: String) -> Self {
         OrderBook {
-            asset_id,
             symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
@@ -51,7 +49,12 @@ impl OrderBook {
         }
     }
 
-    pub fn add_order(&mut self, side: Side, price: u64, quantity: u64) -> u64 {
+    pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+        // Validate symbol matches this OrderBook
+        if symbol != self.symbol {
+            return Err(format!("Symbol mismatch: expected '{}', got '{}'", self.symbol, symbol));
+        }
+        
         self.order_counter += 1;
         let order = Order {
             order_id: self.order_counter,
@@ -62,7 +65,7 @@ impl OrderBook {
             timestamp: self.order_counter, // Using counter as logical timestamp
         };
 
-        self.match_order(order)
+        Ok(self.match_order(order))
     }
 
     fn match_order(&mut self, mut order: Order) -> u64 {
@@ -230,7 +233,7 @@ impl MatchingEngine {
         let asset_id = self.order_books.len() as u64;
         self.symbol_to_id.insert(symbol.clone(), asset_id);
         self.id_to_symbol.insert(asset_id, symbol.clone());
-        self.order_books.push(OrderBook::new(asset_id, symbol));
+        self.order_books.push(OrderBook::new(symbol));
         
         asset_id
     }
@@ -240,7 +243,7 @@ impl MatchingEngine {
             .ok_or_else(|| format!("Symbol {} not found", symbol))?;
         
         let book = &mut self.order_books[*asset_id as usize];
-        Ok(book.add_order(side, price, quantity))
+        book.add_order(symbol, side, price, quantity)
     }
 
     pub fn print_order_book(&self, symbol: &str) {
