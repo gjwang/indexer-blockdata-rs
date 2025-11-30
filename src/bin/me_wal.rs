@@ -21,7 +21,7 @@ use ulid::Ulid;
 
 use wal_schema::wal_schema::{
     Cancel, CancelArgs, EntryType, Order as FbsOrder, OrderArgs,
-    OrderSide as FbsSide, UlidStruct, WalFrame, WalFrameArgs,
+    OrderSide as FbsSide, Trade as FbsTrade, TradeArgs, UlidStruct, WalFrame, WalFrameArgs,
 };
 
 // =================================================================
@@ -62,16 +62,28 @@ pub struct Order {
     pub quantity: u64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct Trade {
+    pub match_id: u64,
+    pub buy_order_id: Ulid,
+    pub sell_order_id: Ulid,
+    pub price: u64,
+    pub quantity: u64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum LogEntry {
     PlaceOrder(Order),
     CancelOrder { id: Ulid },
+    Trade(Trade),
 }
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     pub last_seq: u64,
+    pub match_sequence: u64,
     pub orders: FxHashMap<Ulid, Order>,
+    pub trade_history: Vec<Trade>,
 }
 
 fn to_fbs_ulid(u: Ulid) -> UlidStruct {
@@ -153,6 +165,18 @@ impl Wal {
                             let cancel = Cancel::create(&mut builder, &CancelArgs { id: Some(&f_ulid) });
                             (EntryType::Cancel, cancel.as_union_value())
                         }
+                        LogEntry::Trade(t) => {
+                            let buy_id = to_fbs_ulid(t.buy_order_id);
+                            let sell_id = to_fbs_ulid(t.sell_order_id);
+                            let trade = FbsTrade::create(&mut builder, &TradeArgs {
+                                match_id: t.match_id,
+                                buy_order_id: Some(&buy_id),
+                                sell_order_id: Some(&sell_id),
+                                price: t.price,
+                                quantity: t.quantity,
+                            });
+                            (EntryType::Trade, trade.as_union_value())
+                        }
                     };
 
                     let frame = WalFrame::create(&mut builder, &WalFrameArgs {
@@ -203,6 +227,8 @@ impl Wal {
 
 pub struct MatchingEngine {
     pub orders: FxHashMap<Ulid, Order>,
+    pub match_sequence: u64,
+    pub trade_history: Vec<Trade>,
     pub wal: Wal, // Assumes you kept the Wal struct from previous steps
     pub snapshot_dir: PathBuf,
 }
@@ -211,9 +237,15 @@ impl MatchingEngine {
     pub fn new(wal_path: &Path, snapshot_dir: &Path) -> Result<Self> {
         // [Startup logic same as before...]
         fs::create_dir_all(snapshot_dir)?;
-        let mut orders = FxHashMap::default();
+        let orders = FxHashMap::default();
         let wal = Wal::open(wal_path, 0)?;
-        Ok(Self { orders, wal, snapshot_dir: snapshot_dir.to_path_buf() })
+        Ok(Self { 
+            orders, 
+            match_sequence: 0,
+            trade_history: Vec::new(),
+            wal, 
+            snapshot_dir: snapshot_dir.to_path_buf() 
+        })
     }
 
     #[inline(always)]
@@ -221,6 +253,37 @@ impl MatchingEngine {
         self.wal.append(LogEntry::PlaceOrder(order));
         self.orders.insert(order.id, order);
     }
+
+    /// Simulate matching two orders and create a trade
+    /// In a real matching engine, this would be called automatically when orders can be matched
+    pub fn match_orders(&mut self, buy_order_id: Ulid, sell_order_id: Ulid, price: u64, quantity: u64) -> Option<Trade> {
+        // Verify both orders exist
+        if !self.orders.contains_key(&buy_order_id) || !self.orders.contains_key(&sell_order_id) {
+            return None;
+        }
+
+        // Increment match sequence and create trade
+        self.match_sequence += 1;
+        let trade = Trade {
+            match_id: self.match_sequence,
+            buy_order_id,
+            sell_order_id,
+            price,
+            quantity,
+        };
+
+        // Log trade to WAL
+        self.wal.append(LogEntry::Trade(trade));
+        
+        // Add to trade history
+        self.trade_history.push(trade);
+
+        println!("Trade Executed: match_id={}, buy={}, sell={}, price={}, qty={}", 
+            trade.match_id, buy_order_id, sell_order_id, price, quantity);
+
+        Some(trade)
+    }
+
 
     // =========================================================
     // THE "REDIS" COPY-ON-WRITE SNAPSHOT
@@ -256,7 +319,9 @@ impl MatchingEngine {
 
                 let snap = Snapshot {
                     last_seq: current_seq,
+                    match_sequence: self.match_sequence,
                     orders: self.orders.clone(), // This is just a cheap struct copy in the child's isolated memory
+                    trade_history: self.trade_history.clone(),
                 };
 
                 // Perform the slow Write
@@ -293,24 +358,45 @@ fn main() -> Result<()> {
     if wal_path.exists() { fs::remove_file(wal_path)?; }
     if snap_dir.exists() { fs::remove_dir_all(snap_dir)?; }
 
-    let total = 10_000_000;
-    println!(">>> STARTING REDIS-STYLE (COW) TEST ({} Orders)", total);
+    let total = 1_000_000;
+    println!(">>> STARTING MATCHING ENGINE WITH TRADE TRACKING ({} Orders)", total);
 
     let mut engine = MatchingEngine::new(wal_path, snap_dir)?;
     let start = Instant::now();
     let symbol = *b"BTC_USDT";
 
+    // Store some order IDs for matching demonstration
+    let mut buy_orders = Vec::new();
+    let mut sell_orders = Vec::new();
+
     for i in 1..=total {
-        engine.place_order(Order {
+        let side = if i % 2 == 0 { OrderSide::Buy } else { OrderSide::Sell };
+        let order = Order {
             id: Ulid::new(),
             symbol,
-            side: OrderSide::Buy,
-            price: 100,
+            side,
+            price: 50000,
             quantity: 1,
-        });
+        };
 
-        // Snapshot every 500k
-        if i % 500_000 == 0 {
+        // Store order IDs for matching
+        if side == OrderSide::Buy {
+            buy_orders.push(order.id);
+        } else {
+            sell_orders.push(order.id);
+        }
+
+        engine.place_order(order);
+
+        // Match orders every 100 orders to demonstrate trade creation
+        if i % 100 == 0 && !buy_orders.is_empty() && !sell_orders.is_empty() {
+            let buy_id = buy_orders.pop().unwrap();
+            let sell_id = sell_orders.pop().unwrap();
+            engine.match_orders(buy_id, sell_id, 50000, 1);
+        }
+
+        // Snapshot every 200k
+        if i % 200_000 == 0 {
             let t = Instant::now();
             engine.trigger_cow_snapshot();
             // This print proves the Main Thread barely paused
@@ -320,6 +406,9 @@ fn main() -> Result<()> {
 
     let dur = start.elapsed();
     println!("\n>>> DONE");
+    println!("    Total Orders: {}", total);
+    println!("    Total Trades: {}", engine.trade_history.len());
+    println!("    Last Match ID: {}", engine.match_sequence);
     println!("    Total Time: {:.2?}", dur);
     println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
 

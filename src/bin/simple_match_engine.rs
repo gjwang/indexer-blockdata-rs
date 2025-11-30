@@ -27,6 +27,7 @@ pub struct Trade {
 }
 
 pub struct OrderBook {
+    asset_id: u64,
     // Bids: High to Low. We use Reverse for BTreeMap to iterate from highest price.
     bids: BTreeMap<std::cmp::Reverse<u64>, VecDeque<Order>>,
     // Asks: Low to High.
@@ -37,8 +38,9 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub fn new() -> Self {
+    pub fn new(asset_id: u64) -> Self {
         OrderBook {
+            asset_id,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             trade_history: Vec::new(),
@@ -47,7 +49,11 @@ impl OrderBook {
         }
     }
 
-    pub fn add_order(&mut self, asset_id: u64, side: Side, price: u64, quantity: u64) -> u64 {
+    pub fn add_order(&mut self, asset_id: u64, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+        if asset_id != self.asset_id {
+            return Err(format!("Order asset_id {} does not match OrderBook asset_id {}", asset_id, self.asset_id));
+        }
+
         self.order_counter += 1;
         let order = Order {
             id: self.order_counter,
@@ -58,7 +64,7 @@ impl OrderBook {
             timestamp: self.order_counter, // Using counter as logical timestamp
         };
 
-        self.match_order(order)
+        Ok(self.match_order(order))
     }
 
     fn match_order(&mut self, mut order: Order) -> u64 {
@@ -223,7 +229,10 @@ impl MatchingEngine {
         self.asset_map.insert(asset_id, name);
         // Ensure vector is large enough
         if asset_id as usize >= self.order_books.len() {
-            self.order_books.resize_with(asset_id as usize + 1, OrderBook::new);
+            while self.order_books.len() <= asset_id as usize {
+                let next_id = self.order_books.len() as u64;
+                self.order_books.push(OrderBook::new(next_id));
+            }
         }
     }
 
@@ -233,7 +242,7 @@ impl MatchingEngine {
         }
         
         let book = &mut self.order_books[asset_id as usize];
-        Ok(book.add_order(asset_id, side, price, quantity))
+        book.add_order(asset_id, side, price, quantity)
     }
 
     pub fn print_order_book(&self, asset_id: u64) {
