@@ -212,7 +212,7 @@ impl OrderBook {
 }
 
 pub struct MatchingEngine {
-    order_books: Vec<OrderBook>,
+    order_books: Vec<Option<OrderBook>>,
     symbol_to_id: FxHashMap<String, usize>,  // 2-3x faster than std::HashMap!
 }
 
@@ -235,26 +235,18 @@ impl MatchingEngine {
         // Find max symbol_id to size the Vec properly
         let max_id = symbol_map.values().max().copied().unwrap_or(0);
         
-        // Pre-allocate Vec to fit all symbols
-        self.order_books.reserve(max_id + 1);
+        // Resize Vec to fit all symbols, filling gaps with None
+        // max_id is 0-indexed, so we need size max_id + 1
+        self.order_books.resize_with(max_id + 1, || None);
         
-        // Sort symbols by ID to insert in order
-        let mut symbols_by_id: Vec<(usize, String)> = symbol_map.iter()
-            .map(|(sym, &id)| (id, sym.clone()))
-            .collect();
-        symbols_by_id.sort_by_key(|(id, _)| *id);
-        
-        // Insert symbols in ID order
-        for (expected_id, symbol) in symbols_by_id {
-            if self.order_books.len() != expected_id {
-                return Err(format!(
-                    "Symbol ID gap detected: expected next ID {}, got {}",
-                    self.order_books.len(), expected_id
-                ));
+        // Insert symbols at their specific IDs
+        for (symbol, &id) in &symbol_map {
+            if self.order_books[id].is_some() {
+                 return Err(format!("Duplicate ID {} for symbol {}", id, symbol));
             }
             
-            self.order_books.push(OrderBook::new(symbol.clone()));
-            println!("Loaded symbol: {} -> ID: {}", symbol, expected_id);
+            self.order_books[id] = Some(OrderBook::new(symbol.clone()));
+            println!("Loaded symbol: {} -> ID: {}", symbol, id);
         }
         
         // Store the symbol mapping
@@ -263,27 +255,35 @@ impl MatchingEngine {
         Ok(())
     }
 
-    /// Register a new symbol at runtime (for dynamic symbol addition)
-    /// In production, this would also persist to database
-    pub fn add_symbol(&mut self, symbol: String) -> Result<usize, String> {
+
+
+    /// Register a new symbol with a specific ID (e.g. from database)
+    /// Allows gaps in symbol IDs by resizing the underlying vector
+    pub fn register_new_symbol(&mut self, symbol: String, symbol_id: usize) -> Result<(), String> {
         if self.symbol_to_id.contains_key(&symbol) {
             return Err(format!("Symbol {} already exists", symbol));
         }
         
-        let symbol_id = self.order_books.len();
+        // Resize if necessary to accommodate the new ID
+        if symbol_id >= self.order_books.len() {
+            self.order_books.resize_with(symbol_id + 1, || None);
+        } else if self.order_books[symbol_id].is_some() {
+            return Err(format!("Symbol ID {} is already in use", symbol_id));
+        }
+
         self.symbol_to_id.insert(symbol.clone(), symbol_id);
-        self.order_books.push(OrderBook::new(symbol));
+        self.order_books[symbol_id] = Some(OrderBook::new(symbol));
         
-        // In production: Save to database here
-        // db.insert("symbols", symbol_id, symbol)?;
-        
-        Ok(symbol_id)
+        Ok(())
     }
 
     /// Fast path: Add order using symbol ID (for high-frequency trading)
     pub fn add_order_by_id(&mut self, symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
-        let book = self.order_books.get_mut(symbol_id)
+        let book_opt = self.order_books.get_mut(symbol_id)
             .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+            
+        let book = book_opt.as_mut()
+            .ok_or_else(|| format!("Symbol ID {} is not active (gap)", symbol_id))?;
         
         // Clone symbol to avoid borrow conflict
         let symbol = book.symbol.clone();
@@ -300,7 +300,7 @@ impl MatchingEngine {
 
     pub fn print_order_book(&self, symbol: &str) {
         if let Some(&symbol_id) = self.symbol_to_id.get(symbol) {
-            if let Some(book) = self.order_books.get(symbol_id) {
+            if let Some(Some(book)) = self.order_books.get(symbol_id) {
                 println!("\n--- Order Book for {} (ID: {}) ---", symbol, symbol_id);
                 book.print_book();
                 println!("----------------------------------\n");
@@ -357,5 +357,23 @@ fn main() {
     // Fast path: use symbol ID directly for high-frequency trading!
     engine.add_order_by_id(btc_id, Side::Buy, 102, 10).unwrap();
 
-    engine.print_order_book("BTC_USDT");
+    // === Demonstrate Dynamic Symbol Addition with GAP ===
+    println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5 (creating gaps at 2, 3, 4)");
+    // Simulate DB insert returning new ID 5 (skipping 2, 3, 4)
+    let new_symbol = "SOL_USDT".to_string();
+    let new_id = 5; 
+    
+    engine.register_new_symbol(new_symbol.clone(), new_id).unwrap();
+    println!("Registered {} with ID: {}", new_symbol, new_id);
+    
+    println!("Adding Sell Order for SOL_USDT: 50 @ 100");
+    engine.add_order("SOL_USDT", Side::Sell, 50, 100).unwrap();
+    engine.print_order_book("SOL_USDT");
+    
+    // Verify gap behavior
+    println!("Verifying gap at ID 2:");
+    match engine.add_order_by_id(2, Side::Buy, 1, 1) {
+        Ok(_) => println!("Unexpected success!"),
+        Err(e) => println!("Expected error: {}", e),
+    }
 }
