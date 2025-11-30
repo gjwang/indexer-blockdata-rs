@@ -342,7 +342,6 @@ pub struct EngineSnapshot {
     pub ledger_accounts: FxHashMap<u64, UserAccount>,
     pub ledger_seq: u64,
     pub order_wal_seq: u64,
-    pub processed_order_ids: FxHashSet<u64>,
 }
 
 pub struct MatchingEngine {
@@ -351,7 +350,6 @@ pub struct MatchingEngine {
     pub asset_map: FxHashMap<usize, (u32, u32)>,
     pub order_wal: Wal,
     pub trade_wal: Wal,
-    pub processed_order_ids: FxHashSet<u64>,
     pub snapshot_dir: std::path::PathBuf,
 }
 
@@ -372,7 +370,6 @@ impl MatchingEngine {
         let mut accounts = FxHashMap::default();
         let mut ledger_seq = 0;
         let mut order_wal_seq = 0;
-        let mut processed_order_ids = FxHashSet::default();
         
         // Find latest snapshot
         let mut max_seq = 0;
@@ -405,7 +402,6 @@ impl MatchingEngine {
             accounts = snap.ledger_accounts;
             ledger_seq = snap.ledger_seq;
             order_wal_seq = snap.order_wal_seq;
-            processed_order_ids = snap.processed_order_ids;
             println!("   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}", order_wal_seq, ledger_seq);
         }
 
@@ -436,7 +432,6 @@ impl MatchingEngine {
             asset_map: FxHashMap::default(),
             order_wal,
             trade_wal,
-            processed_order_ids,
             snapshot_dir: snap_dir.to_path_buf(),
         };
 
@@ -451,7 +446,6 @@ impl MatchingEngine {
                      
                      match entry {
                          LogEntry::PlaceOrder { order_id, symbol, side, price, quantity, user_id, .. } => {
-                             engine.processed_order_ids.insert(order_id);
                              // Find symbol_id from symbol string
                              // Note: We might need to register symbol if not exists?
                              // For now, assume symbols are pre-registered or we scan WAL for registration?
@@ -526,10 +520,6 @@ impl MatchingEngine {
              if book.active_order_ids.contains(&order_id) {
                  return Err(OrderError::DuplicateOrderId { order_id });
              }
-        }
-        // Also check the global processed set (if we decide to keep it for now)
-        if self.processed_order_ids.contains(&order_id) {
-             return Err(OrderError::DuplicateOrderId { order_id });
         }
 
         // 2. Validate Balance
@@ -701,7 +691,6 @@ impl MatchingEngine {
                     ledger_accounts: self.ledger.get_accounts().clone(),
                     ledger_seq: self.ledger.last_seq, // Assuming GlobalLedger exposes last_seq? It does.
                     order_wal_seq: current_seq,
-                    processed_order_ids: self.processed_order_ids.clone(),
                 };
 
                 if let Ok(file) = File::create(&path) {
