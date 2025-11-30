@@ -332,7 +332,7 @@
             sub.on('publication', (ctx) => {
                 console.log('Update received:', ctx);
                 const update = ctx.data;
-                
+
                 // Dispatch based on type
                 if (update.type === 'Balance') {
                     addEvent('balanceEvents', 'Balance Update', update.data);
@@ -381,10 +381,21 @@
                 container.innerHTML = '';
             }
 
+            const now = Date.now();
+            let latencyHtml = '';
+
+            if (data.send_timestamp) {
+                const latency = now - data.send_timestamp;
+                latencyHtml = `<span style="float: right; font-size: 11px; color: ${latency > 1000 ? 'red' : 'green'};">Latency: ${latency}ms</span>`;
+            }
+
             const eventEl = document.createElement('div');
             eventEl.className = 'event';
             eventEl.innerHTML = `
-                <div class="event-time">${new Date().toLocaleTimeString()}</div>
+                <div class="event-time">
+                    ${new Date().toLocaleTimeString()}
+                    ${latencyHtml}
+                </div>
                 <strong>${title}</strong>
                 <div class="event-data">${JSON.stringify(data, null, 2)}</div>
             `;
