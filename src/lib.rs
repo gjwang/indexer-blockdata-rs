@@ -11,3 +11,4 @@ pub mod matching_engine;
 pub mod md5_utils;
 pub mod ledger;
 pub mod fast_ulid;
+pub mod order_wal;
