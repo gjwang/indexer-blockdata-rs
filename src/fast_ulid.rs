@@ -1,10 +1,10 @@
 use ulid::Ulid;
 
-pub struct FastUlidGenerator {
+pub struct FastUlidGen {
     generator: ulid::Generator,
 }
 
-impl FastUlidGenerator {
+impl FastUlidGen {
     pub fn new() -> Self {
         Self {
             generator: ulid::Generator::new(),
