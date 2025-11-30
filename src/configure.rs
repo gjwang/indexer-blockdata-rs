@@ -9,6 +9,13 @@ pub struct AppConfig {
     pub kafka_broker: String,
     pub kafka_topic: String,
     pub kafka_group_id: String,
+    // Kafka Tuning
+    pub kafka_linger_ms: String,
+    pub kafka_fetch_wait_max_ms: String,
+    pub kafka_session_timeout_ms: String,
+    pub kafka_heartbeat_interval_ms: String,
+    pub kafka_max_poll_interval_ms: String,
+    pub kafka_socket_keepalive_enable: String,
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {
@@ -20,6 +27,14 @@ pub fn load_config() -> Result<AppConfig, ConfigError> {
         .set_default("kafka_broker", "localhost:9093")?
         .set_default("kafka_topic", "latency-test-topic")?
         .set_default("kafka_group_id", "centrifugo-pusher")?
+        
+        // Kafka Tuning Defaults
+        .set_default("kafka_linger_ms", "0")?
+        .set_default("kafka_fetch_wait_max_ms", "1")?
+        .set_default("kafka_session_timeout_ms", "10000")?
+        .set_default("kafka_heartbeat_interval_ms", "3000")?
+        .set_default("kafka_max_poll_interval_ms", "30000")?
+        .set_default("kafka_socket_keepalive_enable", "true")?
         // Add configuration from a file
         .add_source(File::with_name("config/config.yaml"))
         // Add configuration from environment variables

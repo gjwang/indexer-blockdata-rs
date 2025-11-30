@@ -69,11 +69,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("group.id", &group_id)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
-        .set("session.timeout.ms", "10000")
-        .set("heartbeat.interval.ms", "15000")
-        .set("max.poll.interval.ms", "30000")
-        .set("socket.keepalive.enable", "true")
-        .set("fetch.wait.max.ms", "1")
+        .set("session.timeout.ms", &config.kafka_session_timeout_ms)
+        .set("heartbeat.interval.ms", &config.kafka_heartbeat_interval_ms)
+        .set("max.poll.interval.ms", &config.kafka_max_poll_interval_ms)
+        .set("socket.keepalive.enable", &config.kafka_socket_keepalive_enable)
+        .set("fetch.wait.max.ms", &config.kafka_fetch_wait_max_ms)
         .create()?;
 
     consumer.subscribe(&[&kafka_topic])?;
