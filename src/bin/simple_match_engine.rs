@@ -213,72 +213,31 @@ impl OrderBook {
 
 pub struct MatchingEngine {
     order_books: Vec<Option<OrderBook>>,
-    symbol_to_id: FxHashMap<String, usize>,  // 2-3x faster than std::HashMap!
 }
 
 impl MatchingEngine {
     pub fn new() -> Self {
         MatchingEngine {
             order_books: Vec::new(),
-            symbol_to_id: FxHashMap::default(),
         }
     }
 
-    /// Initialize engine with pre-loaded symbol mappings (from database)
-    /// symbol_map: HashMap from external source (DB) mapping symbol -> symbol_id
-    /// Symbols are inserted into order_books Vec at their designated symbol_id positions
-    pub fn init_with_symbols(&mut self, symbol_map: FxHashMap<String, usize>) -> Result<(), String> {
-        if !self.order_books.is_empty() || !self.symbol_to_id.is_empty() {
-            return Err("Engine already initialized".to_string());
-        }
-
-        // Find max symbol_id to size the Vec properly
-        let max_id = symbol_map.values().max().copied().unwrap_or(0);
-        
-        // Resize Vec to fit all symbols, filling gaps with None
-        // max_id is 0-indexed, so we need size max_id + 1
-        self.order_books.resize_with(max_id + 1, || None);
-        
-        // Insert symbols at their specific IDs
-        for (symbol, &id) in &symbol_map {
-            if self.order_books[id].is_some() {
-                 return Err(format!("Duplicate ID {} for symbol {}", id, symbol));
-            }
-            
-            self.order_books[id] = Some(OrderBook::new(symbol.clone()));
-            println!("Loaded symbol: {} -> ID: {}", symbol, id);
-        }
-        
-        // Store the symbol mapping
-        self.symbol_to_id = symbol_map;
-        
-        Ok(())
-    }
-
-
-
-    /// Register a new symbol with a specific ID (e.g. from database)
-    /// Allows gaps in symbol IDs by resizing the underlying vector
-    pub fn register_new_symbol(&mut self, symbol: String, symbol_id: usize) -> Result<(), String> {
-        if self.symbol_to_id.contains_key(&symbol) {
-            return Err(format!("Symbol {} already exists", symbol));
-        }
-        
-        // Resize if necessary to accommodate the new ID
+    /// Register a symbol at a specific ID
+    /// Resizes the internal storage if necessary
+    pub fn register_symbol(&mut self, symbol_id: usize, symbol: String) -> Result<(), String> {
+        // Resize if necessary
         if symbol_id >= self.order_books.len() {
             self.order_books.resize_with(symbol_id + 1, || None);
         } else if self.order_books[symbol_id].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
 
-        self.symbol_to_id.insert(symbol.clone(), symbol_id);
         self.order_books[symbol_id] = Some(OrderBook::new(symbol));
-        
         Ok(())
     }
 
-    /// Fast path: Add order using symbol ID (for high-frequency trading)
-    pub fn add_order_by_id(&mut self, symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    /// Add order using symbol ID
+    pub fn add_order(&mut self, symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
         let book_opt = self.order_books.get_mut(symbol_id)
             .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
             
@@ -290,24 +249,50 @@ impl MatchingEngine {
         book.add_order(&symbol, side, price, quantity)
     }
 
-    /// Convenient path: Add order using symbol string
-    pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
-        let symbol_id = self.symbol_to_id.get(symbol)
-            .ok_or_else(|| format!("Symbol {} not found", symbol))?;
-        
-        self.add_order_by_id(*symbol_id, side, price, quantity)
+    pub fn print_order_book(&self, symbol_id: usize) {
+        if let Some(Some(book)) = self.order_books.get(symbol_id) {
+            println!("\n--- Order Book for {} (ID: {}) ---", book.symbol, symbol_id);
+            book.print_book();
+            println!("----------------------------------\n");
+        } else {
+            println!("Order book for ID {} not found", symbol_id);
+        }
+    }
+}
+
+/// Manages symbol-to-ID and ID-to-symbol mappings
+struct SymbolManager {
+    symbol_to_id: FxHashMap<String, usize>,
+    id_to_symbol: FxHashMap<usize, String>, // Using HashMap for sparse ID support
+}
+
+impl SymbolManager {
+    fn new() -> Self {
+        SymbolManager {
+            symbol_to_id: FxHashMap::default(),
+            id_to_symbol: FxHashMap::default(),
+        }
     }
 
-    pub fn print_order_book(&self, symbol: &str) {
-        if let Some(&symbol_id) = self.symbol_to_id.get(symbol) {
-            if let Some(Some(book)) = self.order_books.get(symbol_id) {
-                println!("\n--- Order Book for {} (ID: {}) ---", symbol, symbol_id);
-                book.print_book();
-                println!("----------------------------------\n");
-                return;
-            }
-        }
-        println!("Symbol {} not found", symbol);
+    fn insert(&mut self, symbol: &str, id: usize) {
+        self.symbol_to_id.insert(symbol.to_string(), id);
+        self.id_to_symbol.insert(id, symbol.to_string());
+    }
+
+    fn get_id(&self, symbol: &str) -> Option<usize> {
+        self.symbol_to_id.get(symbol).copied()
+    }
+
+    fn get_symbol(&self, id: usize) -> Option<&String> {
+        self.id_to_symbol.get(&id)
+    }
+
+    /// Load initial state (simulating DB load)
+    fn load_from_db() -> Self {
+        let mut manager = SymbolManager::new();
+        manager.insert("BTC_USDT", 0);
+        manager.insert("ETH_USDT", 1);
+        manager
     }
 }
 
@@ -315,65 +300,74 @@ fn main() {
     let mut engine = MatchingEngine::new();
 
     // === Simulating Database Load at Startup ===
-    // In production, this would query DB:
-    // SELECT symbol_id, symbol FROM trading_symbols WHERE active = true ORDER BY symbol_id
     println!("=== Loading symbols from database (simulated) ===");
     
-    // Build symbol map from "database" - symbol_id determined by DB, not engine
-    let mut symbol_map = FxHashMap::default();
-    symbol_map.insert("BTC_USDT".to_string(), 0);  // DB says: BTC_USDT has ID 0
-    symbol_map.insert("ETH_USDT".to_string(), 1);  // DB says: ETH_USDT has ID 1
+    // 1. Load Symbols via Manager
+    let mut symbol_manager = SymbolManager::load_from_db();
+
+    // 2. Initialize Engine with Symbols (using IDs)
+    for (&symbol_id, symbol) in &symbol_manager.id_to_symbol {
+        engine.register_symbol(symbol_id, symbol.clone()).unwrap();
+        println!("Loaded symbol: {} -> symbol_id: {}", symbol, symbol_id);
+    }
     
-    // Initialize engine with external symbol mappings
-    engine.init_with_symbols(symbol_map).unwrap();
-    
-    // Cache the IDs for fast access
-    let btc_id = *engine.symbol_to_id.get("BTC_USDT").unwrap();
-    let _eth_id = *engine.symbol_to_id.get("ETH_USDT").unwrap();
     println!("=== Symbol initialization complete ===\n");
 
     println!("\n>>> Trading BTC_USDT");
+    let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10");
-    engine.add_order("BTC_USDT", Side::Sell, 100, 10).unwrap();
+    engine.add_order(btc_id, Side::Sell, 100, 10).unwrap();
     
     println!("Adding Sell Order: 101 @ 5");
-    engine.add_order("BTC_USDT", Side::Sell, 101, 5).unwrap();
+    engine.add_order(btc_id, Side::Sell, 101, 5).unwrap();
 
-    engine.print_order_book("BTC_USDT");
+    engine.print_order_book(btc_id);
 
     println!("Adding Buy Order: 100 @ 8 (Should match partial 100)");
-    engine.add_order("BTC_USDT", Side::Buy, 100, 8).unwrap();
+    engine.add_order(btc_id, Side::Buy, 100, 8).unwrap();
 
-    engine.print_order_book("BTC_USDT");
+    engine.print_order_book(btc_id);
 
     println!(">>> Trading ETH_USDT");
+    let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50");
-    engine.add_order("ETH_USDT", Side::Sell, 2000, 50).unwrap();
+    engine.add_order(eth_id, Side::Sell, 2000, 50).unwrap();
     
-    engine.print_order_book("ETH_USDT");
+    engine.print_order_book(eth_id);
     
-    println!(">>> Trading BTC_USDT again (using FAST path with symbol_id)");
-    println!("Adding Buy Order: 102 @ 10 (Should match remaining 2 @ 100 and 5 @ 101, rest 3 on book)");
-    // Fast path: use symbol ID directly for high-frequency trading!
-    engine.add_order_by_id(btc_id, Side::Buy, 102, 10).unwrap();
+    println!(">>> Trading BTC_USDT again (using ID directly)");
+    println!("Adding Buy Order: 102 @ 10");
+    engine.add_order(btc_id, Side::Buy, 102, 10).unwrap();
 
-    // === Demonstrate Dynamic Symbol Addition with GAP ===
-    println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5 (creating gaps at 2, 3, 4)");
-    // Simulate DB insert returning new ID 5 (skipping 2, 3, 4)
-    let new_symbol = "SOL_USDT".to_string();
+    engine.print_order_book(btc_id);
+
+    // === Demonstrate Dynamic Symbol Addition ===
+    println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5");
+    let new_symbol = "SOL_USDT";
     let new_id = 5; 
     
-    engine.register_new_symbol(new_symbol.clone(), new_id).unwrap();
+    // Update Symbol Manager
+    symbol_manager.insert(new_symbol, new_id);
+    
+    // Register in Engine
+    engine.register_symbol(new_id, new_symbol.to_string()).unwrap();
     println!("Registered {} with ID: {}", new_symbol, new_id);
     
     println!("Adding Sell Order for SOL_USDT: 50 @ 100");
-    engine.add_order("SOL_USDT", Side::Sell, 50, 100).unwrap();
-    engine.print_order_book("SOL_USDT");
+    engine.add_order(new_id, Side::Sell, 50, 100).unwrap();
+    engine.print_order_book(new_id);
     
     // Verify gap behavior
     println!("Verifying gap at ID 2:");
-    match engine.add_order_by_id(2, Side::Buy, 1, 1) {
+    match engine.add_order(2, Side::Buy, 1, 1) {
         Ok(_) => println!("Unexpected success!"),
         Err(e) => println!("Expected error: {}", e),
     }
+
+    // Verify Bidirectional Lookup via Manager
+    println!("\n>>> Verifying Bidirectional Lookup:");
+    println!("ID 0 -> {:?}", symbol_manager.get_symbol(0));
+    println!("ID 5 -> {:?}", symbol_manager.get_symbol(5));
+    println!("ID 2 (Gap) -> {:?}", symbol_manager.get_symbol(2));
 }
+
