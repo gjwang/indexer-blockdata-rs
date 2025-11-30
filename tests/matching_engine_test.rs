@@ -166,3 +166,66 @@ fn test_duplicate_order_id() {
     
     teardown(wal, snap);
 }
+
+#[test]
+fn test_ledger_integration() {
+    let (mut engine, wal, snap) = setup_engine("ledger");
+    let manager = SymbolManager::load_from_db();
+    let btc_id = manager.get_id("BTC_USDT").unwrap();
+    engine.register_symbol(btc_id, "BTC_USDT".to_string(), 1, 2).unwrap();
+
+    // User 1: Sell 100 BTC @ 10 USDT
+    // Price 10, Qty 100.
+    // Lock: 100 BTC (Asset 1).
+    assert!(engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1).is_ok());
+
+    // Check User 1 Balance
+    // Initial: 1,000,000.
+    // Frozen: 100.
+    // Avail: 999,900.
+    let bals = engine.ledger.get_user_balances(1).unwrap();
+    let btc = bals.iter().find(|(a, _)| *a == 1).unwrap().1;
+    assert_eq!(btc.available, 999_900);
+    assert_eq!(btc.frozen, 100);
+
+    // User 3: Buy 50 BTC @ 10 USDT
+    // Price 10, Qty 50.
+    // Lock: 50 * 10 = 500 USDT (Asset 2).
+    // Match: 50 units.
+    // Trade: Price 10, Qty 50.
+    assert!(engine.add_order(btc_id, 2, Side::Buy, 10, 50, 3).is_ok());
+
+    // Check User 1 (Seller)
+    // Sold 50.
+    // Frozen: 100 - 50 = 50.
+    // Avail: 999,900.
+    // Gained USDT: 50 * 10 = 500.
+    let bals1 = engine.ledger.get_user_balances(1).unwrap();
+    let btc1 = bals1.iter().find(|(a, _)| *a == 1).unwrap().1;
+    assert_eq!(btc1.frozen, 50);
+    assert_eq!(btc1.available, 999_900);
+    
+    let usdt1 = bals1.iter().find(|(a, _)| *a == 2);
+    // User 1 didn't have USDT initially? setup_engine gives generic deposits.
+    // User 1 only got Asset 1.
+    // So now they have Asset 2.
+    assert!(usdt1.is_some());
+    let usdt1 = usdt1.unwrap().1;
+    assert_eq!(usdt1.available, 500);
+
+    // Check User 3 (Buyer)
+    // Initial Asset 2: 10,000,000.
+    // Locked: 500.
+    // Spent: 500.
+    // Gained BTC: 50.
+    let bals3 = engine.ledger.get_user_balances(3).unwrap();
+    let usdt3 = bals3.iter().find(|(a, _)| *a == 2).unwrap().1;
+    assert_eq!(usdt3.frozen, 0); // Fully matched
+    assert_eq!(usdt3.available, 10_000_000 - 500);
+    
+    let btc3 = bals3.iter().find(|(a, _)| *a == 1);
+    assert!(btc3.is_some());
+    assert_eq!(btc3.unwrap().1.available, 50);
+
+    teardown(wal, snap);
+}
