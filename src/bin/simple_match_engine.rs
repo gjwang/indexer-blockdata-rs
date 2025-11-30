@@ -9,7 +9,7 @@ pub enum Side {
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub id: u64,
+    pub order_id: u64,
     pub asset_id: u64,
     pub side: Side,
     pub price: u64,
@@ -56,7 +56,7 @@ impl OrderBook {
 
         self.order_counter += 1;
         let order = Order {
-            id: self.order_counter,
+            order_id: self.order_counter,
             asset_id,
             side,
             price,
@@ -68,7 +68,7 @@ impl OrderBook {
     }
 
     fn match_order(&mut self, mut order: Order) -> u64 {
-        let order_id = order.id;
+        let order_id = order.order_id;
         let mut trades = Vec::new();
 
         match order.side {
@@ -91,8 +91,8 @@ impl OrderBook {
                             self.match_sequence += 1;
                             trades.push(Trade {
                                 match_id: self.match_sequence,
-                                buy_order_id: order.id,
-                                sell_order_id: best_ask.id,
+                                buy_order_id: order.order_id,
+                                sell_order_id: best_ask.order_id,
                                 price: best_ask.price, // Trade happens at maker's price
                                 quantity: trade_quantity,
                             });
@@ -138,8 +138,8 @@ impl OrderBook {
                             self.match_sequence += 1;
                             trades.push(Trade {
                                 match_id: self.match_sequence,
-                                buy_order_id: best_bid.id,
-                                sell_order_id: order.id,
+                                buy_order_id: best_bid.order_id,
+                                sell_order_id: order.order_id,
                                 price: best_bid.price,
                                 quantity: trade_quantity,
                             });
