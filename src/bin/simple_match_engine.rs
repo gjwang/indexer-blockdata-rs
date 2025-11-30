@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -211,36 +211,35 @@ impl OrderBook {
 }
 
 pub struct MatchingEngine {
-    order_books: Vec<OrderBook>,
+    order_books: HashMap<String, OrderBook>,
 }
 
 impl MatchingEngine {
     pub fn new() -> Self {
         MatchingEngine {
-            order_books: Vec::new(),
+            order_books: HashMap::new(),
         }
     }
 
-    pub fn add_symbol(&mut self, symbol: String) {
-        // Check if symbol already exists
-        if self.order_books.iter().any(|book| book.symbol == symbol) {
-            panic!("Symbol {} already exists", symbol);
+    pub fn add_symbol(&mut self, symbol: String) -> Result<(), String> {
+        if self.order_books.contains_key(&symbol) {
+            return Err(format!("Symbol {} already exists", symbol));
         }
         
-        self.order_books.push(OrderBook::new(symbol));
+        self.order_books.insert(symbol.clone(), OrderBook::new(symbol));
+        Ok(())
     }
 
     pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
-        let book = self.order_books.iter_mut()
-            .find(|book| book.symbol == symbol)
+        let book = self.order_books.get_mut(symbol)
             .ok_or_else(|| format!("Symbol {} not found", symbol))?;
         
         book.add_order(symbol, side, price, quantity)
     }
 
     pub fn print_order_book(&self, symbol: &str) {
-        if let Some((index, book)) = self.order_books.iter().enumerate().find(|(_, book)| book.symbol == symbol) {
-            println!("\n--- Order Book for {} (ID: {}) ---", symbol, index);
+        if let Some(book) = self.order_books.get(symbol) {
+            println!("\n--- Order Book for {} ---", symbol);
             book.print_book();
             println!("----------------------------------\n");
         } else {
@@ -253,8 +252,8 @@ fn main() {
     let mut engine = MatchingEngine::new();
 
     // Add assets using symbols - returns auto-generated asset_ids
-    engine.add_symbol("BTC_USDT".to_string());
-    engine.add_symbol("ETH_USDT".to_string());
+    engine.add_symbol("BTC_USDT".to_string()).unwrap();
+    engine.add_symbol("ETH_USDT".to_string()).unwrap();
 
     println!(">>> Trading BTC_USDT");
     println!("Adding Sell Order: 100 @ 10");
