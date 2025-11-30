@@ -76,16 +76,16 @@ fn main() {
     println!("\n>>> Trading BTC_USDT");
     let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
-    engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1).unwrap();
+    if let Err(e) = engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1) { eprintln!("Order failed: {}", e); }
     
     println!("Adding Sell Order: 101 @ 5 (User 2)");
-    engine.add_order(btc_id, 2, Side::Sell, 5, 101, 2).unwrap();
+    if let Err(e) = engine.add_order(btc_id, 2, Side::Sell, 5, 101, 2) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2]);
 
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    engine.add_order(btc_id, 3, Side::Buy, 8, 100, 3).unwrap();
+    if let Err(e) = engine.add_order(btc_id, 3, Side::Buy, 8, 100, 3) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 3]);
@@ -93,13 +93,13 @@ fn main() {
     println!(">>> Trading ETH_USDT");
     let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    engine.add_order(eth_id, 101, Side::Sell, 50, 2000, 101).unwrap();
+    if let Err(e) = engine.add_order(eth_id, 101, Side::Sell, 50, 2000, 101) { eprintln!("Order failed: {}", e); }
     
     engine.print_order_book(eth_id);
     
     println!(">>> Trading BTC_USDT again (using ID directly)");
     println!("Adding Buy Order: 102 @ 10 (User 4)");
-    engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4).unwrap();
+    if let Err(e) = engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 4]);
@@ -123,7 +123,9 @@ fn main() {
     println!("Registered {} with ID: {}", new_symbol, new_id);
     
     println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
-    engine.add_order(new_id, 201, Side::Sell, 50, 100, 201).unwrap();
+    if let Err(e) = engine.add_order(new_id, 201, Side::Sell, 50, 100, 201) {
+        eprintln!("Order failed: {}", e);
+    }
     engine.print_order_book(new_id);
     print_user_balances(&engine, &[201]);
 
@@ -142,10 +144,10 @@ fn main() {
     let mut buy_orders = Vec::new();
     let mut sell_orders = Vec::new();
 
-    let total = 1_000;
+    let total = 2_000;
     // Start ID from 10000 to avoid conflict with previous manual orders
     let start_id = 500;
-    let snapshot_every_n_orders = 100;
+    let snapshot_every_n_orders = 1_000;
 
     for i in 1..=total {
         let order_id = start_id + i;
@@ -162,7 +164,9 @@ fn main() {
         }
 
         // Place Order
-        engine.add_order(btc_id, order_id, side, price, quantity, user_id).unwrap();
+        if let Err(e) = engine.add_order(btc_id, order_id, side, price, quantity, user_id) {
+            eprintln!("Order failed: {}", e);
+        }
 
         // Match orders every 100 orders
         // Note: In simple_match_engine, matching happens automatically inside add_order if prices cross.
@@ -179,10 +183,14 @@ fn main() {
             let cancel_id = order_id + 1_000_000; // Unique ID
             // Place a Buy low or Sell high so it doesn't match
             let (c_side, c_price) = (Side::Buy, 100); 
-            engine.add_order(btc_id, cancel_id, c_side, c_price, 1, 1001).unwrap();
+            if let Err(e) = engine.add_order(btc_id, cancel_id, c_side, c_price, 1, 1001) {
+                eprintln!("Failed to place cancel order: {}", e);
+            }
             
-            if engine.cancel_order(btc_id, cancel_id).unwrap() {
-                 // println!("    Cancelled Order {}", cancel_id);
+            if let Ok(cancelled) = engine.cancel_order(btc_id, cancel_id) {
+                 if cancelled {
+                     // println!("    Cancelled Order {}", cancel_id);
+                 }
             }
         }
 
