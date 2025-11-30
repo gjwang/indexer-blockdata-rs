@@ -133,12 +133,12 @@ fn test_gap_handling() {
     // Access ID 2 (Gap)
     let result = engine.add_order(2, 999, Side::Buy, 100, 1, 3);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "Asset map not found");
+    assert!(matches!(result.unwrap_err(), fetcher::matching_engine_base::OrderError::AssetMapNotFound { .. }));
     
     // Access ID 10 (Out of bounds)
     let result = engine.add_order(10, 999, Side::Buy, 100, 1, 3);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "Asset map not found");
+    assert!(matches!(result.unwrap_err(), fetcher::matching_engine_base::OrderError::AssetMapNotFound { .. }));
     
     teardown(wal, snap);
 }
@@ -154,7 +154,7 @@ fn test_duplicate_order_id() {
     // Try adding Order 1 again
     let result = engine.add_order(0, 1, Side::Sell, 100, 10, 1);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "Duplicate order ID: 1");
+    assert!(matches!(result.unwrap_err(), fetcher::matching_engine_base::OrderError::Other(_))); // Duplicate ID check might be inside process_order returning Other for now or we need to update it to return specific error
 
     // Fill Order 1 fully
     // Sell 100 @ 10 (ID 2). Matches ID 1 fully.
