@@ -165,7 +165,16 @@ fn main() {
 
         // Place Order
         if let Err(e) = engine.add_order(btc_id, order_id, side, price, quantity, user_id) {
-            eprintln!("Order failed: {}", e);
+            // Simulate DB Persist (Order History)
+            // db.insert_order_history(order_id, status="REJECTED", reason=e.to_string());
+            
+            // Simulate WS Push (Private Notification)
+            // centrifugo.publish(user_id, OrderUpdate { status: "REJECTED", reason: e.to_string() });
+            
+            // For demo purposes, we just log it (but less verbosely for load test)
+            if i % 1000 == 0 {
+                 eprintln!("[PERSIST] Order {} Rejected: {}", order_id, e);
+            }
         }
 
         // Match orders every 100 orders
