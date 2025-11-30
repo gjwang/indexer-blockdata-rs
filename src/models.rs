@@ -6,7 +6,6 @@ pub struct BalanceUpdate {
     pub available: f64,
     pub locked: f64,
     pub total: f64,
-    pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts_ms: Option<i64>,
 }
@@ -22,7 +21,6 @@ pub struct OrderUpdate {
     pub quantity: f64,
     pub filled_quantity: f64,
     pub remaining_quantity: f64,
-    pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts_ms: Option<i64>,
 }
@@ -37,7 +35,6 @@ pub struct PositionUpdate {
     pub liquidation_price: f64,
     pub unrealized_pnl: f64,
     pub leverage: f64,
-    pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts_ms: Option<i64>,
 }

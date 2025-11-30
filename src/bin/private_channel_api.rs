@@ -140,7 +140,6 @@ async fn test_publish_balance(
         available: payload.available,
         locked: payload.locked,
         total: payload.available + payload.locked,
-        timestamp: chrono::Utc::now().timestamp(),
         ts_ms: None,
     };
 
@@ -182,7 +181,6 @@ async fn test_publish_order(
         quantity: payload.quantity,
         filled_quantity: 0.0,
         remaining_quantity: payload.quantity,
-        timestamp: chrono::Utc::now().timestamp(),
         ts_ms: None,
     };
 
