@@ -90,6 +90,7 @@ fn test_basic_matching() {
     assert_eq!(best_bid.quantity, 3);
     assert_eq!(best_bid.price, 102);
     
+    drop(engine);
     teardown(wal, snap);
 }
 
@@ -120,6 +121,7 @@ fn test_dynamic_symbol_registration() {
     assert_eq!(book.symbol, new_symbol);
     assert_eq!(book.asks.len(), 1);
     
+    drop(engine);
     teardown(wal, snap);
 }
 
@@ -140,6 +142,7 @@ fn test_gap_handling() {
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), fetcher::matching_engine_base::OrderError::InvalidSymbol { .. }));
     
+    drop(engine);
     teardown(wal, snap);
 }
 
@@ -148,22 +151,29 @@ fn test_duplicate_order_id() {
     let (mut engine, wal, snap) = setup_engine("duplicate");
     engine.register_symbol(0, "BTC".to_string(), 1, 2).unwrap();
 
-    // Add Order 1
-    assert!(engine.add_order(0, 1, Side::Buy, 100, 10, 3).is_ok());
+    // Add Order 1 (Buy 100 @ 10)
+    engine.add_order(0, 1, Side::Buy, 10, 100, 3).unwrap();
+    
+    // Add Order 2 (Sell 50 @ 10) -> Match 50
+    engine.add_order(0, 2, Side::Sell, 10, 50, 1).unwrap();
+    
+    // Add Order 3 (Sell 40 @ 10) -> Match 40, Rem 10 (Order 1 still active)
+    engine.add_order(0, 3, Side::Sell, 10, 40, 2).unwrap();
 
-    // Try adding Order 1 again
+    // Try adding Order 1 again (should fail as it's still active/partially filled)
     let result = engine.add_order(0, 1, Side::Sell, 100, 10, 1);
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), fetcher::matching_engine_base::OrderError::DuplicateOrderId { .. }));
 
-    // Fill Order 1 fully
-    // Sell 100 @ 10 (ID 2). Matches ID 1 fully.
-    assert!(engine.add_order(0, 2, Side::Sell, 100, 10, 1).is_ok());
+
+    // Cancel Order 1 to make it inactive
+    assert!(engine.cancel_order(0, 1).is_ok());
 
     // Now ID 1 should be inactive (removed from set)
     // Re-using ID 1 should be allowed
     assert!(engine.add_order(0, 1, Side::Buy, 99, 5, 3).is_ok());
     
+    drop(engine);
     teardown(wal, snap);
 }
 
@@ -227,5 +237,6 @@ fn test_ledger_integration() {
     assert!(btc3.is_some());
     assert_eq!(btc3.unwrap().1.available, 50);
 
+    drop(engine);
     teardown(wal, snap);
 }

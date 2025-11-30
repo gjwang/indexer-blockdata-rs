@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use fetcher::matching_engine_base::{MatchingEngine, Side};
+    use fetcher::matching_engine_base::{MatchingEngine, Side, OrderError};
     use fetcher::ledger::{LedgerCommand};
     use tempfile::TempDir;
 
@@ -28,8 +28,8 @@ mod tests {
             amount: 1000,
         }).unwrap();
         
-        // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
-        let result = engine.add_order(0, 1, Side::Buy, 100, 10, 1);
+        //    // Add order: Buy 50 @ 10 (Cost 500) -> Success
+        let result = engine.add_order(0, 1, Side::Buy, 10, 50, 1);
         assert!(result.is_ok(), "Order should be accepted with sufficient funds");
     }
 
@@ -45,11 +45,13 @@ mod tests {
             amount: 500,
         }).unwrap();
         
-        // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
-        let result = engine.add_order(0, 1, Side::Buy, 100, 10, 1);
-        assert!(result.is_err(), "Order should be rejected with insufficient funds");
+        //    // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
+        let result = engine.add_order(0, 1, Side::Buy, 10, 100, 1);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, OrderError::InsufficientFunds { .. }));
         
-        match result.unwrap_err() {
+        match err {
             fetcher::matching_engine_base::OrderError::InsufficientFunds { user_id, asset, required, available } => {
                 assert_eq!(user_id, 1);
                 assert_eq!(asset, 2);
@@ -87,13 +89,14 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut engine = setup_engine(&temp_dir);
         
-        // Place Order with invalid Symbol ID 99
-        let result = engine.add_order(99, 1, Side::Buy, 100, 10, 1);
-        assert!(result.is_err(), "Order should be rejected for invalid symbol");
+        // Add order with invalid symbol_id 999
+        let result = engine.add_order(999, 1, Side::Buy, 100, 10, 1);
+        let err = result.unwrap_err();
+        assert!(matches!(err, OrderError::InvalidSymbol { symbol_id: 999 }));
         
-        match result.unwrap_err() {
+        match err {
             fetcher::matching_engine_base::OrderError::InvalidSymbol { symbol_id } => {
-                assert_eq!(symbol_id, 99);
+                assert_eq!(symbol_id, 999);
             },
             _ => panic!("Expected InvalidSymbol error"),
         }

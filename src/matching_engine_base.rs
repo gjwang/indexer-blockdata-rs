@@ -23,7 +23,7 @@ pub enum OrderStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
-    pub order_id: u64,
+    pub order_id: u128,
     pub user_id: u64,
     pub symbol: String,
     pub side: Side,
@@ -35,8 +35,8 @@ pub struct Order {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trade {
     pub match_id: u64,
-    pub buy_order_id: u64,
-    pub sell_order_id: u64,
+    pub buy_order_id: u128,
+    pub sell_order_id: u128,
     pub buy_user_id: u64,
     pub sell_user_id: u64,
     pub price: u64,
@@ -48,7 +48,8 @@ pub enum OrderError {
     InsufficientFunds { user_id: u64, asset: u32, required: u64, available: u64 },
     InvalidSymbol { symbol_id: usize },
     SymbolMismatch { expected: String, actual: String },
-    DuplicateOrderId { order_id: u64 },
+    DuplicateOrderId { order_id: u128 },
+    OrderNotFound { order_id: u128 },
     AssetMapNotFound { symbol_id: usize },
     LedgerError(String),
     Other(String),
@@ -61,8 +62,9 @@ impl std::fmt::Display for OrderError {
                 write!(f, "Insufficient funds: User {} needs {} of Asset {}, has {}", user_id, required, asset, available),
             OrderError::InvalidSymbol { symbol_id } => write!(f, "Invalid symbol ID: {}", symbol_id),
             OrderError::SymbolMismatch { expected, actual } => write!(f, "Symbol mismatch: expected '{}', got '{}'", expected, actual),
-            OrderError::DuplicateOrderId { order_id } => write!(f, "Duplicate order ID: {}", order_id),
-            OrderError::AssetMapNotFound { symbol_id } => write!(f, "Asset map not found for symbol ID: {}", symbol_id),
+            OrderError::DuplicateOrderId { order_id } => write!(f, "Duplicate Order ID: {}", order_id),
+            OrderError::OrderNotFound { order_id } => write!(f, "Order Not Found: {}", order_id),
+            OrderError::AssetMapNotFound { symbol_id } => write!(f, "Asset Map Not Found for Symbol ID: {}", symbol_id),
             OrderError::LedgerError(msg) => write!(f, "Ledger error: {}", msg),
             OrderError::Other(msg) => write!(f, "Error: {}", msg),
         }
@@ -87,8 +89,8 @@ pub struct OrderBook {
     // pub trade_history: Vec<Trade>, // REMOVED
     pub order_counter: u64,
     pub match_sequence: u64,
-    pub active_order_ids: FxHashSet<u64>,
-    pub order_index: FxHashMap<u64, (Side, u64)>, // Map order_id -> (Side, Price)
+    pub active_order_ids: FxHashSet<u128>,
+    pub order_index: FxHashMap<u128, (Side, u64)>, // Map order_id -> (Side, Price)
 }
 
 impl OrderBook {
@@ -106,7 +108,7 @@ impl OrderBook {
     }
 
 
-    pub fn add_order_by_symbol_id(&mut self, order_id: u64, _symbol_id: usize, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
+    pub fn add_order(&mut self, order_id: u128, symbol: &str, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
         // Validate order_id, can not duplicate insert
         if self.active_order_ids.contains(&order_id) {
             return Err(format!("Duplicate order ID: {}", order_id));
@@ -116,7 +118,7 @@ impl OrderBook {
         let order = Order {
             order_id,
             user_id,
-            symbol: self.symbol.clone(),
+            symbol: symbol.to_string(),
             side,
             price,
             quantity,
@@ -291,45 +293,36 @@ impl OrderBook {
         }
     }
 
-    pub fn cancel_order(&mut self, order_id: u64) -> bool {
+    pub fn cancel_order(&mut self, order_id: u128) -> Result<Option<Order>, String> {
         if let Some((side, price)) = self.order_index.remove(&order_id) {
             self.active_order_ids.remove(&order_id);
             
-            let found = match side {
+            let mut removed_order = None;
+            match side {
                 Side::Buy => {
                     if let Some(orders) = self.bids.get_mut(&std::cmp::Reverse(price)) {
                         if let Some(pos) = orders.iter().position(|o| o.order_id == order_id) {
-                            orders.remove(pos);
+                            removed_order = orders.remove(pos);
                             if orders.is_empty() {
                                 self.bids.remove(&std::cmp::Reverse(price));
                             }
-                            true
-                        } else {
-                            false
                         }
-                    } else {
-                        false
                     }
                 }
                 Side::Sell => {
                     if let Some(orders) = self.asks.get_mut(&price) {
                         if let Some(pos) = orders.iter().position(|o| o.order_id == order_id) {
-                            orders.remove(pos);
+                            removed_order = orders.remove(pos);
                             if orders.is_empty() {
                                 self.asks.remove(&price);
                             }
-                            true
-                        } else {
-                            false
                         }
-                    } else {
-                        false
                     }
                 }
             };
-            found
+            Ok(removed_order)
         } else {
-            false
+            Ok(None)
         }
     }
 }
@@ -426,7 +419,7 @@ impl MatchingEngine {
         let order_wal = Wal::open(&order_wal_path, order_wal_seq).map_err(|e| e.to_string())?;
         let trade_wal = Wal::open(&trade_wal_path, 0).map_err(|e| e.to_string())?; // Output log, seq doesn't matter much for now
         
-        let mut engine = MatchingEngine {
+        let engine = MatchingEngine {
             order_books,
             ledger,
             asset_map: FxHashMap::default(),
@@ -438,14 +431,14 @@ impl MatchingEngine {
         // Replay Loop
         if order_wal_path.exists() {
              println!("   [Recover] Replaying Order WAL...");
-             let mut count = 0;
+             let _count = 0;
              // We use a separate iterator because `engine.order_wal` is a writer.
              if let Ok(iter) = Wal::replay_iter(&order_wal_path) {
                  for (seq, entry) in iter {
                      if seq <= order_wal_seq { continue; }
                      
                      match entry {
-                         LogEntry::PlaceOrder { order_id, symbol, side, price, quantity, user_id, .. } => {
+                         LogEntry::PlaceOrder { .. } => {
                              // Find symbol_id from symbol string
                              // Note: We might need to register symbol if not exists?
                              // For now, assume symbols are pre-registered or we scan WAL for registration?
@@ -496,7 +489,7 @@ impl MatchingEngine {
     }
 
     /// Public API: Add Order (Writes to WAL, then processes)
-    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
+    pub fn add_order(&mut self, symbol_id: usize, order_id: u128, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
         let wal_side = match side {
             Side::Buy => WalSide::Buy,
             Side::Sell => WalSide::Sell,
@@ -556,7 +549,7 @@ impl MatchingEngine {
 
     /// Internal Logic: Process Order (No Input WAL write)
     /// Used by `add_order` and during Replay.
-    fn process_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
+    fn process_order(&mut self, symbol_id: usize, order_id: u128, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
         let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
         
         // 1. Lock funds
@@ -577,7 +570,8 @@ impl MatchingEngine {
         let book = book_opt.as_mut()
             .ok_or(OrderError::InvalidSymbol { symbol_id })?; // Should be gap error but reusing invalid for now
         
-        let trades = book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity, user_id)
+        let symbol = book.symbol.clone();
+        let trades = book.add_order(order_id, &symbol, side, price, quantity, user_id)
             .map_err(|e| OrderError::Other(e))?;
         
         // 3. Settle trades
@@ -625,37 +619,37 @@ impl MatchingEngine {
             }
         }
         
-        Ok(order_id)
+        Ok(order_id as u64) // Cast u128 to u64, assuming order_id fits. This might be a bug if order_id can exceed u64::MAX
     }
     
     /// Public API: Cancel Order (Writes to WAL, then processes)
-    pub fn cancel_order(&mut self, symbol_id: usize, order_id: u64) -> Result<bool, String> {
-        // 1. Write to Input Log
-        self.order_wal.append(LogEntry::CancelOrder { id: order_id });
-        
+    pub fn cancel_order(&mut self, symbol_id: usize, order_id: u128) -> Result<(), OrderError> {
+        // 1. Write to WAL
+        self.order_wal.append(LogEntry::CancelOrder {
+            order_id,
+            symbol: self.order_books[symbol_id].as_ref().map(|b| b.symbol.clone()).unwrap_or_else(|| "UNKNOWN".to_string()),
+            timestamp: 0,
+        });
+
         // 2. Process Logic
         self.process_cancel(symbol_id, order_id)
     }
 
     /// Internal Logic: Process Cancel (No Input WAL write)
-    fn process_cancel(&mut self, symbol_id: usize, order_id: u64) -> Result<bool, String> {
+    fn process_cancel(&mut self, symbol_id: usize, order_id: u128) -> Result<(), OrderError> {
         let book_opt = self.order_books.get_mut(symbol_id)
-            .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
         let book = book_opt.as_mut()
-            .ok_or_else(|| format!("Symbol ID {} is not active", symbol_id))?;
+            .ok_or_else(|| OrderError::Other(format!("Symbol ID {} is not active", symbol_id)))?;
 
-        if book.cancel_order(order_id) {
+        if let Some(_cancelled_order) = book.cancel_order(order_id).map_err(|e| OrderError::Other(e))? {
             // TODO: Unlock funds!
             // We need to know the order details (price, quantity, side, user_id) to unlock.
             // `OrderBook::cancel_order` currently returns `bool`.
-            // It should return `Option<Order>` or similar details.
-            // This was a previous TODO.
-            // I need to update `OrderBook::cancel_order` to return the removed order.
-            
-            // For now, just return true. Fund unlocking is still a TODO.
-            Ok(true)
+            // We should update it to return the cancelled order details.
+            Ok(())
         } else {
-            Ok(false)
+            Err(OrderError::OrderNotFound { order_id })
         }
     }
 

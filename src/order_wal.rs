@@ -1,6 +1,4 @@
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::os::unix::io::AsRawFd;
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::thread;
 use anyhow::Result;
@@ -24,7 +22,7 @@ pub enum WalSide { Buy, Sell }
 #[derive(Debug, Clone)]
 pub enum LogEntry {
     PlaceOrder {
-        order_id: u64,
+        order_id: u128,
         symbol: String,
         side: WalSide,
         price: u64,
@@ -32,19 +30,25 @@ pub enum LogEntry {
         user_id: u64,
         timestamp: u64,
     },
-    CancelOrder { id: u64 },
+    CancelOrder {
+        order_id: u128,
+        symbol: String,
+        timestamp: u64,
+    },
     Trade {
         match_id: u64,
-        buy_order_id: u64,
-        sell_order_id: u64,
+        buy_order_id: u128,
+        sell_order_id: u128,
         price: u64,
         quantity: u64,
     },
 }
 
-fn to_fbs_ulid(id: u64) -> UlidStruct {
-    // Map u64 ID to UlidStruct (hi=0, lo=id)
-    UlidStruct::new(0, id)
+fn to_fbs_ulid(id: u128) -> UlidStruct {
+    // Map u128 ID to UlidStruct (hi, lo)
+    let hi = (id >> 64) as u64;
+    let lo = id as u64;
+    UlidStruct::new(hi, lo)
 }
 
 pub struct Wal {
@@ -110,8 +114,8 @@ impl Wal {
                             });
                             (EntryType::Order, order.as_union_value())
                         }
-                        LogEntry::CancelOrder { id } => {
-                            let f_ulid = to_fbs_ulid(id);
+                        LogEntry::CancelOrder { order_id, .. } => {
+                            let f_ulid = to_fbs_ulid(order_id);
                             let cancel = Cancel::create(&mut builder, &CancelArgs { id: Some(&f_ulid) });
                             (EntryType::Cancel, cancel.as_union_value())
                         }
@@ -219,8 +223,11 @@ impl Iterator for WalIterator {
         match frame.entry_type() {
             EntryType::Order => {
                 let order = frame.entry_as_order()?;
+                let hi = order.id()?.hi();
+                let lo = order.id()?.lo();
+                let order_id = ((hi as u128) << 64) | (lo as u128);
                 Some((seq, LogEntry::PlaceOrder {
-                    order_id: order.id()?.lo(),
+                    order_id,
                     symbol: order.symbol()?.to_string(),
                     side: match order.side() {
                         FbsSide::Buy => WalSide::Buy,
@@ -235,16 +242,29 @@ impl Iterator for WalIterator {
             }
             EntryType::Cancel => {
                 let cancel = frame.entry_as_cancel()?;
+                let hi = cancel.id()?.hi();
+                let lo = cancel.id()?.lo();
+                let order_id = ((hi as u128) << 64) | (lo as u128);
                 Some((seq, LogEntry::CancelOrder {
-                    id: cancel.id()?.lo(),
+                    order_id,
+                    symbol: "UNKNOWN".to_string(), // TODO: Store symbol in CancelOrder WAL frame
+                    timestamp: 0, // TODO: Store timestamp in CancelOrder WAL frame
                 }))
             }
             EntryType::Trade => {
                  let trade = frame.entry_as_trade()?;
+                 let buy_hi = trade.buy_order_id()?.hi();
+                 let buy_lo = trade.buy_order_id()?.lo();
+                 let buy_order_id = ((buy_hi as u128) << 64) | (buy_lo as u128);
+                 
+                 let sell_hi = trade.sell_order_id()?.hi();
+                 let sell_lo = trade.sell_order_id()?.lo();
+                 let sell_order_id = ((sell_hi as u128) << 64) | (sell_lo as u128);
+
                  Some((seq, LogEntry::Trade {
                      match_id: trade.match_id(),
-                     buy_order_id: trade.buy_order_id()?.lo(),
-                     sell_order_id: trade.sell_order_id()?.lo(),
+                     buy_order_id,
+                     sell_order_id,
                      price: trade.price(),
                      quantity: trade.quantity(),
                  }))

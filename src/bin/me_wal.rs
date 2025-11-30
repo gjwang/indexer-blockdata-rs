@@ -92,7 +92,7 @@ impl MatchingEngine {
         let symbol_str = std::str::from_utf8(&order.symbol).unwrap_or("UNKNOWN").trim_matches('\0').to_string();
 
         self.wal.append(LogEntry::PlaceOrder {
-            order_id: order.id,
+            order_id: order.id as u128, // Assuming input JSON has u64, cast to u128
             symbol: symbol_str,
             side: wal_side,
             price: order.price,
@@ -123,8 +123,8 @@ impl MatchingEngine {
         // Log trade to WAL
         self.wal.append(LogEntry::Trade {
             match_id: trade.match_id,
-            buy_order_id: trade.buy_order_id,
-            sell_order_id: trade.sell_order_id,
+            buy_order_id: trade.buy_order_id as u128,
+            sell_order_id: trade.sell_order_id as u128,
             price: trade.price,
             quantity: trade.quantity,
         });
@@ -140,7 +140,11 @@ impl MatchingEngine {
 
     pub fn cancel_order(&mut self, order_id: u64) -> bool {
         if self.orders.remove(&order_id).is_some() {
-            self.wal.append(LogEntry::CancelOrder { id: order_id });
+            self.wal.append(LogEntry::CancelOrder {
+                order_id: order_id as u128,
+                symbol: "UNKNOWN".to_string(),
+                timestamp: 0,
+            });
             true
         } else {
             false
