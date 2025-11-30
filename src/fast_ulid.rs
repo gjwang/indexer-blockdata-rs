@@ -1,9 +1,5 @@
 use ulid::Ulid;
 
-// ==========================================
-// 1. FAST ULID GENERATOR
-// ==========================================
-
 pub struct FastUlidGenerator {
     generator: ulid::Generator,
 }
