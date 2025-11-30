@@ -242,7 +242,9 @@ impl OrderBook {
         // self.trade_history.extend(trades.clone()); // REMOVED
         
         for trade in &trades {
-            println!("Trade Executed: {:?}", trade);
+            if trade.match_id % 10_000 == 0 {
+                println!("Trade Executed: {:?}", trade);
+            }
         }
 
         trades
