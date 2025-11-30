@@ -1,11 +1,11 @@
-use std::convert::Infallible;
+// use std::convert::Infallible;
 use std::env;
-use std::error::Error;
+// use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
 use cached::proc_macro::cached;
-use cached::SizedCache;
+// use cached::SizedCache;
 use clap::Parser;
 use dotenv::dotenv;
 use ethers::{
@@ -13,14 +13,14 @@ use ethers::{
     providers::{Http, Provider},
 };
 use eyre::Result;
-use log::{error, info};
+use log::info;
 use serde_json::{json, Value};
 use tokio::time::sleep;
 
 use fetcher::s3_service::S3Service;
 use simple_kv_storage::SledDb;
 
-use crate::compressor::{compress_json, decompress_json};
+use crate::compressor::compress_json;
 
 mod compressor;
 mod configure;
@@ -63,14 +63,17 @@ async fn get_block_data(
     Ok(block_json)
 }
 
-#[cached(time = 10, key = "String", convert = r#"{ "latest_block".to_string() }"#)]
+#[cached(
+    time = 10,
+    key = "String",
+    convert = r#"{ "latest_block".to_string() }"#
+)]
 async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, String> {
     let block_number_end = client.get_block_number().await.map_err(|e| e.to_string())?;
     let block_number_end = i64::try_from(block_number_end).map_err(|e| e.to_string())?;
     info!("get_latest_block_number block_number_end={block_number_end}");
     Ok(block_number_end)
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -96,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kv_db = SledDb::new(db_name)?;
 
     if block_number_begin < 0 {
-        block_number_begin = kv_db.get("block_number_begin", 0);
+        // block_number_begin = kv_db.get("block_number_begin", 0);
     } else {
         kv_db.insert("block_number_begin", block_number_begin)?;
     }
@@ -106,7 +109,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if _block_number_end == -1 {
         //use LatestBlockNumber value as block_number_end
         // block_number_end = i64::try_from(client.get_block_number().await?)?;
-        block_number_end = get_latest_block_number(client.clone()).await.map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        block_number_end = get_latest_block_number(client.clone())
+            .await
+            .map_err(|e| Box::new(std::io::Error::other(e)))?;
         info!("LatestBlockNumber: {}", block_number_end);
         kv_db.insert("block_number_end", block_number_end)?;
     } else if _block_number_end == -2 {
@@ -132,9 +137,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let s3_service = S3Service::new(
-        &bucket_name,
-        &region,
-        &endpoint,
+        bucket_name,
+        region,
+        endpoint,
         &aws_access_key_id,
         &aws_secret_access_key,
     )?;
@@ -144,7 +149,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if !is_reverse_indexing {
             // block_number_end = i64::try_from(client.get_block_number().await?)?;
-            block_number_end = get_latest_block_number(client.clone()).await.map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            block_number_end = get_latest_block_number(client.clone())
+                .await
+                .map_err(|e| Box::new(std::io::Error::other(e)))?;
             info!("LatestBlockNumber: {}", block_number_end);
         } else {
             block_number_end = kv_db.get("block_number_end", -1);
@@ -167,12 +174,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let block_number;
-        if is_reverse_indexing {
-            block_number = block_number_end;
+        let block_number = if is_reverse_indexing {
+            block_number_end
         } else {
-            block_number = block_number_begin;
-        }
+            block_number_begin
+        };
 
         let block_data = get_block_data(&client, block_number_begin as u64).await?;
         // println!("{}", serde_json::to_string_pretty(&block_data)?);

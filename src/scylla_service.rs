@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -8,6 +9,12 @@ use tokio::sync::Mutex;
 
 pub struct ScyllaService {
     session: Arc<Mutex<Option<Session>>>,
+}
+
+impl Default for ScyllaService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ScyllaService {
@@ -61,7 +68,7 @@ pub async fn example_usage() -> Result<()> {
     let rows = scylla_service.execute_query(stmt).await?;
     println!("{:?}", rows);
     for row in rows {
-        let cluster_name: Option<&Option<CqlValue>> = row.columns.get(0);
+        let cluster_name: Option<&Option<CqlValue>> = row.columns.first();
         let listen_address: Option<&Option<CqlValue>> = row.columns.get(1);
 
         match (cluster_name, listen_address) {

@@ -1,11 +1,11 @@
-use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
-use url::Url;
-use serde_json::json;
 use clap::Parser;
+use futures_util::{SinkExt, StreamExt};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message as KafkaMessage;
+use serde_json::json;
+use tokio_tungstenite::{connect_async, tungstenite::protocol::Message};
+use url::Url;
 
 use fetcher::configure;
 
@@ -39,10 +39,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = configure::load_config().expect("Failed to load config");
 
     let centrifugo_url = args.url.clone().unwrap_or(config.centrifugo_url.clone());
-    let centrifugo_channel = args.channel.clone().unwrap_or(config.centrifugo_channel.clone());
-    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka_broker.clone());
-    let kafka_topic = args.kafka_topic.clone().unwrap_or(config.kafka_topic.clone());
-    let base_group_id = args.group_id.clone().unwrap_or(config.kafka_group_id.clone());
+    let centrifugo_channel = args
+        .channel
+        .clone()
+        .unwrap_or(config.centrifugo_channel.clone());
+    let kafka_broker = args
+        .kafka_broker
+        .clone()
+        .unwrap_or(config.kafka_broker.clone());
+    let kafka_topic = args
+        .kafka_topic
+        .clone()
+        .unwrap_or(config.kafka_topic.clone());
+    let base_group_id = args
+        .group_id
+        .clone()
+        .unwrap_or(config.kafka_group_id.clone());
 
     loop {
         println!("Starting bridge...");
@@ -52,7 +64,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &kafka_broker,
             &kafka_topic,
             &base_group_id,
-        ).await {
+        )
+        .await
+        {
             eprintln!("Bridge error: {}", e);
         } else {
             eprintln!("Bridge exited unexpectedly");
@@ -88,13 +102,17 @@ async fn run_bridge(
         exp: now + 10000000000, // Long expiration
     };
     let secret = "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"; // TODO: Load from config
-    let token = encode(&Header::default(), &my_claims, &EncodingKey::from_secret(secret.as_ref()))?;
+    let token = encode(
+        &Header::default(),
+        &my_claims,
+        &EncodingKey::from_secret(secret.as_ref()),
+    )?;
     println!("Generated Token: {}", token);
 
     // 2. Connect to Centrifugo
     let url = Url::parse(centrifugo_url)?;
     // url.query_pairs_mut().append_pair("token", &token); // Don't put token in URL
-    
+
     println!("Connecting to Centrifugo at {}", url);
     let (ws_stream, _) = connect_async(url.to_string()).await?;
     println!("Connected to Centrifugo");
@@ -108,7 +126,9 @@ async fn run_bridge(
             "token": token
         }
     });
-    write.send(Message::Text(connect_msg.to_string().into())).await?;
+    write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await?;
     println!("Sent connect message to Centrifugo");
 
     // Wait for connect reply (simple check)
@@ -131,8 +151,8 @@ async fn run_bridge(
 
     // 4. Consume and Forward Loop
     println!("Starting consume loop...");
-    
-    // We need to handle reading from WS (to keep connection alive/handle pings) 
+
+    // We need to handle reading from WS (to keep connection alive/handle pings)
     // and reading from Kafka concurrently.
     let mut ping_interval = tokio::time::interval(std::time::Duration::from_secs(10));
     ping_interval.tick().await; // Consume first tick

@@ -1,9 +1,9 @@
 use clap::Parser;
+use fetcher::configure;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message as KafkaMessage;
 use serde_json::json;
-use fetcher::configure;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -38,19 +38,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let centrifugo_url = args.url.clone()
+    let centrifugo_url = args
+        .url
+        .clone()
         .unwrap_or_else(|| "http://localhost:8000/api".to_string());
-    let centrifugo_channel = args.channel.clone()
+    let centrifugo_channel = args
+        .channel
+        .clone()
         .unwrap_or(config.centrifugo_channel.clone());
-    let kafka_broker = args.kafka_broker.clone()
+    let kafka_broker = args
+        .kafka_broker
+        .clone()
         .unwrap_or(config.kafka_broker.clone());
-    let kafka_topic = args.kafka_topic.clone()
+    let kafka_topic = args
+        .kafka_topic
+        .clone()
         .unwrap_or(config.kafka_topic.clone());
-    let base_group_id = args.group_id.clone()
+    let base_group_id = args
+        .group_id
+        .clone()
         .unwrap_or(config.kafka_group_id.clone());
-    let api_key = args.api_key
-        .unwrap_or_else(|| std::env::var("CENTRIFUGO_API_KEY")
-            .unwrap_or_else(|_| "your_secure_api_key_here_change_this_in_production".to_string()));
+    let api_key = args.api_key.unwrap_or_else(|| {
+        std::env::var("CENTRIFUGO_API_KEY")
+            .unwrap_or_else(|_| "your_secure_api_key_here_change_this_in_production".to_string())
+    });
 
     loop {
         println!("Starting HTTP API bridge...");
@@ -61,7 +72,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &kafka_topic,
             &base_group_id,
             &api_key,
-        ).await {
+        )
+        .await
+        {
             eprintln!("Bridge error: {}", e);
         } else {
             eprintln!("Bridge exited unexpectedly");
@@ -84,18 +97,21 @@ async fn run_http_bridge(
 
     // Create optimized HTTP client with connection pooling
     let client = reqwest::Client::builder()
-        .pool_max_idle_per_host(10)  // Keep 10 idle connections ready for reuse
-        .pool_idle_timeout(std::time::Duration::from_secs(90))  // Keep connections alive for 90s
-        .tcp_keepalive(std::time::Duration::from_secs(60))  // TCP keep-alive every 60s
-        .timeout(std::time::Duration::from_secs(30))  // Overall request timeout
-        .connect_timeout(std::time::Duration::from_secs(10))  // Connection timeout
+        .pool_max_idle_per_host(10) // Keep 10 idle connections ready for reuse
+        .pool_idle_timeout(std::time::Duration::from_secs(90)) // Keep connections alive for 90s
+        .tcp_keepalive(std::time::Duration::from_secs(60)) // TCP keep-alive every 60s
+        .timeout(std::time::Duration::from_secs(30)) // Overall request timeout
+        .connect_timeout(std::time::Duration::from_secs(10)) // Connection timeout
         .build()?;
     let publish_url = format!("{}/publish", centrifugo_url);
-    
+
     println!("HTTP client configured with connection pooling:");
 
     println!("Centrifugo HTTP API URL: {}", publish_url);
-    println!("Using API Key: {}...", &api_key.chars().take(10).collect::<String>());
+    println!(
+        "Using API Key: {}...",
+        &api_key.chars().take(10).collect::<String>()
+    );
 
     // Connect to Redpanda
     println!("Connecting to Redpanda at {}", kafka_broker);
@@ -148,7 +164,10 @@ async fn run_http_bridge(
                                 } else {
                                     let status = response.status();
                                     let error_text = response.text().await.unwrap_or_default();
-                                    eprintln!("✗ Centrifugo HTTP error: {} - {}\n", status, error_text);
+                                    eprintln!(
+                                        "✗ Centrifugo HTTP error: {} - {}\n",
+                                        status, error_text
+                                    );
                                 }
                             }
                             Err(e) => {

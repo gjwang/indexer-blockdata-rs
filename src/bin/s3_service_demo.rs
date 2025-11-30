@@ -23,9 +23,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let s3_service = S3Service::new(
-        &bucket_name,
-        &region,
-        &endpoint,
+        bucket_name,
+        region,
+        endpoint,
         &aws_access_key_id,
         &aws_secret_access_key,
     )?;

@@ -1,5 +1,5 @@
 use std::env;
-use std::error::Error;
+// use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,10 +11,10 @@ use ethers::{
 };
 use eyre::Result;
 use log::info;
-use serde_json::{json, Value};
+// use serde_json::{json, Value};
 use tokio::time::sleep;
 
-use fetcher::compressor::{compress_json, decompress_json};
+use fetcher::compressor::decompress_json;
 use fetcher::logger;
 use fetcher::s3_service::S3Service;
 use fetcher::simple_kv_storage::SledDb;
@@ -29,7 +29,6 @@ struct Args {
     #[clap(long, action = clap::ArgAction::Set, default_value_t = false)]
     is_reverse_indexing: bool,
 }
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,7 +56,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kv_blk_number_begin_key = "indexer::block_number_begin";
     let kv_blk_number_end_key = "indexer::block_number_end";
     if block_number_begin < 0 {
-        block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
+        // block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
     } else {
         kv_db.insert(kv_blk_number_begin_key, block_number_begin)?;
     }
@@ -92,9 +91,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let s3_service = S3Service::new(
-        &bucket_name,
-        &region,
-        &endpoint,
+        bucket_name,
+        region,
+        endpoint,
         &aws_access_key_id,
         &aws_secret_access_key,
     )?;
@@ -120,19 +119,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let block_number;
-        if is_reverse_indexing {
-            block_number = block_number_end;
+        let block_number = if is_reverse_indexing {
+            block_number_end
         } else {
-            block_number = block_number_begin;
-        }
+            block_number_begin
+        };
 
         let key = format!("{block_number}.json.gz");
         let block_data = s3_service.get_object(&key).await;
         match block_data {
             Ok(data) => {
                 println!("get_object {key} ✅");
-                let decompressed_json = decompress_json(&data)?; // Decompress JSON data
+                let _decompressed_json = decompress_json(&data)?; // Decompress to verifyJSON data
                 println!("Decompressed block: {key}");
                 //TODO save into scylla
             }
@@ -142,7 +140,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
         }
-
 
         if !is_reverse_indexing {
             block_number_begin += 1;

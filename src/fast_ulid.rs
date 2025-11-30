@@ -4,6 +4,12 @@ pub struct FastUlidGen {
     generator: ulid::Generator,
 }
 
+impl Default for FastUlidGen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FastUlidGen {
     pub fn new() -> Self {
         Self {

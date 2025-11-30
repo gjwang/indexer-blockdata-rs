@@ -1,11 +1,11 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 // src/bin/redpanda_concurrency_test.rs
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::util::Timeout;
-use tokio;
+// use tokio;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,7 +21,7 @@ async fn main() -> anyhow::Result<()> {
         // .set("acks", "1")                              // 1: Leader ack (折中), all: 最安全, 0: 最快
         .create()?;
 
-    let num_messages = 1000_000;
+    let num_messages = 1_000_000;
     let concurrency = 1000;
 
     // 📊 统计指标（原子计数）
@@ -46,11 +46,12 @@ async fn main() -> anyhow::Result<()> {
 
                 let key = format!("key-{}", i);
                 let payload = format!("msg-{}-{}", i, j);
-                let record = FutureRecord::to(&topic)
-                    .payload(&payload)
-                    .key(&key);
+                let record = FutureRecord::to(&topic).payload(&payload).key(&key);
 
-                match producer.send(record, Timeout::After(Duration::from_secs(10))).await {
+                match producer
+                    .send(record, Timeout::After(Duration::from_secs(10)))
+                    .await
+                {
                     Ok(_) => {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }

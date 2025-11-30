@@ -1,6 +1,6 @@
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 
 /// Claims for Centrifugo connection token
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,7 +28,7 @@ impl CentrifugoTokenGenerator {
     }
 
     /// Generate a connection token for a user
-    /// 
+    ///
     /// # Arguments
     /// * `user_id` - The unique user identifier
     /// * `ttl_seconds` - Token time-to-live in seconds (default: 3600 = 1 hour)
@@ -76,7 +76,10 @@ impl CentrifugoTokenGenerator {
     }
 
     /// Verify and decode a Centrifugo token
-    pub fn verify_token(&self, token: &str) -> Result<CentrifugoClaims, jsonwebtoken::errors::Error> {
+    pub fn verify_token(
+        &self,
+        token: &str,
+    ) -> Result<CentrifugoClaims, jsonwebtoken::errors::Error> {
         let validation = Validation::new(Algorithm::HS256);
         let token_data = decode::<CentrifugoClaims>(
             token,
@@ -102,7 +105,7 @@ mod tests {
     #[test]
     fn test_token_generation() {
         let generator = CentrifugoTokenGenerator::new(
-            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string()
+            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string(),
         );
 
         let token = generator.generate_token("12345", Some(3600), None).unwrap();
@@ -116,15 +119,17 @@ mod tests {
     #[test]
     fn test_token_with_channels() {
         let generator = CentrifugoTokenGenerator::new(
-            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string()
+            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string(),
         );
 
-        let token = generator.generate_token_with_default_channels("12345", Some(3600)).unwrap();
+        let token = generator
+            .generate_token_with_default_channels("12345", Some(3600))
+            .unwrap();
         let claims = generator.verify_token(&token).unwrap();
 
         assert_eq!(claims.sub, "12345");
         assert!(claims.channels.is_some());
-        
+
         let channels = claims.channels.unwrap();
         assert!(channels.contains(&"user:12345#balance".to_string()));
         assert!(channels.contains(&"user:12345#orders".to_string()));
@@ -134,7 +139,7 @@ mod tests {
     #[test]
     fn test_invalid_token() {
         let generator = CentrifugoTokenGenerator::new(
-            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string()
+            "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string(),
         );
 
         let result = generator.verify_token("invalid.token.here");

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::convert::TryInto;
 
 use sled::Db;
@@ -42,6 +43,7 @@ impl SledDb {
         }
     }
 
+    #[allow(dead_code)]
     fn flush(&self) -> sled::Result<usize> {
         self.db.flush()
     }
