@@ -34,6 +34,40 @@ pub struct Trade {
     pub quantity: u64,
 }
 
+#[derive(Debug, Clone)]
+pub enum OrderError {
+    InsufficientFunds { user_id: u64, asset: u32, required: u64, available: u64 },
+    InvalidSymbol { symbol_id: usize },
+    SymbolMismatch { expected: String, actual: String },
+    DuplicateOrderId { order_id: u64 },
+    AssetMapNotFound { symbol_id: usize },
+    LedgerError(String),
+    Other(String),
+}
+
+impl std::fmt::Display for OrderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OrderError::InsufficientFunds { user_id, asset, required, available } => 
+                write!(f, "Insufficient funds: User {} needs {} of Asset {}, has {}", user_id, required, asset, available),
+            OrderError::InvalidSymbol { symbol_id } => write!(f, "Invalid symbol ID: {}", symbol_id),
+            OrderError::SymbolMismatch { expected, actual } => write!(f, "Symbol mismatch: expected '{}', got '{}'", expected, actual),
+            OrderError::DuplicateOrderId { order_id } => write!(f, "Duplicate order ID: {}", order_id),
+            OrderError::AssetMapNotFound { symbol_id } => write!(f, "Asset map not found for symbol ID: {}", symbol_id),
+            OrderError::LedgerError(msg) => write!(f, "Ledger error: {}", msg),
+            OrderError::Other(msg) => write!(f, "Error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for OrderError {}
+
+impl From<String> for OrderError {
+    fn from(err: String) -> Self {
+        OrderError::Other(err)
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
     pub symbol: String,
@@ -466,7 +500,7 @@ impl MatchingEngine {
     }
 
     /// Public API: Add Order (Writes to WAL, then processes)
-    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
+    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
         let wal_side = match side {
             Side::Buy => WalSide::Buy,
             Side::Sell => WalSide::Sell,
@@ -474,7 +508,7 @@ impl MatchingEngine {
         
         // 1. Validate Symbol
         let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id)
-            .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
         // 2. Validate Balance
         let (required_asset, required_amount) = match side {
@@ -489,7 +523,8 @@ impl MatchingEngine {
             .unwrap_or(0);
 
         if balance < required_amount {
-             return Err(format!("Insufficient funds: User {} needs {} of Asset {}, has {}", user_id, required_amount, required_asset, balance));
+             // Soft rejection: return specific error but don't panic
+             return Err(OrderError::InsufficientFunds { user_id, asset: required_asset, required: required_amount, available: balance });
         }
 
         // 3. Write to Input Log (Source of Truth)
@@ -509,8 +544,8 @@ impl MatchingEngine {
 
     /// Internal Logic: Process Order (No Input WAL write)
     /// Used by `add_order` and during Replay.
-    fn process_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
-        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or("Asset map not found")?;
+    fn process_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, OrderError> {
+        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
         
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -522,15 +557,16 @@ impl MatchingEngine {
             user_id,
             asset: lock_asset,
             amount: lock_amount,
-        }).map_err(|e| e.to_string())?;
+        }).map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         let book_opt = self.order_books.get_mut(symbol_id)
-            .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
+            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
             
         let book = book_opt.as_mut()
-            .ok_or_else(|| format!("Symbol ID {} is not active (gap)", symbol_id))?;
+            .ok_or(OrderError::InvalidSymbol { symbol_id })?; // Should be gap error but reusing invalid for now
         
-        let trades = book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity, user_id)?;
+        let trades = book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity, user_id)
+            .map_err(|e| OrderError::Other(e))?;
         
         // 3. Settle trades
         for trade in trades {
@@ -553,7 +589,7 @@ impl MatchingEngine {
                 spend_amount: buyer_spend,
                 gain_asset: base_asset,
                 gain_amount: buyer_gain,
-            }).map_err(|e| e.to_string())?;
+            }).map_err(|e| OrderError::LedgerError(e.to_string()))?;
             
             // Seller Settle
             self.ledger.apply(&LedgerCommand::TradeSettle {
@@ -562,7 +598,7 @@ impl MatchingEngine {
                 spend_amount: seller_spend,
                 gain_asset: quote_asset,
                 gain_amount: seller_gain,
-            }).map_err(|e| e.to_string())?;
+            }).map_err(|e| OrderError::LedgerError(e.to_string()))?;
             
             // Refund excess frozen for Taker Buyer
             if side == Side::Buy && trade.buy_user_id == user_id {
@@ -572,7 +608,7 @@ impl MatchingEngine {
                          user_id,
                          asset: quote_asset,
                          amount: excess,
-                     }).map_err(|e| e.to_string())?;
+                     }).map_err(|e| OrderError::LedgerError(e.to_string()))?;
                 }
             }
         }
