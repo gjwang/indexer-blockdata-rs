@@ -19,6 +19,13 @@ fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
     println!("---------------------");
 }
 
+fn assert_balance(engine: &MatchingEngine, user_id: u64, asset_id: u32, expected_avail: u64, expected_frozen: u64) {
+    let balances = engine.ledger.get_user_balances(user_id).expect("User not found");
+    let bal = balances.iter().find(|(a, _)| *a == asset_id).expect("Asset not found").1;
+    assert_eq!(bal.available, expected_avail, "User {} Asset {} Available mismatch", user_id, asset_id);
+    assert_eq!(bal.frozen, expected_frozen, "User {} Asset {} Frozen mismatch", user_id, asset_id);
+}
+
 fn main() {
     let wal_dir = Path::new("me_wal_data");
     let snap_dir = Path::new("me_snapshots");
@@ -96,6 +103,15 @@ fn main() {
 
     engine.print_order_book(btc_id);
     print_user_balances(&engine, &[1, 2, 4]);
+
+    // Verify Balances
+    assert_balance(&engine, 1, 1, 9900, 0);   // User 1: BTC
+    assert_balance(&engine, 1, 2, 1000, 0);   // User 1: USDT
+    assert_balance(&engine, 2, 1, 9899, 0);   // User 2: BTC
+    assert_balance(&engine, 2, 2, 505, 0);    // User 2: USDT
+    assert_balance(&engine, 4, 1, 101, 0);    // User 4: BTC
+    assert_balance(&engine, 4, 2, 98985, 10); // User 4: USDT
+    println!(">>> Balance Assertions Passed!");
 
     // === Demonstrate Dynamic Symbol Addition ===
     println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5");
