@@ -27,6 +27,8 @@ pub struct Trade {
     pub quantity: u64,
 }
 
+use rustc_hash::FxHashSet;
+
 pub struct OrderBook {
     symbol: String,
     // Bids: High to Low. We use Reverse for BTreeMap to iterate from highest price.
@@ -36,6 +38,7 @@ pub struct OrderBook {
     trade_history: Vec<Trade>,
     order_counter: u64,
     match_sequence: u64,
+    active_order_ids: FxHashSet<u64>,
 }
 
 impl OrderBook {
@@ -47,23 +50,48 @@ impl OrderBook {
             trade_history: Vec::new(),
             order_counter: 0,
             match_sequence: 0,
+            active_order_ids: FxHashSet::default(),
         }
     }
 
-    pub fn add_order(&mut self, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    pub fn add_order(&mut self, order_id: u64, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
         // Validate symbol matches this OrderBook
         if symbol != self.symbol {
             return Err(format!("Symbol mismatch: expected '{}', got '{}'", self.symbol, symbol));
         }
         
+        // prevent duplicate order_id
+        if self.active_order_ids.contains(&order_id) {
+            return Err(format!("Duplicate order ID: {}", order_id));
+        }
+
         self.order_counter += 1;
         let order = Order {
-            order_id: self.order_counter,
+            order_id,
             symbol: self.symbol.clone(),
             side,
             price,
             quantity,
             timestamp: self.order_counter, // Using counter as logical timestamp
+        };
+
+        Ok(self.match_order(order))
+    }
+
+    pub fn add_order_by_symbol_id(&mut self, order_id: u64, _symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+        // Validate order_id, can not duplicate insert
+        if self.active_order_ids.contains(&order_id) {
+            return Err(format!("Duplicate order ID: {}", order_id));
+        }
+
+        self.order_counter += 1;
+        let order = Order {
+            order_id,
+            symbol: self.symbol.clone(),
+            side,
+            price,
+            quantity,
+            timestamp: self.order_counter,
         };
 
         Ok(self.match_order(order))
@@ -106,6 +134,9 @@ impl OrderBook {
                                 // If maker order is not fully filled, push it back to front (it has priority)
                                 orders_at_price.push_front(best_ask);
                                 break; // Taker is fully filled
+                            } else {
+                                // Maker order fully filled, remove from active set
+                                self.active_order_ids.remove(&best_ask.order_id);
                             }
                             
                             if order.quantity == 0 {
@@ -152,6 +183,9 @@ impl OrderBook {
                             if best_bid.quantity > 0 {
                                 orders_at_price.push_front(best_bid);
                                 break;
+                            } else {
+                                // Maker order fully filled, remove from active set
+                                self.active_order_ids.remove(&best_bid.order_id);
                             }
 
                             if order.quantity == 0 {
@@ -171,6 +205,7 @@ impl OrderBook {
 
         // If order still has quantity, add to book
         if order.quantity > 0 {
+            self.active_order_ids.insert(order.order_id);
             match order.side {
                 Side::Buy => {
                     self.bids
@@ -237,16 +272,14 @@ impl MatchingEngine {
     }
 
     /// Add order using symbol ID
-    pub fn add_order(&mut self, symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
         let book_opt = self.order_books.get_mut(symbol_id)
             .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
             
         let book = book_opt.as_mut()
             .ok_or_else(|| format!("Symbol ID {} is not active (gap)", symbol_id))?;
         
-        // Clone symbol to avoid borrow conflict
-        let symbol = book.symbol.clone();
-        book.add_order(&symbol, side, price, quantity)
+        book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity)
     }
 
     pub fn print_order_book(&self, symbol_id: usize) {
@@ -316,28 +349,28 @@ fn main() {
     println!("\n>>> Trading BTC_USDT");
     let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10");
-    engine.add_order(btc_id, Side::Sell, 100, 10).unwrap();
+    engine.add_order(btc_id, 1, Side::Sell, 100, 10).unwrap();
     
     println!("Adding Sell Order: 101 @ 5");
-    engine.add_order(btc_id, Side::Sell, 101, 5).unwrap();
+    engine.add_order(btc_id, 2, Side::Sell, 101, 5).unwrap();
 
     engine.print_order_book(btc_id);
 
     println!("Adding Buy Order: 100 @ 8 (Should match partial 100)");
-    engine.add_order(btc_id, Side::Buy, 100, 8).unwrap();
+    engine.add_order(btc_id, 3, Side::Buy, 100, 8).unwrap();
 
     engine.print_order_book(btc_id);
 
     println!(">>> Trading ETH_USDT");
     let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50");
-    engine.add_order(eth_id, Side::Sell, 2000, 50).unwrap();
+    engine.add_order(eth_id, 101, Side::Sell, 2000, 50).unwrap();
     
     engine.print_order_book(eth_id);
     
     println!(">>> Trading BTC_USDT again (using ID directly)");
     println!("Adding Buy Order: 102 @ 10");
-    engine.add_order(btc_id, Side::Buy, 102, 10).unwrap();
+    engine.add_order(btc_id, 4, Side::Buy, 102, 10).unwrap();
 
     engine.print_order_book(btc_id);
 
@@ -354,12 +387,19 @@ fn main() {
     println!("Registered {} with ID: {}", new_symbol, new_id);
     
     println!("Adding Sell Order for SOL_USDT: 50 @ 100");
-    engine.add_order(new_id, Side::Sell, 50, 100).unwrap();
+    engine.add_order(new_id, 201, Side::Sell, 50, 100).unwrap();
     engine.print_order_book(new_id);
     
     // Verify gap behavior
     println!("Verifying gap at ID 2:");
-    match engine.add_order(2, Side::Buy, 1, 1) {
+    match engine.add_order(2, 999, Side::Buy, 1, 1) {
+        Ok(_) => println!("Unexpected success!"),
+        Err(e) => println!("Expected error: {}", e),
+    }
+
+    // Verify Duplicate Order ID
+    println!("Verifying duplicate order ID check:");
+    match engine.add_order(btc_id, 4, Side::Sell, 100, 10) { // ID 4 is active (Buy order)
         Ok(_) => println!("Unexpected success!"),
         Err(e) => println!("Expected error: {}", e),
     }
@@ -370,4 +410,3 @@ fn main() {
     println!("ID 5 -> {:?}", symbol_manager.get_symbol(5));
     println!("ID 2 (Gap) -> {:?}", symbol_manager.get_symbol(2));
 }
-
