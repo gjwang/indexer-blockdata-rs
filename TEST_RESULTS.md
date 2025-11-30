@@ -141,7 +141,7 @@ curl -X POST http://localhost:3000/api/test/publish-balance \
 # Publish order update
 curl -X POST http://localhost:3000/api/test/publish-order \
   -H "Content-Type: application/json" \
-  -d '{"user_id": "12345", "order_id": "order_001", "symbol": "BTC/USDT", "side": "buy", "status": "filled", "price": 50000, "quantity": 0.1}'
+  -d '{"user_id": "12345", "order_id": "order_001", "symbol": "BTC_USDT", "side": "buy", "status": "filled", "price": 50000, "quantity": 0.1}'
 ```
 
 ### 5. Watch Real-time Updates

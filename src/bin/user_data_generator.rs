@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let quantity = rng.gen_range(0.01..0.5);
                 UserUpdate::Order(OrderUpdate {
                     order_id: format!("ord_{}", rng.gen_range(1000..9999)),
-                    symbol: "BTC/USDT".to_string(),
+                    symbol: "BTC_USDT".to_string(),
                     side: if rng.gen_bool(0.5) { "buy".to_string() } else { "sell".to_string() },
                     order_type: "limit".to_string(),
                     status: "new".to_string(),
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let entry_price = rng.gen_range(48000.0..50000.0);
                 let mark_price = rng.gen_range(49000.0..51000.0);
                 UserUpdate::Position(PositionUpdate {
-                    symbol: "BTC/USDT".to_string(),
+                    symbol: "BTC_USDT".to_string(),
                     side: "long".to_string(),
                     quantity: rng.gen_range(0.1..1.0),
                     entry_price,
