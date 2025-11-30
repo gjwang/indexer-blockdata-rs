@@ -318,6 +318,7 @@ pub struct MatchingEngine {
     pub ledger: GlobalLedger,
     pub asset_map: FxHashMap<usize, (u32, u32)>,
     pub order_wal: Wal,
+    pub trade_wal: Wal,
     pub snapshot_dir: std::path::PathBuf,
 }
 
@@ -331,11 +332,15 @@ impl MatchingEngine {
         let order_wal_path = wal_dir.join("orders.wal");
         let order_wal = Wal::open(&order_wal_path, 0).map_err(|e| e.to_string())?;
 
+        let trade_wal_path = wal_dir.join("trades.wal");
+        let trade_wal = Wal::open(&trade_wal_path, 0).map_err(|e| e.to_string())?;
+
         Ok(MatchingEngine {
             order_books: Vec::new(),
             ledger,
             asset_map: FxHashMap::default(),
             order_wal,
+            trade_wal,
             snapshot_dir: snap_dir.to_path_buf(),
         })
     }
@@ -397,6 +402,15 @@ impl MatchingEngine {
         
         // 3. Settle trades
         for trade in trades {
+            // Log trade to Trade WAL
+            self.trade_wal.append(LogEntry::Trade {
+                match_id: trade.match_id,
+                buy_order_id: trade.buy_order_id,
+                sell_order_id: trade.sell_order_id,
+                price: trade.price,
+                quantity: trade.quantity,
+            });
+
             let (buyer_spend, buyer_gain) = (trade.price * trade.quantity, trade.quantity);
             let (seller_spend, seller_gain) = (trade.quantity, trade.price * trade.quantity);
             

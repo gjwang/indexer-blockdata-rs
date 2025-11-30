@@ -138,11 +138,11 @@ fn main() {
     // User 1001: Whale Buyer (Asset 2: USDT)
     engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1001, asset: 2, amount: 50_000_000_000 }).unwrap();
 
-    let total = 3_000;
     let start = std::time::Instant::now();
     let mut buy_orders = Vec::new();
     let mut sell_orders = Vec::new();
 
+    let total = 1_000;
     // Start ID from 10000 to avoid conflict with previous manual orders
     let start_id = 500;
     let snapshot_every_n_orders = 100;
