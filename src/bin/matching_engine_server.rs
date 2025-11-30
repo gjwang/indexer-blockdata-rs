@@ -78,12 +78,12 @@ fn main() {
     let btc_id = symbol_manager.get_id("BTC_USDT").expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
-    let order_id_1 = ulid_gen.generate().0 as u64;
+    let order_id_1 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) { eprintln!("Order failed: {}", e); }
     
     println!("Adding Sell Order: 101 @ 5 (User 2)");
     println!("Adding Sell Order: 101 @ 5 (User 2)");
-    let order_id_2 = ulid_gen.generate().0 as u64;
+    let order_id_2 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
@@ -91,7 +91,7 @@ fn main() {
 
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    let order_id_3 = ulid_gen.generate().0 as u64;
+    let order_id_3 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) { eprintln!("Order failed: {}", e); }
 
     engine.print_order_book(btc_id);
@@ -101,7 +101,7 @@ fn main() {
     let eth_id = symbol_manager.get_id("ETH_USDT").expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    let order_id_4 = ulid_gen.generate().0 as u64;
+    let order_id_4 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) { eprintln!("Order failed: {}", e); }
     
     engine.print_order_book(eth_id);
@@ -132,7 +132,7 @@ fn main() {
     println!("Registered {} with ID: {}", new_symbol, new_id);
     
     println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
-    let order_id_5 = ulid_gen.generate().0 as u64;
+    let order_id_5 = ulid_gen.generate().0;
     if let Err(e) = engine.add_order(new_id, order_id_5, Side::Sell, 50, 100, 201) {
         eprintln!("Order failed: {}", e);
     }
@@ -156,11 +156,11 @@ fn main() {
 
     let total = 2_000;
     // Start ID from 10000 to avoid conflict with previous manual orders
-    let start_id = 500;
+    let _start_id = 500;
     let snapshot_every_n_orders = 1_000;
 
     for i in 1..=total {
-        let order_id = ulid_gen.generate().0 as u64;
+        let order_id = ulid_gen.generate().0;
         let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
         let user_id = if side == Side::Buy { 1001 } else { 1000 };
         let price = 50000;
@@ -196,23 +196,7 @@ fn main() {
         // So simple_match_engine matches immediately! We don't need manual matching calls like me_wal.
         
         // Cancel an order every 500 orders (if any exist in book)
-        if i % 500 == 0 {
-            // Since they match immediately, we might not have many orders in the book unless we place non-matching ones.
-            // Let's place a non-matching order to cancel.
-            let cancel_id = order_id + 1_000_000; // Unique ID
-            // Place a Buy low or Sell high so it doesn't match
-            let (c_side, c_price) = (Side::Buy, 100); 
-            if let Err(e) = engine.add_order(btc_id, cancel_id, c_side, c_price, 1, 1001) {
-                eprintln!("Failed to place cancel order: {}", e);
-            }
-            
-            if let Ok(cancelled) = engine.cancel_order(btc_id, cancel_id) {
-                 if cancelled {
-                     // println!("    Cancelled Order {}", cancel_id);
-                 }
-            }
-        }
-
+        // Snapshot every 200k
         // Snapshot every 200k
         if i % snapshot_every_n_orders == 0 {
             let t = std::time::Instant::now();
