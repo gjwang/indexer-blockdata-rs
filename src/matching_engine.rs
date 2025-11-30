@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use rustc_hash::{FxHashMap, FxHashSet};
+use crate::ledger::{GlobalLedger, LedgerCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
@@ -10,6 +11,7 @@ pub enum Side {
 #[derive(Debug, Clone)]
 pub struct Order {
     pub order_id: u64,
+    pub user_id: u64,
     pub symbol: String,
     pub side: Side,
     pub price: u64,
@@ -22,6 +24,8 @@ pub struct Trade {
     pub match_id: u64,
     pub buy_order_id: u64,
     pub sell_order_id: u64,
+    pub buy_user_id: u64,
+    pub sell_user_id: u64,
     pub price: u64,
     pub quantity: u64,
 }
@@ -51,7 +55,7 @@ impl OrderBook {
         }
     }
 
-    pub fn add_order(&mut self, order_id: u64, symbol: &str, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    pub fn add_order(&mut self, order_id: u64, symbol: &str, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
         // Validate symbol matches this OrderBook
         if symbol != self.symbol {
             return Err(format!("Symbol mismatch: expected '{}', got '{}'", self.symbol, symbol));
@@ -65,6 +69,7 @@ impl OrderBook {
         self.order_counter += 1;
         let order = Order {
             order_id,
+            user_id,
             symbol: self.symbol.clone(),
             side,
             price,
@@ -75,7 +80,7 @@ impl OrderBook {
         Ok(self.match_order(order))
     }
 
-    pub fn add_order_by_symbol_id(&mut self, order_id: u64, _symbol_id: usize, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    pub fn add_order_by_symbol_id(&mut self, order_id: u64, _symbol_id: usize, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<Vec<Trade>, String> {
         // Validate order_id, can not duplicate insert
         if self.active_order_ids.contains(&order_id) {
             return Err(format!("Duplicate order ID: {}", order_id));
@@ -84,6 +89,7 @@ impl OrderBook {
         self.order_counter += 1;
         let order = Order {
             order_id,
+            user_id,
             symbol: self.symbol.clone(),
             side,
             price,
@@ -94,8 +100,8 @@ impl OrderBook {
         Ok(self.match_order(order))
     }
 
-    fn match_order(&mut self, mut order: Order) -> u64 {
-        let order_id = order.order_id;
+    fn match_order(&mut self, mut order: Order) -> Vec<Trade> {
+
         let mut trades = Vec::new();
 
         match order.side {
@@ -120,6 +126,8 @@ impl OrderBook {
                                 match_id: self.match_sequence,
                                 buy_order_id: order.order_id,
                                 sell_order_id: best_ask.order_id,
+                                buy_user_id: order.user_id,
+                                sell_user_id: best_ask.user_id,
                                 price: best_ask.price, // Trade happens at maker's price
                                 quantity: trade_quantity,
                             });
@@ -170,6 +178,8 @@ impl OrderBook {
                                 match_id: self.match_sequence,
                                 buy_order_id: best_bid.order_id,
                                 sell_order_id: order.order_id,
+                                buy_user_id: best_bid.user_id,
+                                sell_user_id: order.user_id,
                                 price: best_bid.price,
                                 quantity: trade_quantity,
                             });
@@ -221,11 +231,11 @@ impl OrderBook {
 
         self.trade_history.extend(trades.clone());
         
-        for trade in trades {
+        for trade in &trades {
             println!("Trade Executed: {:?}", trade);
         }
 
-        order_id
+        trades
     }
 
     pub fn print_book(&self) {
@@ -245,18 +255,23 @@ impl OrderBook {
 
 pub struct MatchingEngine {
     pub order_books: Vec<Option<OrderBook>>,
+    pub ledger: GlobalLedger,
+    pub asset_map: FxHashMap<usize, (u32, u32)>,
 }
 
 impl MatchingEngine {
-    pub fn new() -> Self {
-        MatchingEngine {
+    pub fn new(wal_dir: &std::path::Path, snap_dir: &std::path::Path) -> Result<Self, String> {
+        let ledger = GlobalLedger::new(wal_dir, snap_dir).map_err(|e| e.to_string())?;
+        Ok(MatchingEngine {
             order_books: Vec::new(),
-        }
+            ledger,
+            asset_map: FxHashMap::default(),
+        })
     }
 
     /// Register a symbol at a specific ID
     /// Resizes the internal storage if necessary
-    pub fn register_symbol(&mut self, symbol_id: usize, symbol: String) -> Result<(), String> {
+    pub fn register_symbol(&mut self, symbol_id: usize, symbol: String, base_asset: u32, quote_asset: u32) -> Result<(), String> {
         // Resize if necessary
         if symbol_id >= self.order_books.len() {
             self.order_books.resize_with(symbol_id + 1, || None);
@@ -265,18 +280,71 @@ impl MatchingEngine {
         }
 
         self.order_books[symbol_id] = Some(OrderBook::new(symbol));
+        self.asset_map.insert(symbol_id, (base_asset, quote_asset));
         Ok(())
     }
 
     /// Add order using symbol ID
-    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64) -> Result<u64, String> {
+    pub fn add_order(&mut self, symbol_id: usize, order_id: u64, side: Side, price: u64, quantity: u64, user_id: u64) -> Result<u64, String> {
+        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id).ok_or("Asset map not found")?;
+        
+        // 1. Lock funds
+        let (lock_asset, lock_amount) = match side {
+            Side::Buy => (quote_asset, price * quantity),
+            Side::Sell => (base_asset, quantity),
+        };
+        
+        self.ledger.apply(&LedgerCommand::Lock {
+            user_id,
+            asset: lock_asset,
+            amount: lock_amount,
+        }).map_err(|e| e.to_string())?;
+
         let book_opt = self.order_books.get_mut(symbol_id)
             .ok_or_else(|| format!("Invalid symbol ID: {}", symbol_id))?;
             
         let book = book_opt.as_mut()
             .ok_or_else(|| format!("Symbol ID {} is not active (gap)", symbol_id))?;
         
-        book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity)
+        let trades = book.add_order_by_symbol_id(order_id, symbol_id, side, price, quantity, user_id)?;
+        
+        // 3. Settle trades
+        for trade in trades {
+            let (buyer_spend, buyer_gain) = (trade.price * trade.quantity, trade.quantity);
+            let (seller_spend, seller_gain) = (trade.quantity, trade.price * trade.quantity);
+            
+            // Buyer Settle
+            self.ledger.apply(&LedgerCommand::TradeSettle {
+                user_id: trade.buy_user_id,
+                spend_asset: quote_asset,
+                spend_amount: buyer_spend,
+                gain_asset: base_asset,
+                gain_amount: buyer_gain,
+            }).map_err(|e| e.to_string())?;
+            
+            // Seller Settle
+            self.ledger.apply(&LedgerCommand::TradeSettle {
+                user_id: trade.sell_user_id,
+                spend_asset: base_asset,
+                spend_amount: seller_spend,
+                gain_asset: quote_asset,
+                gain_amount: seller_gain,
+            }).map_err(|e| e.to_string())?;
+            
+            // Refund excess frozen for Taker Buyer
+            if side == Side::Buy && trade.buy_user_id == user_id {
+                let excess = (price - trade.price) * trade.quantity;
+                if excess > 0 {
+                     self.ledger.apply(&LedgerCommand::Unlock {
+                         user_id,
+                         asset: quote_asset,
+                         amount: excess,
+                     }).map_err(|e| e.to_string())?;
+                }
+            }
+        }
+        
+        Ok(order_id)
     }
 
     pub fn print_order_book(&self, symbol_id: usize) {
