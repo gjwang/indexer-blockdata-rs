@@ -20,10 +20,6 @@ struct Args {
     /// User ID to generate data for
     #[arg(long, default_value = "12345")]
     user_id: String,
-
-    /// Enable latency tracking by adding send_timestamp
-    #[arg(long)]
-    enable_latency_tracking: bool,
 }
 
 #[tokio::main]
@@ -36,13 +32,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kafka_topic = args.kafka_topic.clone()
         .unwrap_or("user_updates".to_string()); // Default to user_updates topic
     let user_id = args.user_id.clone();
-    let enable_latency = args.enable_latency_tracking;
 
     println!("=== User Data Generator ===");
     println!("Broker: {}", kafka_broker);
     println!("Topic: {}", kafka_topic);
-    println!("User ID: {}", user_id);
-    println!("Latency Tracking: {}\n", enable_latency);
+    println!("User ID: {}\n", user_id);
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &kafka_broker)
@@ -56,11 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         let update_type = rng.gen_range(0..3);
-        let ts_ms = if enable_latency {
-            Some(chrono::Utc::now().timestamp_millis())
-        } else {
-            None
-        };
+        let ts_ms = chrono::Utc::now().timestamp_millis();
 
         let user_update = match update_type {
             0 => {

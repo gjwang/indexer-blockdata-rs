@@ -43,8 +43,7 @@ pub enum UserUpdate {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StreamMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ts_ms: Option<i64>,
+    pub ts_ms: i64,
     #[serde(flatten)]
     pub update: UserUpdate,
 }
