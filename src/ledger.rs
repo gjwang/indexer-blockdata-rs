@@ -609,6 +609,9 @@ impl GlobalLedger {
         }
         Ok(())
     }
+    pub fn get_accounts(&self) -> &FxHashMap<UserId, UserAccount> {
+        &self.accounts
+    }
 }
 
 // ==========================================
