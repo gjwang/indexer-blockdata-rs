@@ -138,13 +138,14 @@ fn main() {
     // User 1001: Whale Buyer (Asset 2: USDT)
     engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1001, asset: 2, amount: 50_000_000_000 }).unwrap();
 
-    let total = 1_000_000;
+    let total = 3_000;
     let start = std::time::Instant::now();
     let mut buy_orders = Vec::new();
     let mut sell_orders = Vec::new();
 
     // Start ID from 10000 to avoid conflict with previous manual orders
-    let start_id = 10000;
+    let start_id = 500;
+    let snapshot_every_n_orders = 100;
 
     for i in 1..=total {
         let order_id = start_id + i;
@@ -186,7 +187,7 @@ fn main() {
         }
 
         // Snapshot every 200k
-        if i % 200_000 == 0 {
+        if i % snapshot_every_n_orders == 0 {
             let t = std::time::Instant::now();
             engine.trigger_cow_snapshot();
             println!("    Forked at Order {}. Main Thread Paused: {:.2?}", i, t.elapsed());

@@ -41,7 +41,7 @@ pub struct OrderBook {
     pub bids: BTreeMap<std::cmp::Reverse<u64>, VecDeque<Order>>,
     // Asks: Low to High.
     pub asks: BTreeMap<u64, VecDeque<Order>>,
-    pub trade_history: Vec<Trade>,
+    // pub trade_history: Vec<Trade>, // REMOVED
     pub order_counter: u64,
     pub match_sequence: u64,
     pub active_order_ids: FxHashSet<u64>,
@@ -54,7 +54,7 @@ impl OrderBook {
             symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
-            trade_history: Vec::new(),
+            // trade_history: Vec::new(), // REMOVED
             order_counter: 0,
             match_sequence: 0,
             active_order_ids: FxHashSet::default(),
@@ -239,7 +239,7 @@ impl OrderBook {
             }
         }
 
-        self.trade_history.extend(trades.clone());
+        // self.trade_history.extend(trades.clone()); // REMOVED
         
         for trade in &trades {
             println!("Trade Executed: {:?}", trade);
