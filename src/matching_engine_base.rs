@@ -167,42 +167,46 @@ impl OrderBook {
                     }
 
                     if let Some(price) = best_ask_price {
-                        let orders_at_price = self.asks.get_mut(&price).unwrap();
-                        while let Some(mut best_ask) = orders_at_price.pop_front() {
-                            let trade_quantity = u64::min(order.quantity, best_ask.quantity);
-                            
-                            self.match_sequence += 1;
-                            trades.push(Trade {
-                                match_id: self.match_sequence,
-                                buy_order_id: order.order_id,
-                                sell_order_id: best_ask.order_id,
-                                buy_user_id: order.user_id,
-                                sell_user_id: best_ask.user_id,
-                                price: best_ask.price, // Trade happens at maker's price
-                                quantity: trade_quantity,
-                            });
+                        if let Some(orders_at_price) = self.asks.get_mut(&price) {
+                            while let Some(mut best_ask) = orders_at_price.pop_front() {
+                                let trade_quantity = u64::min(order.quantity, best_ask.quantity);
+                                
+                                self.match_sequence += 1;
+                                trades.push(Trade {
+                                    match_id: self.match_sequence,
+                                    buy_order_id: order.order_id,
+                                    sell_order_id: best_ask.order_id,
+                                    buy_user_id: order.user_id,
+                                    sell_user_id: best_ask.user_id,
+                                    price: best_ask.price, // Trade happens at maker's price
+                                    quantity: trade_quantity,
+                                });
 
-                            order.quantity -= trade_quantity;
-                            best_ask.quantity -= trade_quantity;
+                                order.quantity -= trade_quantity;
+                                best_ask.quantity -= trade_quantity;
 
-                            if best_ask.quantity > 0 {
-                                // If maker order is not fully filled, push it back to front (it has priority)
-                                orders_at_price.push_front(best_ask);
-                                break; // Taker is fully filled
-                            } else {
-                                // Maker order fully filled, remove from active set
-                                self.active_order_ids.remove(&best_ask.order_id);
-                                self.order_index.remove(&best_ask.order_id);
+                                if best_ask.quantity > 0 {
+                                    // If maker order is not fully filled, push it back to front (it has priority)
+                                    orders_at_price.push_front(best_ask);
+                                    break; // Taker is fully filled
+                                } else {
+                                    // Maker order fully filled, remove from active set
+                                    self.active_order_ids.remove(&best_ask.order_id);
+                                    self.order_index.remove(&best_ask.order_id);
+                                }
+                                
+                                if order.quantity == 0 {
+                                    break;
+                                }
                             }
                             
-                            if order.quantity == 0 {
-                                break;
+                            // Clean up empty price level
+                            if orders_at_price.is_empty() {
+                                self.asks.remove(&price);
                             }
-                        }
-                        
-                        // Clean up empty price level
-                        if orders_at_price.is_empty() {
-                            self.asks.remove(&price);
+                        } else {
+                            // Should not happen as we just found the key
+                            break;
                         }
                     } else {
                         break; // No matching asks
@@ -220,43 +224,47 @@ impl OrderBook {
                     }
 
                     if let Some(price) = best_bid_price {
-                        let orders_at_price = self.bids.get_mut(&std::cmp::Reverse(price)).unwrap();
-                        while let Some(mut best_bid) = orders_at_price.pop_front() {
-                            let trade_quantity = u64::min(order.quantity, best_bid.quantity);
+                        if let Some(orders_at_price) = self.bids.get_mut(&std::cmp::Reverse(price)) {
+                            while let Some(mut best_bid) = orders_at_price.pop_front() {
+                                let trade_quantity = u64::min(order.quantity, best_bid.quantity);
 
-                            self.match_sequence += 1;
-                            trades.push(Trade {
-                                match_id: self.match_sequence,
-                                buy_order_id: best_bid.order_id,
-                                sell_order_id: order.order_id,
-                                buy_user_id: best_bid.user_id,
-                                sell_user_id: order.user_id,
-                                price: best_bid.price,
-                                quantity: trade_quantity,
-                            });
+                                self.match_sequence += 1;
+                                trades.push(Trade {
+                                    match_id: self.match_sequence,
+                                    buy_order_id: best_bid.order_id,
+                                    sell_order_id: order.order_id,
+                                    buy_user_id: best_bid.user_id,
+                                    sell_user_id: order.user_id,
+                                    price: best_bid.price,
+                                    quantity: trade_quantity,
+                                });
 
-                            order.quantity -= trade_quantity;
-                            best_bid.quantity -= trade_quantity;
+                                order.quantity -= trade_quantity;
+                                best_bid.quantity -= trade_quantity;
 
-                            if best_bid.quantity > 0 {
-                                orders_at_price.push_front(best_bid);
-                                break;
-                            } else {
-                                // Maker order fully filled, remove from active set
-                                self.active_order_ids.remove(&best_bid.order_id);
-                                self.order_index.remove(&best_bid.order_id);
+                                if best_bid.quantity > 0 {
+                                    orders_at_price.push_front(best_bid);
+                                    break;
+                                } else {
+                                    // Maker order fully filled, remove from active set
+                                    self.active_order_ids.remove(&best_bid.order_id);
+                                    self.order_index.remove(&best_bid.order_id);
+                                }
+
+                                if order.quantity == 0 {
+                                    break;
+                                }
                             }
 
-                            if order.quantity == 0 {
-                                break;
+                            if orders_at_price.is_empty() {
+                                self.bids.remove(&std::cmp::Reverse(price));
                             }
-                        }
-
-                        if orders_at_price.is_empty() {
-                            self.bids.remove(&std::cmp::Reverse(price));
+                        } else {
+                            // Should not happen as we just found the key
+                            break;
                         }
                     } else {
-                        break;
+                        break; // No matching bids
                     }
                 }
             }
@@ -540,7 +548,7 @@ impl MatchingEngine {
         self.order_wal.append(LogEntry::PlaceOrder {
             order_id,
             user_id,
-            symbol: self.asset_map.get(&symbol_id).map(|_| "UNKNOWN".to_string()).unwrap_or_else(|| "UNKNOWN".to_string()),
+            symbol: self.order_books[symbol_id].as_ref().map(|b| b.symbol.clone()).unwrap_or_else(|| "UNKNOWN".to_string()),
             side: wal_side,
             price,
             quantity,
