@@ -239,7 +239,7 @@ pub struct EngineSnapshot {
 pub struct MatchingEngine {
     pub order_books: Vec<Option<OrderBook>>,
     pub ledger: GlobalLedger,
-    pub asset_map: FxHashMap<usize, (u32, u32)>,
+    pub asset_map: FxHashMap<u32, (u32, u32)>,
     pub order_wal: Wal,
     pub trade_wal: Wal,
     pub snapshot_dir: std::path::PathBuf,
@@ -362,17 +362,17 @@ impl MatchingEngine {
     /// Register a symbol at a specific ID
     pub fn register_symbol(
         &mut self,
-        symbol_id: usize,
+        symbol_id: u32,
         symbol: String,
         base_asset: u32,
         quote_asset: u32,
     ) -> Result<(), String> {
-        if symbol_id >= self.order_books.len() {
-            self.order_books.resize_with(symbol_id + 1, || None);
-        } else if self.order_books[symbol_id].is_some() {
+        if symbol_id as usize >= self.order_books.len() {
+            self.order_books.resize_with(symbol_id as usize + 1, || None);
+        } else if self.order_books[symbol_id as usize].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
-        self.order_books[symbol_id] = Some(OrderBook::new(symbol_id as u32));
+        self.order_books[symbol_id as usize] = Some(OrderBook::new(symbol_id));
         self.asset_map.insert(symbol_id, (base_asset, quote_asset));
         Ok(())
     }
@@ -380,7 +380,7 @@ impl MatchingEngine {
     /// Public API: Add Order (Writes to WAL, then processes)
     pub fn add_order(
         &mut self,
-        symbol_id: usize,
+        symbol_id: u32,
         order_id: u64,
         side: Side,
         order_type: OrderType,
@@ -399,7 +399,7 @@ impl MatchingEngine {
             .get(&symbol_id)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        if let Some(Some(book)) = self.order_books.get(symbol_id) {
+        if let Some(Some(book)) = self.order_books.get(symbol_id as usize) {
             if book.active_order_ids.contains(&order_id) {
                 return Err(OrderError::DuplicateOrderId { order_id });
             }
@@ -428,10 +428,8 @@ impl MatchingEngine {
         }
 
         // 3. Write to Input Log (Source of Truth)
-        let symbol_u32 = symbol_id as u32;
-
         self.order_wal
-            .log_place_order(order_id, user_id, symbol_u32, wal_side, price, quantity)
+            .log_place_order(order_id, user_id, symbol_id, wal_side, price, quantity)
             .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
@@ -441,7 +439,7 @@ impl MatchingEngine {
     /// Internal Logic: Process Order (No Input WAL write)
     fn process_order(
         &mut self,
-        symbol_id: usize,
+        symbol_id: u32,
         order_id: u64,
         side: Side,
         order_type: OrderType,
@@ -470,19 +468,17 @@ impl MatchingEngine {
 
         let book_opt = self
             .order_books
-            .get_mut(symbol_id)
+            .get_mut(symbol_id as usize)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
         let book = book_opt
             .as_mut()
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        let symbol_u32 = book.symbol_id;
-
         let order = Order {
             order_id,
             user_id,
-            symbol_id: symbol_u32,
+            symbol_id,
             side,
             order_type,
             price,
@@ -552,7 +548,7 @@ impl MatchingEngine {
     }
 
     /// Public API: Cancel Order (Writes to WAL, then processes)
-    pub fn cancel_order(&mut self, symbol_id: usize, order_id: u64) -> Result<(), OrderError> {
+    pub fn cancel_order(&mut self, symbol_id: u32, order_id: u64) -> Result<(), OrderError> {
         // 1. Write to WAL
         self.order_wal
             .log_cancel_order(order_id)
@@ -563,10 +559,10 @@ impl MatchingEngine {
     }
 
     /// Internal Logic: Process Cancel (No Input WAL write)
-    fn process_cancel(&mut self, symbol_id: usize, order_id: u64) -> Result<(), OrderError> {
+    fn process_cancel(&mut self, symbol_id: u32, order_id: u64) -> Result<(), OrderError> {
         let book = self
             .order_books
-            .get_mut(symbol_id)
+            .get_mut(symbol_id as usize)
             .and_then(|opt_book| opt_book.as_mut())
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
@@ -578,8 +574,8 @@ impl MatchingEngine {
         }
     }
 
-    pub fn print_order_book(&self, symbol_id: usize) {
-        if let Some(Some(book)) = self.order_books.get(symbol_id) {
+    pub fn print_order_book(&self, symbol_id: u32) {
+        if let Some(Some(book)) = self.order_books.get(symbol_id as usize) {
             println!(
                 "\n--- Order Book for {} (ID: {}) ---",
                 book.symbol_id, symbol_id

@@ -53,7 +53,7 @@ pub enum OrderError {
         available: u64,
     },
     InvalidSymbol {
-        symbol_id: usize,
+        symbol_id: u32,
     },
     SymbolMismatch {
         expected: u32,
@@ -66,7 +66,7 @@ pub enum OrderError {
         order_id: u64,
     },
     AssetMapNotFound {
-        symbol_id: usize,
+        symbol_id: u32,
     },
     LedgerError(String),
     Other(String),

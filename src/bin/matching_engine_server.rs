@@ -35,7 +35,7 @@ async fn main() {
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
+        engine.register_symbol(symbol_id as u32, symbol.clone(), base, quote).unwrap();
         println!("Loaded symbol: {}", symbol);
     }
 
@@ -85,7 +85,7 @@ async fn main() {
                                             let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
                                             let type_enum = if order_type.eq_ignore_ascii_case("Market") { OrderType::Market } else { OrderType::Limit };
                                             
-                                            match engine.add_order(symbol_id as usize, order_id, side_enum, type_enum, price, quantity, user_id) {
+                                            match engine.add_order(symbol_id, order_id, side_enum, type_enum, price, quantity, user_id) {
                                                 Ok(_) => println!("Order {} Placed: {} {} @ {} ({})", order_id, side, quantity, price, symbol_name),
                                                 Err(e) => eprintln!("Order {} Failed: {}", order_id, e),
                                             }
@@ -95,7 +95,7 @@ async fn main() {
                                     },
                                     OrderRequest::CancelOrder { order_id, symbol_id, .. } => {
                                         if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id as usize) {
-                                            match engine.cancel_order(symbol_id as usize, order_id) {
+                                            match engine.cancel_order(symbol_id, order_id) {
                                                 Ok(_) => println!("Order {} Cancelled", order_id),
                                                 Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
                                             }
