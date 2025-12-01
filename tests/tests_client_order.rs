@@ -14,6 +14,7 @@ mod tests {
     fn test_try_to_internal_success() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_1".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -47,6 +48,7 @@ mod tests {
     fn test_try_to_internal_unknown_symbol() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_2".to_string(),
             symbol: "UNKNOWN".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -64,6 +66,7 @@ mod tests {
     fn test_try_to_internal_invalid_side() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_3".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Invalid".to_string(),
             price: 50000,
@@ -81,6 +84,7 @@ mod tests {
     fn test_try_to_internal_invalid_order_type() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_4".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -98,6 +102,7 @@ mod tests {
     fn test_try_to_internal_invalid_price() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_5".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 0,
@@ -115,6 +120,7 @@ mod tests {
     fn test_try_to_internal_invalid_quantity() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
+            client_order_id: "client_id_6".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -149,6 +155,8 @@ mod tests {
         assert_eq!(client_order.price, 60000);
         assert_eq!(client_order.quantity, 50);
         assert_eq!(client_order.order_type, "Market");
+        // We expect an empty string for client_order_id as it's not in OrderRequest
+        assert_eq!(client_order.client_order_id, "");
     }
 
     #[test]

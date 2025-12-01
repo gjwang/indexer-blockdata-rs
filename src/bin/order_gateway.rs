@@ -50,6 +50,7 @@ async fn main() {
         let order_id = snowflake_gen.generate();
 
         let client_order = ClientOrder {
+            client_order_id: order_id.to_string(),
             symbol: raw_symbol.to_string(),
             side: raw_side.to_string(),
             price,

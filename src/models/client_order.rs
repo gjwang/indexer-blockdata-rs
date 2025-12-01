@@ -3,6 +3,8 @@ use crate::symbol_manager::SymbolManager;
 
 #[derive(Debug)]
 pub struct ClientOrder {
+    //TODO: check valid client_order_id 1 len < 32, is alpha-numeric only
+    pub client_order_id: String,
     pub symbol: String,
     pub side: String,
     pub price: u64,
@@ -70,6 +72,7 @@ impl ClientOrder {
                     .clone();
 
                 Ok(ClientOrder {
+                    client_order_id: "".to_string(), // OrderRequest doesn't store client_order_id yet
                     symbol,
                     side: side.to_string(),
                     price: *price,
