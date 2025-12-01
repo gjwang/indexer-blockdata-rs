@@ -23,11 +23,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_ok(), "Error: {:?}", result.err());
         if let Ok(OrderRequest::PlaceOrder {
             symbol_id,
@@ -57,11 +56,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Unknown symbol: UNKNOWN_SYMBOL");
     }
@@ -75,11 +73,10 @@ mod tests {
             side: "Invalid".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("side"));
@@ -95,11 +92,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Invalid".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("order_type"));
@@ -115,11 +111,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 0,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("price"));
@@ -135,11 +130,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 0,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("quantity"));
@@ -215,11 +209,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("client_order_id"));
@@ -235,11 +228,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("client_order_id"));
@@ -254,7 +246,6 @@ mod tests {
             "side": "Buy",
             "price": 50000,
             "quantity": 100,
-            "user_id": 1,
             "order_type": "Limit"
         }"#;
 
@@ -269,7 +260,6 @@ mod tests {
         assert_eq!(order.side, "Buy");
         assert_eq!(order.price, 50000);
         assert_eq!(order.quantity, 100);
-        assert_eq!(order.user_id, 1);
         assert_eq!(order.order_type, "Limit");
     }
 
@@ -288,7 +278,6 @@ mod tests {
             "Buy".to_string(),
             50000,
             100,
-            1,
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -302,7 +291,6 @@ mod tests {
             "Buy".to_string(),
             50000,
             100,
-            1,
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -317,7 +305,6 @@ mod tests {
             "Buy".to_string(),
             50000,
             100,
-            1,
             "Limit".to_string(),
         );
         assert!(result.is_err());
@@ -335,11 +322,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order.try_to_internal(&sm, 1001);
+        let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("client_order_id"));
@@ -357,10 +343,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res1 = order1.try_to_internal(&sm, 1);
+        let res1 = order1.try_to_internal(&sm, 1, 1);
         assert!(res1.is_err());
         assert!(res1.unwrap_err().contains("symbol"));
 
@@ -371,10 +356,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res2 = order2.try_to_internal(&sm, 1);
+        let res2 = order2.try_to_internal(&sm, 1, 1);
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("uppercase"));
 
@@ -385,10 +369,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res3 = order3.try_to_internal(&sm, 1);
+        let res3 = order3.try_to_internal(&sm, 1, 1);
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("alphanumeric"));
     }
@@ -404,10 +387,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res1 = order1.try_to_internal(&sm, 1);
+        let res1 = order1.try_to_internal(&sm, 1, 1);
         assert!(res1.is_err());
         assert!(res1.unwrap_err().contains("underscore"));
 
@@ -418,10 +400,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res2 = order2.try_to_internal(&sm, 1);
+        let res2 = order2.try_to_internal(&sm, 1, 1);
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("start or end"));
 
@@ -432,10 +413,9 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
-        let res3 = order3.try_to_internal(&sm, 1);
+        let res3 = order3.try_to_internal(&sm, 1, 1);
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("consecutive"));
     }
@@ -452,11 +432,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order_convert(&client_order, &sm, &snowflake_gen);
+        let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
         assert!(result.is_ok());
         let (order_id, _internal_order) = result.unwrap();
         assert!(order_id > 0);
@@ -473,11 +452,10 @@ mod tests {
             side: "Buy".to_string(),
             price: 50000,
             quantity: 100,
-            user_id: 1,
             order_type: "Limit".to_string(),
         };
 
-        let result = client_order_convert(&client_order, &sm, &snowflake_gen);
+        let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
         let err = result.unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("Unknown symbol"));

@@ -10,6 +10,7 @@ pub fn client_order_convert(
     client_order: &ClientOrder,
     symbol_manager: &SymbolManager,
     snowflake_gen: &Mutex<SnowflakeGenRng>,
+    user_id: u64,
 ) -> Result<(u64, OrderRequest), (StatusCode, String)> {
     // Validate
     client_order
@@ -24,7 +25,7 @@ pub fn client_order_convert(
 
     // Convert to internal
     let internal_order = client_order
-        .try_to_internal(symbol_manager, order_id)
+        .try_to_internal(symbol_manager, order_id, user_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok((order_id, internal_order))

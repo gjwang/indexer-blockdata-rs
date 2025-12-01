@@ -22,7 +22,7 @@ async fn main() {
         let raw_type = "Limit";
         let price = 50000 + (i % 100);
         let quantity = 1 + (i % 5);
-        let user_id = 1000 + (i % 10);
+
 
         // Generate a client_order_id. In real app, this might be UUID or similar.
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
@@ -36,7 +36,6 @@ async fn main() {
             "side": raw_side,
             "price": price,
             "quantity": quantity,
-            "user_id": user_id,
             "order_type": raw_type
         });
 
