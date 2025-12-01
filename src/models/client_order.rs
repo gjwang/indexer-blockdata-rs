@@ -1,16 +1,55 @@
 use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
 use serde::{Deserialize, Serialize};
+use validator::{Validate, ValidationError};
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientOrder {
+    #[validate(length(min = 20, max = 32), custom(function = "validate_alphanumeric"))]
     pub client_order_id: String,
+    #[validate(length(min = 1))]
     pub symbol: String,
+    #[validate(custom(function = "validate_side"))]
     pub side: String,
+    #[validate(range(min = 1))]
     pub price: u64,
+    #[validate(range(min = 1))]
     pub quantity: u64,
     pub user_id: u64,
+    #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
+}
+
+fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
+    if id.chars().all(char::is_alphanumeric) {
+        Ok(())
+    } else {
+        let mut err = ValidationError::new("alphanumeric");
+        err.message = Some("Client order ID must be alphanumeric".into());
+        Err(err)
+    }
+}
+
+fn validate_side(side: &str) -> Result<(), ValidationError> {
+    match side.parse::<Side>() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let mut err = ValidationError::new("invalid_side");
+            err.message = Some("Invalid side. Must be 'Buy' or 'Sell'".into());
+            Err(err)
+        }
+    }
+}
+
+fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
+    match order_type.parse::<OrderType>() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let mut err = ValidationError::new("invalid_order_type");
+            err.message = Some("Invalid order type. Must be 'Limit' or 'Market'".into());
+            Err(err)
+        }
+    }
 }
 
 impl ClientOrder {
@@ -33,31 +72,19 @@ impl ClientOrder {
             user_id,
             order_type,
         };
-        order.validate()?;
+        order.validate_order()?;
         Ok(order)
     }
 
     /// Create ClientOrder from JSON string
     pub fn from_json(json: &str) -> Result<Self, String> {
         let order: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
-        order.validate()?;
+        order.validate_order()?;
         Ok(order)
     }
 
-    pub fn validate(&self) -> Result<(), String> {
-        if self.price == 0 {
-            return Err("Price must be greater than 0".to_string());
-        }
-        if self.quantity == 0 {
-            return Err("Quantity must be greater than 0".to_string());
-        }
-        if self.client_order_id.len() >= 32 {
-            return Err("Client order ID must be less than 32 characters".to_string());
-        }
-        if !self.client_order_id.chars().all(char::is_alphanumeric) {
-            return Err("Client order ID must be alphanumeric".to_string());
-        }
-        Ok(())
+    pub fn validate_order(&self) -> Result<(), String> {
+        Validate::validate(self).map_err(|e| e.to_string())
     }
 
     /// Convert ClientOrder to internal OrderRequest
@@ -66,7 +93,7 @@ impl ClientOrder {
         symbol_manager: &SymbolManager,
         order_id: u64,
     ) -> Result<OrderRequest, String> {
-        self.validate()?;
+        self.validate_order()?;
 
         let symbol_id = symbol_manager
             .get_id(&self.symbol)
