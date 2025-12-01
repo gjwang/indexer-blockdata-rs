@@ -20,70 +20,6 @@ pub struct ClientOrder {
     pub order_type: String,
 }
 
-fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
-    if id.chars().all(char::is_alphanumeric) {
-        Ok(())
-    } else {
-        let mut err = ValidationError::new("alphanumeric");
-        err.message = Some("Client order ID must be alphanumeric".into());
-        Err(err)
-    }
-}
-
-fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
-    // Check for alphanumeric chars, uppercase, and underscore placement
-
-    
-    if !symbol.chars().all(|c| c.is_alphanumeric() || c == '_') {
-        let mut err = ValidationError::new("invalid_symbol_chars");
-        err.message = Some("Symbol must be alphanumeric (including underscore)".into());
-        return Err(err);
-    }
-    if symbol != symbol.to_uppercase() {
-        let mut err = ValidationError::new("invalid_symbol_case");
-        err.message = Some("Symbol must be uppercase".into());
-        return Err(err);
-    }
-    if !symbol.contains('_') {
-        let mut err = ValidationError::new("invalid_symbol_format");
-        err.message = Some("Symbol must contain an underscore".into());
-        return Err(err);
-    }
-    if symbol.starts_with('_') || symbol.ends_with('_') {
-        let mut err = ValidationError::new("invalid_symbol_format");
-        err.message = Some("Underscore cannot be at the start or end".into());
-        return Err(err);
-    }
-    if symbol.contains("__") {
-        let mut err = ValidationError::new("invalid_symbol_format");
-        err.message = Some("Symbol cannot contain consecutive underscores".into());
-        return Err(err);
-    }
-    Ok(())
-}
-
-fn validate_side(side: &str) -> Result<(), ValidationError> {
-    match side.parse::<Side>() {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let mut err = ValidationError::new("invalid_side");
-            err.message = Some("Invalid side. Must be 'Buy' or 'Sell'".into());
-            Err(err)
-        }
-    }
-}
-
-fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
-    match order_type.parse::<OrderType>() {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let mut err = ValidationError::new("invalid_order_type");
-            err.message = Some("Invalid order type. Must be 'Limit' or 'Market'".into());
-            Err(err)
-        }
-    }
-}
-
 impl ClientOrder {
     /// Create a new ClientOrder with validation
     pub fn new(
@@ -184,6 +120,69 @@ impl ClientOrder {
                 })
             }
             _ => Err("Only PlaceOrder can be converted to ClientOrder".to_string()),
+        }
+    }
+}
+
+fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
+    if id.chars().all(char::is_alphanumeric) {
+        Ok(())
+    } else {
+        let mut err = ValidationError::new("alphanumeric");
+        err.message = Some("Client order ID must be alphanumeric".into());
+        Err(err)
+    }
+}
+
+fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
+    // Check for alphanumeric chars, uppercase, and underscore placement
+
+    if !symbol.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        let mut err = ValidationError::new("invalid_symbol_chars");
+        err.message = Some("Symbol must be alphanumeric (including underscore)".into());
+        return Err(err);
+    }
+    if symbol != symbol.to_uppercase() {
+        let mut err = ValidationError::new("invalid_symbol_case");
+        err.message = Some("Symbol must be uppercase".into());
+        return Err(err);
+    }
+    if !symbol.contains('_') {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Symbol must contain an underscore".into());
+        return Err(err);
+    }
+    if symbol.starts_with('_') || symbol.ends_with('_') {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Underscore cannot be at the start or end".into());
+        return Err(err);
+    }
+    if symbol.contains("__") {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Symbol cannot contain consecutive underscores".into());
+        return Err(err);
+    }
+    Ok(())
+}
+
+fn validate_side(side: &str) -> Result<(), ValidationError> {
+    match side.parse::<Side>() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let mut err = ValidationError::new("invalid_side");
+            err.message = Some("Invalid side. Must be 'Buy' or 'Sell'".into());
+            Err(err)
+        }
+    }
+}
+
+fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
+    match order_type.parse::<OrderType>() {
+        Ok(_) => Ok(()),
+        Err(_) => {
+            let mut err = ValidationError::new("invalid_order_type");
+            err.message = Some("Invalid order type. Must be 'Limit' or 'Market'".into());
+            Err(err)
         }
     }
 }

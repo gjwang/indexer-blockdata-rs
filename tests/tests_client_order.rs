@@ -327,7 +327,7 @@ mod tests {
     #[test]
     fn test_try_to_internal_invalid_symbol_format() {
         let sm = setup_symbol_manager();
-        
+
         // Short
         let order1 = ClientOrder {
             client_order_id: "clientid1234567890123".to_string(),
@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn test_try_to_internal_invalid_symbol_format_underscore() {
         let sm = setup_symbol_manager();
-        
+
         // No underscore
         let order1 = ClientOrder {
             client_order_id: "clientid1234567890123".to_string(),
