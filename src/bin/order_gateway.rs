@@ -4,10 +4,8 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tokio::time;
 
-use fetcher::models::{OrderRequest, OrderType, Side};
+use fetcher::models::ClientOrder;
 use fetcher::symbol_manager::SymbolManager;
-
-use fetcher::models::ClientRawOrder;
 
 #[tokio::main]
 async fn main() {
@@ -51,7 +49,7 @@ async fn main() {
         let user_id = 1000 + (i % 10);
         let order_id = snowflake_gen.generate();
 
-        let client_order = ClientRawOrder {
+        let client_order = ClientOrder {
             symbol: raw_symbol.to_string(),
             side: raw_side.to_string(),
             price,
@@ -60,7 +58,7 @@ async fn main() {
             order_type: raw_type.to_string(),
         };
 
-        let order = match client_order.to_internal(&symbol_manager, order_id) {
+        let order = match client_order.try_to_internal(&symbol_manager, order_id) {
             Ok(o) => o,
             Err(e) => {
                 eprintln!("Error converting order: {}", e);
@@ -76,7 +74,7 @@ async fn main() {
             .key(&key);
 
         match producer.send(record, Duration::from_secs(0)).await {
-            Ok((partition, offset)) => println!("Sent Order {} by user_id: {}", order_id, user_id),
+            Ok((_partition, _offset)) => println!("Sent Order {} by user_id: {}", order_id, user_id),
             Err((e, _)) => eprintln!("Error sending order {}: {:?}", order_id, e),
         }
 

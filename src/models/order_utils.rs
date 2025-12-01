@@ -35,6 +35,15 @@ pub enum OrderType {
     Market,
 }
 
+impl std::fmt::Display for OrderType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OrderType::Limit => write!(f, "Limit"),
+            OrderType::Market => write!(f, "Market"),
+        }
+    }
+}
+
 impl FromStr for OrderType {
     type Err = String;
 
