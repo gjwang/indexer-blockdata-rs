@@ -6,7 +6,7 @@ pub enum OrderRequest {
     PlaceOrder {
         order_id: u64,
         user_id: u64,
-        symbol: u32,
+        symbol_id: u32,
         side: String, // "Buy" or "Sell"
         price: u64,
         quantity: u64,
@@ -15,6 +15,6 @@ pub enum OrderRequest {
     CancelOrder {
         order_id: u64,
         user_id: u64,
-        symbol: u32,
+        symbol_id: u32,
     }
 }

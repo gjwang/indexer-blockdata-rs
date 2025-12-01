@@ -77,30 +77,30 @@ async fn main() {
                             // Deserialize
                             if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
                                 match req {
-                                    OrderRequest::PlaceOrder { order_id, user_id, symbol, side, price, quantity, order_type } => {
+                                    OrderRequest::PlaceOrder { order_id, user_id, symbol_id, side, price, quantity, order_type } => {
                                         // Symbol is now u32 (ID). We can check if it exists in our manager or just pass it.
                                         // The engine will validate if the symbol ID is registered.
                                         // But we might want to log the string name.
-                                        if let Some(symbol_name) = symbol_manager.get_symbol(symbol as usize) {
+                                        if let Some(symbol_name) = symbol_manager.get_symbol(symbol_id as usize) {
                                             let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
                                             let type_enum = if order_type.eq_ignore_ascii_case("Market") { OrderType::Market } else { OrderType::Limit };
                                             
-                                            match engine.add_order(symbol as usize, order_id, side_enum, type_enum, price, quantity, user_id) {
+                                            match engine.add_order(symbol_id as usize, order_id, side_enum, type_enum, price, quantity, user_id) {
                                                 Ok(_) => println!("Order {} Placed: {} {} @ {} ({})", order_id, side, quantity, price, symbol_name),
                                                 Err(e) => eprintln!("Order {} Failed: {}", order_id, e),
                                             }
                                         } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol);
+                                            eprintln!("Unknown symbol ID: {}", symbol_id);
                                         }
                                     },
-                                    OrderRequest::CancelOrder { order_id, symbol, .. } => {
-                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol as usize) {
-                                            match engine.cancel_order(symbol as usize, order_id) {
+                                    OrderRequest::CancelOrder { order_id, symbol_id, .. } => {
+                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id as usize) {
+                                            match engine.cancel_order(symbol_id as usize, order_id) {
                                                 Ok(_) => println!("Order {} Cancelled", order_id),
                                                 Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
                                             }
                                         } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol);
+                                            eprintln!("Unknown symbol ID: {}", symbol_id);
                                         }
                                     }
                                 }

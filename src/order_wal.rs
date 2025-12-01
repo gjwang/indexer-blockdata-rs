@@ -21,7 +21,7 @@ pub enum WalSide {
 pub enum LogEntry {
     PlaceOrder {
         order_id: u64,
-        symbol: u32,
+        symbol_id: u32,
         side: WalSide,
         price: u64,
         quantity: u64,
@@ -30,7 +30,7 @@ pub enum LogEntry {
     },
     CancelOrder {
         order_id: u64,
-        symbol: u32,
+        symbol_id: u32,
         timestamp: u64,
     },
     Trade {
@@ -65,7 +65,7 @@ impl Wal {
         &mut self,
         order_id: u64,
         user_id: u64,
-        symbol: u32,
+        symbol_id: u32,
         side: WalSide,
         price: u64,
         quantity: u64,
@@ -83,7 +83,7 @@ impl Wal {
         let args = fbs::OrderArgs {
             id: Some(&order_id_ulid),
             user_id,
-            symbol, // Direct u32
+            symbol: symbol_id, // Direct u32
             side: f_side,
             price,
             quantity,
@@ -211,7 +211,7 @@ impl WalReader {
                 Ok(Some(LogEntry::PlaceOrder {
                     order_id,
                     user_id: order.user_id(),
-                    symbol: order.symbol(),
+                    symbol_id: order.symbol(),
                     side: match order.side() {
                         fbs::OrderSide::Buy => WalSide::Buy,
                         fbs::OrderSide::Sell => WalSide::Sell,
@@ -228,7 +228,7 @@ impl WalReader {
 
                 Ok(Some(LogEntry::CancelOrder {
                     order_id,
-                    symbol: 0, // Default to 0 as it's not in the Cancel table
+                    symbol_id: 0, // Default to 0 as it's not in the Cancel table
                     timestamp: 0,
                 }))
             }

@@ -15,7 +15,7 @@ pub struct BalanceUpdate {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct OrderUpdate {
     pub order_id: String,
-    pub symbol: u32,
+    pub symbol_id: u32,
     pub side: String,       // "buy" or "sell"
     pub order_type: String, // "limit", "market", etc.
     pub status: String,     // "new", "filled", "cancelled", etc.
@@ -31,7 +31,7 @@ pub struct OrderUpdate {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PositionUpdate {
-    pub symbol: u32,
+    pub symbol_id: u32,
     pub side: String, // "long" or "short"
     #[serde(with = "float_as_string")]
     pub quantity: f64,

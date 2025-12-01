@@ -13,7 +13,7 @@ use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
-    pub symbol: u32,
+    pub symbol_id: u32,
     pub bids: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
     pub asks: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
     pub active_order_ids: FxHashSet<u64>,
@@ -22,9 +22,9 @@ pub struct OrderBook {
 }
 
 impl OrderBook {
-    pub fn new(symbol: u32) -> Self {
+    pub fn new(symbol_id: u32) -> Self {
         Self {
-            symbol,
+            symbol_id,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
             active_order_ids: FxHashSet::default(),
@@ -477,12 +477,12 @@ impl MatchingEngine {
             .as_mut()
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        let symbol_u32 = book.symbol;
+        let symbol_u32 = book.symbol_id;
 
         let order = Order {
             order_id,
             user_id,
-            symbol: symbol_u32,
+            symbol_id: symbol_u32,
             side,
             order_type,
             price,
@@ -582,7 +582,7 @@ impl MatchingEngine {
         if let Some(Some(book)) = self.order_books.get(symbol_id) {
             println!(
                 "\n--- Order Book for {} (ID: {}) ---",
-                book.symbol, symbol_id
+                book.symbol_id, symbol_id
             );
             book.print_book();
             println!("----------------------------------\n");

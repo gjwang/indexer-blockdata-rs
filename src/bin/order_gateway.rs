@@ -29,7 +29,7 @@ async fn main() {
 
     for i in 0..count {
         let order_id = snowflake_gen.generate();
-        let symbol = symbols[i % symbols.len()];
+        let symbol_id = symbols[i % symbols.len()];
         let side = if i % 2 == 0 { "Buy" } else { "Sell" }.to_string();
         let price = 50000 + (i as u64 % 100); // Realistic BTC price
         let quantity = 1 + (i as u64 % 5);
@@ -38,7 +38,7 @@ async fn main() {
         let order = OrderRequest::PlaceOrder {
             order_id,
             user_id,
-            symbol,
+            symbol_id,
             side,
             price,
             quantity,
