@@ -1,11 +1,12 @@
+use std::sync::Arc;
+
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use tower_http::cors::CorsLayer;
 
 use fetcher::centrifugo_auth::{CentrifugoTokenGenerator, TokenResponse};
@@ -63,8 +64,8 @@ async fn main() {
     let app = Router::new()
         .route("/api/auth/login", post(login_handler))
         .route("/api/centrifugo/token", get(centrifugo_token_handler))
-        .route("/api/test/publish-balance", post(test_publish_balance))
-        .route("/api/test/publish-order", post(test_publish_order))
+        // .route("/api/test/publish-balance", post(test_publish_balance))
+        // .route("/api/test/publish-order", post(test_publish_order))
         .layer(Extension(state))
         .layer(CorsLayer::permissive());
 
@@ -72,8 +73,8 @@ async fn main() {
     println!("📡 Endpoints:");
     println!("   POST /api/auth/login - Login and get access token");
     println!("   GET  /api/centrifugo/token - Get Centrifugo connection token");
-    println!("   POST /api/test/publish-balance - Test balance update");
-    println!("   POST /api/test/publish-order - Test order update");
+    // println!("   POST /api/test/publish-balance - Test balance update");
+    // println!("   POST /api/test/publish-order - Test order update");
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
