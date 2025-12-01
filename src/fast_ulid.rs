@@ -1,10 +1,10 @@
-/// Crockford's Base32 Alphabet
-pub const CROCKFORD_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
 use ulid::Ulid;
+
+/// Crockford's Base32 Alphabet
+pub const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 pub struct FastUlidGen {
     generator: ulid::Generator,
@@ -93,14 +93,14 @@ impl FastUlidHalfGen {
         // Timestamp: 10 chars (50 bits capacity, we use 48)
         let mut t = ts;
         for i in (0..10).rev() {
-            chars[i] = CROCKFORD_ALPHABET[(t % 32) as usize] as char;
+            chars[i] = ALPHABET[(t % 32) as usize] as char;
             t /= 32;
         }
 
         // Random: 4 chars (20 bits capacity, we use 16)
         let mut r = rand;
         for i in (10..14).rev() {
-            chars[i] = CROCKFORD_ALPHABET[(r % 32) as usize] as char;
+            chars[i] = ALPHABET[(r % 32) as usize] as char;
             r /= 32;
         }
 
@@ -232,12 +232,12 @@ impl<S: SequenceStrategy> SnowflakeGen<S> {
         let mut chars = vec!['0'; 13];
         let mut t = ts;
         for i in (0..9).rev() {
-            chars[i] = CROCKFORD_ALPHABET[(t % 32) as usize] as char;
+            chars[i] = ALPHABET[(t % 32) as usize] as char;
             t /= 32;
         }
         let mut r = low;
         for i in (9..13).rev() {
-            chars[i] = CROCKFORD_ALPHABET[(r % 32) as usize] as char;
+            chars[i] = ALPHABET[(r % 32) as usize] as char;
             r /= 32;
         }
         chars.into_iter().collect()
@@ -252,13 +252,13 @@ impl<S: SequenceStrategy> SnowflakeGen<S> {
             let mut map = [-1; 256];
             let mut i = 0;
             while i < 32 {
-                map[CROCKFORD_ALPHABET[i] as usize] = i as i8;
+                map[ALPHABET[i] as usize] = i as i8;
                 i += 1;
             }
             // Support lowercase as well
             let mut i = 0;
             while i < 32 {
-                map[CROCKFORD_ALPHABET[i] as usize] = i as i8;
+                map[ALPHABET[i] as usize] = i as i8;
                 i += 1;
             }
             map
@@ -300,8 +300,9 @@ pub type SnowflakeGenRng = SnowflakeGen<RandomSequence>;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashSet;
+
+    use super::*;
 
     #[test]
     fn test_fast_ulid_half_gen_monotonicity() {
@@ -341,7 +342,7 @@ mod tests {
         assert!(!dec.is_empty());
 
         // Verify Base32 chars
-        assert!(b32.chars().all(|c| CROCKFORD_ALPHABET.contains(&(c as u8))));
+        assert!(b32.chars().all(|c| ALPHABET.contains(&(c as u8))));
     }
     #[test]
     fn demo_usage_half_ulid_gen() {
