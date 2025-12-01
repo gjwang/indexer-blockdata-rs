@@ -74,7 +74,9 @@ async fn main() {
             .key(&key);
 
         match producer.send(record, Duration::from_secs(0)).await {
-            Ok((_partition, _offset)) => println!("Sent Order {} by user_id: {}", order_id, user_id),
+            Ok((_partition, _offset)) => {
+                println!("Sent Order {} by user_id: {}", order_id, user_id)
+            }
             Err((e, _)) => eprintln!("Error sending order {}: {:?}", order_id, e),
         }
 
