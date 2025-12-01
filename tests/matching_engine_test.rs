@@ -168,7 +168,7 @@ fn test_dynamic_symbol_registration() {
         .is_ok());
 
     let book = engine.order_books[new_id].as_ref().unwrap();
-    assert_eq!(book.symbol, new_symbol);
+    assert_eq!(book.symbol, new_id as u32);
     assert_eq!(book.asks.len(), 1);
 
     drop(engine);

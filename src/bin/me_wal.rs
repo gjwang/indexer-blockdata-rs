@@ -75,7 +75,7 @@ impl MatchingEngine {
     pub fn new(wal_path: &Path, snapshot_dir: &Path) -> Result<Self> {
         fs::create_dir_all(snapshot_dir)?;
         let orders = FxHashMap::default();
-        let wal = Wal::open(wal_path, 0)?;
+        let wal = Wal::new(wal_path)?;
         Ok(Self {
             orders,
             match_sequence: 0,
@@ -97,15 +97,16 @@ impl MatchingEngine {
             .trim_matches('\0')
             .to_string();
 
-        self.wal.append(LogEntry::PlaceOrder {
-            order_id: order.id as u128, // Assuming input JSON has u64, cast to u128
-            symbol: symbol_str,
-            side: wal_side,
-            price: order.price,
-            quantity: order.quantity,
-            user_id: order.user_id,
-            timestamp: order.timestamp,
-        });
+        self.wal
+            .log_place_order(
+                order.id,
+                order.user_id,
+                &symbol_str,
+                wal_side,
+                order.price,
+                order.quantity,
+            )
+            .unwrap(); // Handle error properly in real app
         self.orders.insert(order.id, order);
     }
 
@@ -133,13 +134,15 @@ impl MatchingEngine {
         };
 
         // Log trade to WAL
-        self.wal.append(LogEntry::Trade {
-            match_id: trade.match_id,
-            buy_order_id: trade.buy_order_id as u128,
-            sell_order_id: trade.sell_order_id as u128,
-            price: trade.price,
-            quantity: trade.quantity,
-        });
+        self.wal
+            .log_match_order(
+                trade.match_id,
+                trade.buy_order_id,
+                trade.sell_order_id,
+                trade.price,
+                trade.quantity,
+            )
+            .unwrap();
 
         // Add to trade history
         self.trade_history.push(trade);
@@ -154,11 +157,7 @@ impl MatchingEngine {
 
     pub fn cancel_order(&mut self, order_id: u64) -> bool {
         if self.orders.remove(&order_id).is_some() {
-            self.wal.append(LogEntry::CancelOrder {
-                order_id: order_id as u128,
-                symbol: "UNKNOWN".to_string(),
-                timestamp: 0,
-            });
+            self.wal.log_cancel_order(order_id).unwrap();
             true
         } else {
             false
