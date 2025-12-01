@@ -7,9 +7,6 @@ edition = "2021"
 name = "fetcher"
 path = "src/lib.rs"
 
-[[bin]]
-name = "scylla_demo"
-path = "src/bin/scylla_demo.rs"
 
 [[bin]]
 name = "centrifugo_push_http"
