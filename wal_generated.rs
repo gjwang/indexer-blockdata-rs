@@ -342,11 +342,13 @@ impl<'a> flatbuffers::Follow<'a> for Order<'a> {
 }
 
 impl<'a> Order<'a> {
-  pub const VT_ID: flatbuffers::VOffsetT = 4;
-  pub const VT_SYMBOL: flatbuffers::VOffsetT = 6;
+  pub const VT_ORDER_ID: flatbuffers::VOffsetT = 4;
+  pub const VT_SYMBOL_ID: flatbuffers::VOffsetT = 6;
   pub const VT_SIDE: flatbuffers::VOffsetT = 8;
   pub const VT_PRICE: flatbuffers::VOffsetT = 10;
   pub const VT_QUANTITY: flatbuffers::VOffsetT = 12;
+  pub const VT_USER_ID: flatbuffers::VOffsetT = 14;
+  pub const VT_TIMESTAMP: flatbuffers::VOffsetT = 16;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -358,28 +360,30 @@ impl<'a> Order<'a> {
     args: &'args OrderArgs<'args>
   ) -> flatbuffers::WIPOffset<Order<'bldr>> {
     let mut builder = OrderBuilder::new(_fbb);
+    builder.add_timestamp(args.timestamp);
+    builder.add_user_id(args.user_id);
     builder.add_quantity(args.quantity);
     builder.add_price(args.price);
-    if let Some(x) = args.symbol { builder.add_symbol(x); }
-    if let Some(x) = args.id { builder.add_id(x); }
+    builder.add_symbol_id(args.symbol_id);
+    if let Some(x) = args.order_id { builder.add_order_id(x); }
     builder.add_side(args.side);
     builder.finish()
   }
 
 
   #[inline]
-  pub fn id(&self) -> Option<&'a UlidStruct> {
+  pub fn order_id(&self) -> Option<&'a UlidStruct> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<UlidStruct>(Order::VT_ID, None)}
+    unsafe { self._tab.get::<UlidStruct>(Order::VT_ORDER_ID, None)}
   }
   #[inline]
-  pub fn symbol(&self) -> Option<&'a str> {
+  pub fn symbol_id(&self) -> u32 {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<flatbuffers::ForwardsUOffset<&str>>(Order::VT_SYMBOL, None)}
+    unsafe { self._tab.get::<u32>(Order::VT_SYMBOL_ID, Some(0)).unwrap()}
   }
   #[inline]
   pub fn side(&self) -> OrderSide {
@@ -402,6 +406,20 @@ impl<'a> Order<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u64>(Order::VT_QUANTITY, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn user_id(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Order::VT_USER_ID, Some(0)).unwrap()}
+  }
+  #[inline]
+  pub fn timestamp(&self) -> u64 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u64>(Order::VT_TIMESTAMP, Some(0)).unwrap()}
+  }
 }
 
 impl flatbuffers::Verifiable for Order<'_> {
@@ -411,31 +429,37 @@ impl flatbuffers::Verifiable for Order<'_> {
   ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
-     .visit_field::<UlidStruct>("id", Self::VT_ID, false)?
-     .visit_field::<flatbuffers::ForwardsUOffset<&str>>("symbol", Self::VT_SYMBOL, false)?
+     .visit_field::<UlidStruct>("order_id", Self::VT_ORDER_ID, false)?
+     .visit_field::<u32>("symbol_id", Self::VT_SYMBOL_ID, false)?
      .visit_field::<OrderSide>("side", Self::VT_SIDE, false)?
      .visit_field::<u64>("price", Self::VT_PRICE, false)?
      .visit_field::<u64>("quantity", Self::VT_QUANTITY, false)?
+     .visit_field::<u64>("user_id", Self::VT_USER_ID, false)?
+     .visit_field::<u64>("timestamp", Self::VT_TIMESTAMP, false)?
      .finish();
     Ok(())
   }
 }
 pub struct OrderArgs<'a> {
-    pub id: Option<&'a UlidStruct>,
-    pub symbol: Option<flatbuffers::WIPOffset<&'a str>>,
+    pub order_id: Option<&'a UlidStruct>,
+    pub symbol_id: u32,
     pub side: OrderSide,
     pub price: u64,
     pub quantity: u64,
+    pub user_id: u64,
+    pub timestamp: u64,
 }
 impl<'a> Default for OrderArgs<'a> {
   #[inline]
   fn default() -> Self {
     OrderArgs {
-      id: None,
-      symbol: None,
+      order_id: None,
+      symbol_id: 0,
       side: OrderSide::Buy,
       price: 0,
       quantity: 0,
+      user_id: 0,
+      timestamp: 0,
     }
   }
 }
@@ -446,12 +470,12 @@ pub struct OrderBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> OrderBuilder<'a, 'b, A> {
   #[inline]
-  pub fn add_id(&mut self, id: &UlidStruct) {
-    self.fbb_.push_slot_always::<&UlidStruct>(Order::VT_ID, id);
+  pub fn add_order_id(&mut self, order_id: &UlidStruct) {
+    self.fbb_.push_slot_always::<&UlidStruct>(Order::VT_ORDER_ID, order_id);
   }
   #[inline]
-  pub fn add_symbol(&mut self, symbol: flatbuffers::WIPOffset<&'b  str>) {
-    self.fbb_.push_slot_always::<flatbuffers::WIPOffset<_>>(Order::VT_SYMBOL, symbol);
+  pub fn add_symbol_id(&mut self, symbol_id: u32) {
+    self.fbb_.push_slot::<u32>(Order::VT_SYMBOL_ID, symbol_id, 0);
   }
   #[inline]
   pub fn add_side(&mut self, side: OrderSide) {
@@ -464,6 +488,14 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> OrderBuilder<'a, 'b, A> {
   #[inline]
   pub fn add_quantity(&mut self, quantity: u64) {
     self.fbb_.push_slot::<u64>(Order::VT_QUANTITY, quantity, 0);
+  }
+  #[inline]
+  pub fn add_user_id(&mut self, user_id: u64) {
+    self.fbb_.push_slot::<u64>(Order::VT_USER_ID, user_id, 0);
+  }
+  #[inline]
+  pub fn add_timestamp(&mut self, timestamp: u64) {
+    self.fbb_.push_slot::<u64>(Order::VT_TIMESTAMP, timestamp, 0);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> OrderBuilder<'a, 'b, A> {
@@ -483,11 +515,13 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> OrderBuilder<'a, 'b, A> {
 impl core::fmt::Debug for Order<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("Order");
-      ds.field("id", &self.id());
-      ds.field("symbol", &self.symbol());
+      ds.field("order_id", &self.order_id());
+      ds.field("symbol_id", &self.symbol_id());
       ds.field("side", &self.side());
       ds.field("price", &self.price());
       ds.field("quantity", &self.quantity());
+      ds.field("user_id", &self.user_id());
+      ds.field("timestamp", &self.timestamp());
       ds.finish()
   }
 }
@@ -507,7 +541,7 @@ impl<'a> flatbuffers::Follow<'a> for Cancel<'a> {
 }
 
 impl<'a> Cancel<'a> {
-  pub const VT_ID: flatbuffers::VOffsetT = 4;
+  pub const VT_ORDER_ID: flatbuffers::VOffsetT = 4;
 
   #[inline]
   pub unsafe fn init_from_table(table: flatbuffers::Table<'a>) -> Self {
@@ -519,17 +553,17 @@ impl<'a> Cancel<'a> {
     args: &'args CancelArgs<'args>
   ) -> flatbuffers::WIPOffset<Cancel<'bldr>> {
     let mut builder = CancelBuilder::new(_fbb);
-    if let Some(x) = args.id { builder.add_id(x); }
+    if let Some(x) = args.order_id { builder.add_order_id(x); }
     builder.finish()
   }
 
 
   #[inline]
-  pub fn id(&self) -> Option<&'a UlidStruct> {
+  pub fn order_id(&self) -> Option<&'a UlidStruct> {
     // Safety:
     // Created from valid Table for this object
     // which contains a valid value in this slot
-    unsafe { self._tab.get::<UlidStruct>(Cancel::VT_ID, None)}
+    unsafe { self._tab.get::<UlidStruct>(Cancel::VT_ORDER_ID, None)}
   }
 }
 
@@ -540,19 +574,19 @@ impl flatbuffers::Verifiable for Cancel<'_> {
   ) -> Result<(), flatbuffers::InvalidFlatbuffer> {
     use self::flatbuffers::Verifiable;
     v.visit_table(pos)?
-     .visit_field::<UlidStruct>("id", Self::VT_ID, false)?
+     .visit_field::<UlidStruct>("order_id", Self::VT_ORDER_ID, false)?
      .finish();
     Ok(())
   }
 }
 pub struct CancelArgs<'a> {
-    pub id: Option<&'a UlidStruct>,
+    pub order_id: Option<&'a UlidStruct>,
 }
 impl<'a> Default for CancelArgs<'a> {
   #[inline]
   fn default() -> Self {
     CancelArgs {
-      id: None,
+      order_id: None,
     }
   }
 }
@@ -563,8 +597,8 @@ pub struct CancelBuilder<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> {
 }
 impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CancelBuilder<'a, 'b, A> {
   #[inline]
-  pub fn add_id(&mut self, id: &UlidStruct) {
-    self.fbb_.push_slot_always::<&UlidStruct>(Cancel::VT_ID, id);
+  pub fn add_order_id(&mut self, order_id: &UlidStruct) {
+    self.fbb_.push_slot_always::<&UlidStruct>(Cancel::VT_ORDER_ID, order_id);
   }
   #[inline]
   pub fn new(_fbb: &'b mut flatbuffers::FlatBufferBuilder<'a, A>) -> CancelBuilder<'a, 'b, A> {
@@ -584,7 +618,7 @@ impl<'a: 'b, 'b, A: flatbuffers::Allocator + 'a> CancelBuilder<'a, 'b, A> {
 impl core::fmt::Debug for Cancel<'_> {
   fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
     let mut ds = f.debug_struct("Cancel");
-      ds.field("id", &self.id());
+      ds.field("order_id", &self.order_id());
       ds.finish()
   }
 }
