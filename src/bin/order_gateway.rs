@@ -83,7 +83,7 @@ async fn create_order(
 
     match state.producer.send(record, Duration::from_secs(0)).await {
         Ok((partition, offset)) => {
-            println!("Sent Order {} to partition {} offset {}", order_id, partition, offset);
+            println!("Sent Order {} to user_id {}", order_id, client_order.user_id);
         }
         Err((e, _)) => {
             eprintln!("Error sending order {}: {:?}", order_id, e);
