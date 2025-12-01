@@ -1,12 +1,13 @@
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
     routing::post,
     Router,
 };
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
@@ -22,7 +23,6 @@ pub trait OrderPublisher: Send + Sync {
         payload: String,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
-
 pub struct AppState {
     pub symbol_manager: SymbolManager,
     pub producer: Arc<dyn OrderPublisher>,
