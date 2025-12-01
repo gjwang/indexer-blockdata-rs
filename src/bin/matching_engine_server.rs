@@ -1,60 +1,34 @@
+use clap::Parser;
 use fetcher::ledger::LedgerCommand;
 use fetcher::matching_engine_base::{MatchingEngine, Side, SymbolManager};
+use fetcher::models::OrderRequest;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::message::Message;
 use std::fs;
 use std::path::Path;
 
-fn print_user_balances(engine: &MatchingEngine, user_ids: &[u64]) {
-    println!("--- User Balances ---");
-    for &uid in user_ids {
-        if let Some(balances) = engine.ledger.get_user_balances(uid) {
-            print!("User {}: ", uid);
-            for (asset, bal) in balances {
-                print!(
-                    "[Asset {}: Avail={}, Frozen={}] ",
-                    asset, bal.available, bal.frozen
-                );
-            }
-            println!();
-        } else {
-            println!("User {}: No account", uid);
-        }
-    }
-    println!("---------------------");
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "localhost:9092")]
+    brokers: String,
+
+    #[arg(short, long, default_value = "orders")]
+    topic: String,
+
+    #[arg(short, long, default_value = "matching_engine_group")]
+    group_id: String,
 }
 
-fn assert_balance(
-    engine: &MatchingEngine,
-    user_id: u64,
-    asset_id: u32,
-    expected_avail: u64,
-    expected_frozen: u64,
-) {
-    let balances = engine
-        .ledger
-        .get_user_balances(user_id)
-        .expect("User not found");
-    let bal = balances
-        .iter()
-        .find(|(a, _)| *a == asset_id)
-        .expect("Asset not found")
-        .1;
-    assert_eq!(
-        bal.available, expected_avail,
-        "User {} Asset {} Available mismatch",
-        user_id, asset_id
-    );
-    assert_eq!(
-        bal.frozen, expected_frozen,
-        "User {} Asset {} Frozen mismatch",
-        user_id, asset_id
-    );
-}
-
-fn main() {
+#[tokio::main]
+async fn main() {
+    let args = Args::parse();
     let wal_dir = Path::new("me_wal_data");
     let snap_dir = Path::new("me_snapshots");
 
-    // Clean up previous run
+    // Clean up previous run (Optional: maybe we want to recover?)
+    // For this demo refactor, let's keep it clean to avoid state issues during dev.
     if wal_dir.exists() {
         let _ = fs::remove_dir_all(wal_dir);
     }
@@ -63,271 +37,82 @@ fn main() {
     }
 
     let mut engine = MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create engine");
-    // Use SnowflakeGenRng (random start) for order IDs
-    let mut snowflake_gen = fetcher::fast_ulid::SnowflakeGenRng::new(1); // Machine ID 1
 
-    // === Deposit Funds ===
-    println!("=== Depositing Funds ===");
-    // User 1: Seller of BTC (Asset 1).
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 1,
-            asset: 1,
-            amount: 10000,
-        })
-        .unwrap();
-    // User 2: Seller of BTC.
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 2,
-            asset: 1,
-            amount: 10000,
-        })
-        .unwrap();
-    // User 3: Buyer of BTC (Asset 2 = USDT).
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 3,
-            asset: 2,
-            amount: 100000,
-        })
-        .unwrap();
-    // User 4: Buyer of BTC.
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 4,
-            asset: 2,
-            amount: 100000,
-        })
-        .unwrap();
-    // User 101: Seller of ETH (Asset 3).
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 101,
-            asset: 3,
-            amount: 10000,
-        })
-        .unwrap();
-    // User 201: Seller of SOL (Asset 4).
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 201,
-            asset: 4,
-            amount: 10000,
-        })
-        .unwrap();
-    println!("Funds deposited.\n");
-
-    print_user_balances(&engine, &[1, 2, 3, 4, 101, 201]);
-
-    // === Simulating Database Load at Startup ===
-    println!("=== Loading symbols from database (simulated) ===");
-
-    // 1. Load Symbols via Manager
+    // === Initialize Symbols & Funds (Hardcoded for Demo) ===
+    println!("=== Initializing Engine State ===");
     let symbol_manager = SymbolManager::load_from_db();
-
-    // 2. Initialize Engine with Symbols (using IDs)
+    
+    // Register Symbols
     for (&symbol_id, symbol) in &symbol_manager.id_to_symbol {
         let (base, quote) = match symbol.as_str() {
             "BTC_USDT" => (1, 2),
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine
-            .register_symbol(symbol_id, symbol.clone(), base, quote)
-            .unwrap();
-        println!(
-            "Loaded symbol: {} -> symbol_id: {} (Base: {}, Quote: {})",
-            symbol, symbol_id, base, quote
-        );
+        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
+        println!("Loaded symbol: {}", symbol);
     }
 
-    println!("=== Symbol initialization complete ===\n");
-
-    println!("\n>>> Trading BTC_USDT");
-    let btc_id = symbol_manager
-        .get_id("BTC_USDT")
-        .expect("BTC_USDT not found");
-    println!("Adding Sell Order: 100 @ 10 (User 1)");
-    let order_id_1 = snowflake_gen.generate();
-    if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) {
-        eprintln!("Order failed: {}", e);
+    // Deposit Funds for generic users (1000-1100 range used by gateway)
+    // Let's just give a lot of funds to user 1000-1100
+    for uid in 1000..1100 {
+         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 1, amount: 1_000_000_000 }).unwrap(); // BTC
+         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 2, amount: 1_000_000_000 }).unwrap(); // USDT
+         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 3, amount: 1_000_000_000 }).unwrap(); // ETH
     }
+    println!("Funds deposited for users 1000-1100.");
 
-    println!("Adding Sell Order: 101 @ 5 (User 2)");
-    let order_id_2 = snowflake_gen.generate();
-    if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) {
-        eprintln!("Order failed: {}", e);
-    }
+    // === Kafka Consumer Setup ===
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("group.id", &args.group_id)
+        .set("bootstrap.servers", &args.brokers)
+        .set("auto.offset.reset", "earliest")
+        .create()
+        .expect("Consumer creation failed");
 
-    engine.print_order_book(btc_id);
-    print_user_balances(&engine, &[1, 2]);
+    consumer.subscribe(&[&args.topic]).expect("Can't subscribe");
 
-    println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    let order_id_3 = snowflake_gen.generate();
-    if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) {
-        eprintln!("Order failed: {}", e);
-    }
+    println!(">>> Matching Engine Server Started");
+    println!(">>> Listening on Topic: {}", args.topic);
 
-    engine.print_order_book(btc_id);
-    print_user_balances(&engine, &[1, 2, 3]);
-
-    println!(">>> Trading ETH_USDT");
-    let eth_id = symbol_manager
-        .get_id("ETH_USDT")
-        .expect("ETH_USDT not found");
-    println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    let order_id_4 = snowflake_gen.generate();
-    if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) {
-        eprintln!("Order failed: {}", e);
-    }
-
-    engine.print_order_book(eth_id);
-
-    println!(">>> Trading BTC_USDT again (using ID directly)");
-    println!("Adding Buy Order: 102 @ 10 (User 4)");
-    let order_id_5 = snowflake_gen.generate();
-    if let Err(e) = engine.add_order(btc_id, order_id_5, Side::Buy, 10, 102, 4) {
-        eprintln!("Order failed: {}", e);
-    }
-
-    engine.print_order_book(btc_id);
-    print_user_balances(&engine, &[1, 2, 3, 4]);
-
-    // === Verify State ===
-    println!("\n=== Verifying State ===");
-    // User 1: Sold 100 BTC @ 10.
-    // Initial: 10000 BTC. Final: 9900 BTC.
-    // Received: 1000 USDT.
-    assert_balance(&engine, 1, 1, 9900, 0);
-    assert_balance(&engine, 1, 2, 1000, 0);
-
-    // User 2: Sold 100 BTC @ 5.
-    // Initial: 10000 BTC. Final: 9900 BTC.
-    // Received: 500 USDT.
-    // Remaining Sell Order: 1 @ 5. -> Matched by User 4!
-    // So Frozen should be 0.
-    assert_balance(&engine, 2, 1, 9899, 0);
-    assert_balance(&engine, 2, 2, 505, 0); // User 2 sold 101 total. 100@5 + 1@5 = 505.
-
-    // User 3: Bought 100 BTC @ 5 (Matched User 2).
-    // Initial: 100000 USDT. Final: 99500 USDT.
-    // Received: 100 BTC.
-    assert_balance(&engine, 3, 1, 100, 0);
-    assert_balance(&engine, 3, 2, 99500, 0);
-
-    // User 4: Bought 100 BTC @ 10 (Matched User 1) AND 1 BTC @ 5 (Matched User 2).
-    // Initial: 100000 USDT.
-    // Spent: 100*10 + 1*5 = 1000 + 5 = 1005.
-    // Remaining Buy Order: 1 @ 10. Locked 10.
-    // Avail: 100000 - 1005 - 10 = 98985.
-    // Received: 101 BTC.
-    assert_balance(&engine, 4, 1, 101, 0);
-    assert_balance(&engine, 4, 2, 98985, 10);
-
-    println!("All assertions passed!");
-
-    println!("\n=== Demo Completed Successfully ===");
-
-    // ==========================================
-    // LOAD TEST
-    // ==========================================
-    println!("\n>>> STARTING LOAD TEST (1,000,000 Orders)");
-
-    // Deposit funds for load test users
-    // User 1000: Whale Seller (Asset 1: BTC)
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 1000,
-            asset: 1,
-            amount: 1_000_000_000,
-        })
-        .unwrap();
-    // User 1001: Whale Buyer (Asset 2: USDT)
-    engine
-        .ledger
-        .apply(&LedgerCommand::Deposit {
-            user_id: 1001,
-            asset: 2,
-            amount: 50_000_000_000,
-        })
-        .unwrap();
-
-    let start = std::time::Instant::now();
-    let mut buy_orders = Vec::new();
-    let mut sell_orders = Vec::new();
-
-    let total = 2_000;
-    // Start ID from 10000 to avoid conflict with previous manual orders
-    let _start_id = 500;
-    let snapshot_every_n_orders = 1_000;
-
-    for i in 1..=total {
-        let order_id = snowflake_gen.generate();
-        let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
-        let user_id = if side == Side::Buy { 1001 } else { 1000 };
-        let price = 50000;
-        let quantity = 1;
-
-        // Store order IDs for matching/cancelling
-        if side == Side::Buy {
-            buy_orders.push(order_id);
-        } else {
-            sell_orders.push(order_id);
-        }
-
-        // Place Order
-        if let Err(e) = engine.add_order(btc_id, order_id, side, price, quantity, user_id) {
-            // Simulate DB Persist (Order History)
-            // db.insert_order_history(order_id, status="REJECTED", reason=e.to_string());
-
-            // Simulate WS Push (Private Notification)
-            // centrifugo.publish(user_id, OrderUpdate { status: "REJECTED", reason: e.to_string() });
-
-            // For demo purposes, we just log it (but less verbosely for load test)
-            if i % 1000 == 0 {
-                eprintln!("[PERSIST] Order {} Rejected: {}", order_id, e);
+    loop {
+        match consumer.recv().await {
+            Err(e) => eprintln!("Kafka error: {}", e),
+            Ok(m) => {
+                if let Some(payload) = m.payload_view::<str>() {
+                    match payload {
+                        Ok(text) => {
+                            // Deserialize
+                            if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
+                                match req {
+                                    OrderRequest::PlaceOrder { order_id, user_id, symbol, side, price, quantity, .. } => {
+                                        if let Some(symbol_id) = symbol_manager.get_id(&symbol) {
+                                            let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
+                                            match engine.add_order(symbol_id, order_id, side_enum, price, quantity, user_id) {
+                                                Ok(_) => println!("Order {} Placed: {} {} @ {}", order_id, side, quantity, price),
+                                                Err(e) => eprintln!("Order {} Failed: {}", order_id, e),
+                                            }
+                                        } else {
+                                            eprintln!("Unknown symbol: {}", symbol);
+                                        }
+                                    },
+                                    OrderRequest::CancelOrder { order_id, symbol, .. } => {
+                                        if let Some(symbol_id) = symbol_manager.get_id(&symbol) {
+                                            match engine.cancel_order(symbol_id, order_id) {
+                                                Ok(_) => println!("Order {} Cancelled", order_id),
+                                                Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                eprintln!("Failed to parse JSON: {}", text);
+                            }
+                        },
+                        Err(e) => eprintln!("Error reading payload: {}", e),
+                    }
+                }
             }
         }
-
-        // Match orders every 100 orders
-        // Note: In simple_match_engine, matching happens automatically inside add_order if prices cross.
-        // But here we are placing both sides at same price (50000), so they SHOULD match immediately if we alternate.
-        // However, our loop alternates Buy/Sell.
-        // If we place Sell 50000, it sits.
-        // Then Buy 50000, it matches the Sell.
-        // So simple_match_engine matches immediately! We don't need manual matching calls like me_wal.
-
-        // Cancel an order every 500 orders (if any exist in book)
-        // Snapshot every 200k
-        // Snapshot every 200k
-        if i % snapshot_every_n_orders == 0 {
-            let t = std::time::Instant::now();
-            engine.trigger_cow_snapshot();
-            println!(
-                "    Forked at Order {}. Main Thread Paused: {:.2?}",
-                i,
-                t.elapsed()
-            );
-        }
     }
-
-    let dur = start.elapsed();
-    println!("\n>>> LOAD TEST DONE");
-    println!("    Total Orders: {}", total);
-    println!("    Total Time: {:.2?}", dur);
-    println!(
-        "    Throughput: {:.0} orders/sec",
-        total as f64 / dur.as_secs_f64()
-    );
-
-    // Wait for children to finish
-    std::thread::sleep(std::time::Duration::from_secs(1));
 }
