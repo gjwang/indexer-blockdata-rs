@@ -17,6 +17,8 @@ use tikv_jemallocator::Jemalloc;
 // Use the shared library module
 use fetcher::order_wal::{LogEntry, Wal, WalSide};
 
+use fetcher::models::{Order, Side, Trade, OrderType};
+
 // =================================================================
 // MEMORY ALLOCATOR CONFIG
 // =================================================================
@@ -28,32 +30,6 @@ static GLOBAL: Jemalloc = Jemalloc;
 // ==========================================
 // REDIS-STYLE MATCHING ENGINE
 // ==========================================
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum OrderSide {
-    Buy,
-    Sell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct Order {
-    pub id: u64,
-    pub symbol: u32,
-    pub side: OrderSide,
-    pub price: u64,
-    pub quantity: u64,
-    pub user_id: u64,
-    pub timestamp: u64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct Trade {
-    pub match_id: u64,
-    pub buy_order_id: u64,
-    pub sell_order_id: u64,
-    pub price: u64,
-    pub quantity: u64,
-}
 
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
@@ -88,13 +64,13 @@ impl MatchingEngine {
     #[inline(always)]
     pub fn place_order(&mut self, order: Order) {
         let wal_side = match order.side {
-            OrderSide::Buy => WalSide::Buy,
-            OrderSide::Sell => WalSide::Sell,
+            Side::Buy => WalSide::Buy,
+            Side::Sell => WalSide::Sell,
         };
 
         self.wal
             .log_place_order(
-                order.id,
+                order.order_id,
                 order.user_id,
                 order.symbol,
                 wal_side,
@@ -102,7 +78,7 @@ impl MatchingEngine {
                 order.quantity,
             )
             .unwrap(); // Handle error properly in real app
-        self.orders.insert(order.id, order);
+        self.orders.insert(order.order_id, order);
     }
 
     /// Simulate matching two orders and create a trade
@@ -114,9 +90,8 @@ impl MatchingEngine {
         quantity: u64,
     ) -> Option<Trade> {
         // Verify both orders exist
-        if !self.orders.contains_key(&buy_order_id) || !self.orders.contains_key(&sell_order_id) {
-            return None;
-        }
+        let buy_user_id = self.orders.get(&buy_order_id)?.user_id;
+        let sell_user_id = self.orders.get(&sell_order_id)?.user_id;
 
         // Increment match sequence and create trade
         self.match_sequence += 1;
@@ -124,6 +99,8 @@ impl MatchingEngine {
             match_id: self.match_sequence,
             buy_order_id,
             sell_order_id,
+            buy_user_id,
+            sell_user_id,
             price,
             quantity,
         };
@@ -241,17 +218,18 @@ fn main() -> Result<()> {
 
     for i in 1..=total {
         let side = if i % 2 == 0 {
-            OrderSide::Buy
+            Side::Buy
         } else {
-            OrderSide::Sell
+            Side::Sell
         };
         // Use u64 ID (simulated by i)
         let order_id = i;
 
         let order = Order {
-            id: order_id,
+            order_id,
             symbol,
             side,
+            order_type: OrderType::Limit,
             price: 50000,
             quantity: 1,
             user_id: 1000 + i,
@@ -259,10 +237,10 @@ fn main() -> Result<()> {
         };
 
         // Store order IDs for matching
-        if side == OrderSide::Buy {
-            buy_orders.push(order.id);
+        if side == Side::Buy {
+            buy_orders.push(order.order_id);
         } else {
-            sell_orders.push(order.id);
+            sell_orders.push(order.order_id);
         }
 
         engine.place_order(order);

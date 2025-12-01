@@ -122,7 +122,7 @@ pub enum OrderStatus {
     Rejected(String),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Order {
     pub order_id: u64,
     pub user_id: u64,
@@ -134,7 +134,7 @@ pub struct Order {
     pub timestamp: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Trade {
     pub match_id: u64,
     pub buy_order_id: u64,
