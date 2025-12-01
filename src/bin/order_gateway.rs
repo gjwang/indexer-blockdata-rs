@@ -50,7 +50,7 @@ async fn main() {
         let order_id = snowflake_gen.generate();
 
         let client_order = match ClientOrder::new(
-            order_id.to_string(),
+            format!("clientorder{}", order_id),
             raw_symbol.to_string(),
             raw_side.to_string(),
             price,
