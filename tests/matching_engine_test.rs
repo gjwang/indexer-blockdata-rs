@@ -9,8 +9,12 @@ fn setup_engine(test_name: &str) -> (MatchingEngine, PathBuf, PathBuf) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let wal_dir = PathBuf::from(format!("test_wal_{}_{}", test_name, ts));
-    let snap_dir = PathBuf::from(format!("test_snap_{}_{}", test_name, ts));
+    let base_dir = PathBuf::from("test_data");
+    if !base_dir.exists() {
+        fs::create_dir_all(&base_dir).unwrap();
+    }
+    let wal_dir = base_dir.join(format!("test_wal_{}_{}", test_name, ts));
+    let snap_dir = base_dir.join(format!("test_snap_{}_{}", test_name, ts));
 
     if wal_dir.exists() {
         fs::remove_dir_all(&wal_dir).unwrap();
