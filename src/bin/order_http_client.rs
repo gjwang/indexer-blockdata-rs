@@ -43,7 +43,8 @@ async fn main() {
         match client.post(api_url).json(&payload).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
-                    println!("Sent order {}: Success", i);
+                    let resp_json = resp.json::<serde_json::Value>().await.unwrap_or_default();
+                    println!("Sent order {}: Success {}", i, resp_json);
                 } else {
                     let status = resp.status();
                     let text = resp.text().await.unwrap_or_default();
