@@ -128,6 +128,64 @@ impl FastUlidHalfGen {
     }
 }
 
+/// A 64-bit Snowflake ID generator.
+/// Structure:
+/// - 44 bits: Timestamp (milliseconds)
+///   - Max time: 2^44 ms = ~557 years from epoch (1970)
+///   - Valid until: Year 2527
+/// - 8 bits: Machine ID
+///   - Capacity: 2^8 = 256 unique machines/gateways
+/// - 12 bits: Sequence
+///   - Capacity: 2^12 = 4096 IDs per millisecond per machine
+///   - Throughput: ~4 million IDs/sec per machine
+pub struct SnowflakeGen {
+    machine_id: u8,
+    last_ts: u64,
+    sequence: u16,
+}
+
+impl SnowflakeGen {
+    pub fn new(machine_id: u8) -> Self {
+        Self {
+            machine_id,
+            last_ts: 0,
+            sequence: 0,
+        }
+    }
+
+    pub fn generate(&mut self) -> u64 {
+        let mut now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or(std::time::Duration::ZERO)
+            .as_millis() as u64;
+
+        if now < self.last_ts {
+            // Clock moved backwards: use last_ts to maintain monotonicity
+            now = self.last_ts;
+        }
+
+        if now == self.last_ts {
+            self.sequence = (self.sequence + 1) & 0xFFF; // 12 bits mask (4095)
+            if self.sequence == 0 {
+                // Overflow (sequence > 4095), wait for next millisecond
+                while now <= self.last_ts {
+                     now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or(std::time::Duration::ZERO)
+                        .as_millis() as u64;
+                }
+            }
+        } else {
+            self.sequence = 0;
+        }
+
+        self.last_ts = now;
+
+        // Construct ID: TS (44) | Machine (8) | Seq (12)
+        (now << 20) | ((self.machine_id as u64) << 12) | (self.sequence as u64)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -230,5 +288,41 @@ mod tests {
         // Verify bit structure manually
         assert_eq!(id >> 16, ts);
         assert_eq!(id & 0xFFFF, rand as u64);
+    }
+
+    #[test]
+    fn test_snowflake_gen() {
+        let mut gen = SnowflakeGen::new(1); // Machine ID 1
+        let mut last = gen.generate();
+        
+        println!("Snowflake ID: {}", last);
+
+        for _ in 0..10000 {
+            let next = gen.generate();
+            assert!(next > last, "Snowflake IDs must be strictly increasing");
+            
+            // Check Machine ID part (bits 12-19)
+            let machine_part = (next >> 12) & 0xFF;
+            assert_eq!(machine_part, 1);
+            
+            last = next;
+        }
+    }
+
+    #[test]
+    fn demo_usage_snowflake_gen() {
+        let mut gen = SnowflakeGen::new(1); // Machine ID 1
+        println!("\n--- SnowflakeGen Demo ---");
+        println!("{:<20} | {:<15} | {:<20}", "u64 (Decimal)", "Machine ID", "Timestamp (ms)");
+        println!("{:-<20}-+-{:-<15}-+-{:-<20}", "", "", "");
+
+        for _ in 0..5 {
+            let id = gen.generate();
+            let machine = (id >> 12) & 0xFF;
+            let ts = id >> 20;
+            
+            println!("{:<20} | {:<15} | {:<20}", id, machine, ts);
+        }
+        println!("----------------------------\n");
     }
 }
