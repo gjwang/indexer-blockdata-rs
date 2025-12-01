@@ -1,11 +1,11 @@
-pub mod events;
 pub mod client_order;
+pub mod events;
 pub mod order_requests;
 pub mod order_utils;
 pub mod serde_utils;
 
-pub use events::*;
 pub use client_order::*;
+pub use events::*;
 pub use order_requests::*;
 pub use order_utils::*;
 // We don't necessarily need to export serde_utils content globally, but maybe useful.
