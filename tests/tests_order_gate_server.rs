@@ -45,8 +45,8 @@ async fn test_create_order_api_success() {
         cid: Some("clientid1234567890123".to_string()),
         symbol: "BTC_USDT".to_string(),
         side: "Buy".to_string(),
-        price: "50000".to_string(),
-        quantity: "100".to_string(),
+        price: "49999.99".to_string(),
+        quantity: "0.5".to_string(),
         order_type: "Limit".to_string(),
     };
 
