@@ -80,6 +80,7 @@ impl ClientOrder {
     pub fn from_json(json: &str) -> Result<Self, String> {
         let order: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
         // Validation must be triggered explicitly. Attributes alone don't enforce it.
+        // serde_json::from_str only handles parsing and type conversion.
         order.validate_order()?;
         Ok(order)
     }
