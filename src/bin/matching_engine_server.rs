@@ -1,4 +1,3 @@
-use clap::Parser;
 use fetcher::ledger::LedgerCommand;
 use fetcher::matching_engine_base::{MatchingEngine, Side, SymbolManager};
 use fetcher::models::OrderRequest;
@@ -8,22 +7,9 @@ use rdkafka::message::Message;
 use std::fs;
 use std::path::Path;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(short, long, default_value = "localhost:9092")]
-    brokers: String,
-
-    #[arg(short, long, default_value = "orders")]
-    topic: String,
-
-    #[arg(short, long, default_value = "matching_engine_group")]
-    group_id: String,
-}
-
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let config = fetcher::configure::load_config().expect("Failed to load config");
     let wal_dir = Path::new("me_wal_data");
     let snap_dir = Path::new("me_snapshots");
 
@@ -64,16 +50,16 @@ async fn main() {
 
     // === Kafka Consumer Setup ===
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("group.id", &args.group_id)
-        .set("bootstrap.servers", &args.brokers)
+        .set("group.id", &config.kafka_group_id)
+        .set("bootstrap.servers", &config.kafka_broker)
         .set("auto.offset.reset", "earliest")
         .create()
         .expect("Consumer creation failed");
 
-    consumer.subscribe(&[&args.topic]).expect("Can't subscribe");
+    consumer.subscribe(&[&config.kafka_topic]).expect("Can't subscribe");
 
     println!(">>> Matching Engine Server Started");
-    println!(">>> Listening on Topic: {}", args.topic);
+    println!(">>> Listening on Topic: {}", config.kafka_topic);
 
     loop {
         match consumer.recv().await {

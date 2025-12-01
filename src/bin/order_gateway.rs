@@ -1,4 +1,3 @@
-use clap::Parser;
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::models::OrderRequest;
 use rdkafka::config::ClientConfig;
@@ -6,27 +5,12 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tokio::time;
 
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    #[arg(short, long, default_value = "localhost:9092")]
-    brokers: String,
-
-    #[arg(short, long, default_value = "orders")]
-    topic: String,
-
-    #[arg(short, long, default_value_t = 1000)]
-    count: usize,
-
-    #[arg(short, long, default_value_t = 100)]
-    interval_ms: u64,
-}
-
 #[tokio::main]
 async fn main() {
-    let args = Args::parse();
+    let config = fetcher::configure::load_config().expect("Failed to load config");
+    
     let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &args.brokers)
+        .set("bootstrap.servers", &config.kafka_broker)
         .set("message.timeout.ms", "5000")
         .create()
         .expect("Producer creation error");
@@ -35,9 +19,13 @@ async fn main() {
     let symbols = vec!["BTC_USDT", "ETH_USDT"];
 
     println!(">>> Starting Order Gateway (Producer)");
-    println!(">>> Target: {}, Topic: {}", args.brokers, args.topic);
+    println!(">>> Target: {}, Topic: {}", config.kafka_broker, config.kafka_topic);
 
-    for i in 0..args.count {
+    // Default count and interval if not in config (could add to AppConfig if needed)
+    let count = 1000;
+    let interval_ms = 100;
+
+    for i in 0..count {
         let order_id = snowflake_gen.generate();
         let symbol = symbols[i % symbols.len()].to_string();
         let side = if i % 2 == 0 { "Buy" } else { "Sell" }.to_string();
@@ -58,7 +46,7 @@ async fn main() {
         let payload = serde_json::to_string(&order).unwrap();
         let key = order_id.to_string();
 
-        let record = FutureRecord::to(&args.topic)
+        let record = FutureRecord::to(&config.kafka_topic)
             .payload(&payload)
             .key(&key);
 
@@ -67,6 +55,6 @@ async fn main() {
             Err((e, _)) => eprintln!("Error sending order {}: {:?}", order_id, e),
         }
 
-        time::sleep(Duration::from_millis(args.interval_ms)).await;
+        time::sleep(Duration::from_millis(interval_ms)).await;
     }
 }

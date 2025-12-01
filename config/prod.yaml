@@ -1,0 +1,10 @@
+LOG_FILE: "log/prod.log"
+
+# Centrifugo
+centrifugo_url: "ws://prod-centrifugo:8000/connection/websocket"
+centrifugo_channel: "news:updates"
+
+# Kafka / Redpanda
+kafka_broker: "prod-redpanda:9093"
+kafka_topic: "orders"
+kafka_group_id: "matching_engine_group_prod"
