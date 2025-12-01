@@ -1,6 +1,6 @@
 use fetcher::ledger::LedgerCommand;
-use fetcher::matching_engine_base::{MatchingEngine, Side, SymbolManager};
-use fetcher::models::OrderRequest;
+use fetcher::matching_engine_base::{MatchingEngine, SymbolManager};
+use fetcher::models::{OrderRequest, OrderType, Side};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
@@ -77,13 +77,15 @@ async fn main() {
                             // Deserialize
                             if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
                                 match req {
-                                    OrderRequest::PlaceOrder { order_id, user_id, symbol, side, price, quantity, .. } => {
+                                    OrderRequest::PlaceOrder { order_id, user_id, symbol, side, price, quantity, order_type } => {
                                         // Symbol is now u32 (ID). We can check if it exists in our manager or just pass it.
                                         // The engine will validate if the symbol ID is registered.
                                         // But we might want to log the string name.
                                         if let Some(symbol_name) = symbol_manager.get_symbol(symbol as usize) {
                                             let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
-                                            match engine.add_order(symbol as usize, order_id, side_enum, price, quantity, user_id) {
+                                            let type_enum = if order_type.eq_ignore_ascii_case("Market") { OrderType::Market } else { OrderType::Limit };
+                                            
+                                            match engine.add_order(symbol as usize, order_id, side_enum, type_enum, price, quantity, user_id) {
                                                 Ok(_) => println!("Order {} Placed: {} {} @ {} ({})", order_id, side, quantity, price, symbol_name),
                                                 Err(e) => eprintln!("Order {} Failed: {}", order_id, e),
                                             }
