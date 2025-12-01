@@ -2,6 +2,10 @@
 mod tests {
     use fetcher::models::{ClientOrder, OrderRequest, OrderType, Side};
     use fetcher::symbol_manager::SymbolManager;
+    use fetcher::client_order_convertor::client_order_convert;
+    use fetcher::fast_ulid::SnowflakeGenRng;
+    use std::sync::Mutex;
+    use axum::http::StatusCode;
 
     fn setup_symbol_manager() -> SymbolManager {
         let mut sm = SymbolManager::new();
@@ -431,5 +435,49 @@ mod tests {
         let res3 = order3.try_to_internal(&sm, 1);
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("consecutive"));
+    }
+
+
+    #[test]
+    fn test_process_order_success() {
+        let mut sm = SymbolManager::new();
+        sm.insert("BTC_USDT", 1);
+        let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
+
+        let client_order = ClientOrder {
+            client_order_id: Some("clientid1234567890123".to_string()),
+            symbol: "BTC_USDT".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+
+        let result = client_order_convert(&client_order, &sm, &snowflake_gen);
+        assert!(result.is_ok());
+        let (order_id, _internal_order) = result.unwrap();
+        assert!(order_id > 0);
+    }
+
+    #[test]
+    fn test_process_order_invalid_symbol() {
+        let sm = SymbolManager::new(); // Empty
+        let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
+
+        let client_order = ClientOrder {
+            client_order_id: Some("clientid1234567890123".to_string()),
+            symbol: "BTC_USDT".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+
+        let result = client_order_convert(&client_order, &sm, &snowflake_gen);
+        let err = result.unwrap_err();
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("Unknown symbol"));
     }
 }
