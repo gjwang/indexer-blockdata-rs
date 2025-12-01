@@ -10,16 +10,19 @@ use tower::util::ServiceExt;
 
 use fetcher::client_order_convertor::client_order_convert;
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{AppState, create_app, OrderPublisher};
+use fetcher::gateway::{create_app, AppState, OrderPublisher};
 use fetcher::models::ClientOrder;
 use fetcher::symbol_manager::SymbolManager;
-
-
 
 struct MockPublisher;
 
 impl OrderPublisher for MockPublisher {
-    fn publish(&self, _topic: String, _key: String, _payload: String) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
+    fn publish(
+        &self,
+        _topic: String,
+        _key: String,
+        _payload: String,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         Box::pin(async { Ok(()) })
     }
 }

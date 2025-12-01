@@ -12,7 +12,9 @@ pub fn client_order_convert(
     snowflake_gen: &Mutex<SnowflakeGenRng>,
 ) -> Result<(u64, OrderRequest), (StatusCode, String)> {
     // Validate
-    client_order.validate_order().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    client_order
+        .validate_order()
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // Generate internal order ID
     let order_id = {
@@ -21,7 +23,8 @@ pub fn client_order_convert(
     };
 
     // Convert to internal
-    let internal_order = client_order.try_to_internal(symbol_manager, order_id)
+    let internal_order = client_order
+        .try_to_internal(symbol_manager, order_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok((order_id, internal_order))

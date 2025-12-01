@@ -1,8 +1,10 @@
 pub mod centrifugo_auth;
 pub mod centrifugo_publisher;
+pub mod client_order_convertor;
 pub mod compressor;
 pub mod configure;
 pub mod fast_ulid;
+pub mod gateway;
 pub mod ledger;
 pub mod logger;
 pub mod matching_engine_base;
@@ -13,5 +15,3 @@ pub mod s3_service;
 pub mod scylla_service;
 pub mod simple_kv_storage;
 pub mod symbol_manager;
-pub mod client_order_convertor;
-pub mod gateway;

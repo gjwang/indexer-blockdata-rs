@@ -11,11 +11,18 @@ use std::time::Duration;
 struct KafkaPublisher(FutureProducer);
 
 impl OrderPublisher for KafkaPublisher {
-    fn publish(&self, topic: String, key: String, payload: String) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+    fn publish(
+        &self,
+        topic: String,
+        key: String,
+        payload: String,
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let producer = self.0.clone();
         Box::pin(async move {
             let record = FutureRecord::to(&topic).payload(&payload).key(&key);
-            producer.send(record, Duration::from_secs(0)).await
+            producer
+                .send(record, Duration::from_secs(0))
+                .await
                 .map(|_| ())
                 .map_err(|(e, _)| e.to_string())
         })

@@ -23,7 +23,7 @@ async fn main() {
         let price = 50000 + (i % 100);
         let quantity = 1 + (i % 5);
         let user_id = 1000 + (i % 10);
-        
+
         // Generate a client_order_id. In real app, this might be UUID or similar.
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
         // "clientorder" is 11 chars. We need 9 more.

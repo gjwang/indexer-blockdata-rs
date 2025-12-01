@@ -1,11 +1,11 @@
 #[cfg(test)]
 mod tests {
-    use fetcher::models::{ClientOrder, OrderRequest, OrderType, Side};
-    use fetcher::symbol_manager::SymbolManager;
+    use axum::http::StatusCode;
     use fetcher::client_order_convertor::client_order_convert;
     use fetcher::fast_ulid::SnowflakeGenRng;
+    use fetcher::models::{ClientOrder, OrderRequest, OrderType, Side};
+    use fetcher::symbol_manager::SymbolManager;
     use std::sync::Mutex;
-    use axum::http::StatusCode;
 
     fn setup_symbol_manager() -> SymbolManager {
         let mut sm = SymbolManager::new();
@@ -261,7 +261,10 @@ mod tests {
         let result = ClientOrder::from_json(json);
         assert!(result.is_ok());
         let order = result.unwrap();
-        assert_eq!(order.client_order_id, Some("clientid1234567890123".to_string()));
+        assert_eq!(
+            order.client_order_id,
+            Some("clientid1234567890123".to_string())
+        );
         assert_eq!(order.symbol, "BTC_USDT");
         assert_eq!(order.side, "Buy");
         assert_eq!(order.price, 50000);
@@ -436,7 +439,6 @@ mod tests {
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("consecutive"));
     }
-
 
     #[test]
     fn test_process_order_success() {
