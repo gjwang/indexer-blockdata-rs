@@ -195,7 +195,7 @@ mod tests {
     fn test_order_update_serialization() {
         let order = OrderUpdate {
             order_id: "order_123".to_string(),
-            symbol: "ETH_USDT".to_string(),
+            symbol_id: 1,
             side: "buy".to_string(),
             order_type: "limit".to_string(),
             status: "new".to_string(),
@@ -207,14 +207,14 @@ mod tests {
 
         let json = serde_json::to_string(&order).unwrap();
         assert!(json.contains("order_123"));
-        assert!(json.contains("ETH_USDT"));
+        assert!(json.contains("1"));
         assert!(json.contains("3000"));
     }
 
     #[test]
     fn test_position_update_serialization() {
         let position = PositionUpdate {
-            symbol: "BTC_USDT".to_string(),
+            symbol_id: 2,
             side: "long".to_string(),
             quantity: 0.5,
             entry_price: 50000.0,
@@ -225,7 +225,7 @@ mod tests {
         };
 
         let json = serde_json::to_string(&position).unwrap();
-        assert!(json.contains("BTC_USDT"));
+        assert!(json.contains("2"));
         assert!(json.contains("long"));
         assert!(json.contains("50000"));
     }

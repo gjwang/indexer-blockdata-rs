@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use fetcher::ledger::LedgerCommand;
-    use fetcher::matching_engine_base::{MatchingEngine, OrderError, OrderStatus, Side};
+    use fetcher::matching_engine_base::MatchingEngine;
+    use fetcher::models::{OrderError, OrderStatus, OrderType, Side};
     use tempfile::TempDir;
 
     fn setup_engine(temp_dir: &TempDir) -> MatchingEngine {
@@ -35,7 +36,7 @@ mod tests {
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
         // This should fail due to insufficient funds
-        let result = engine.add_order(0, 1, Side::Buy, 100, 10, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
 
         match result {
             Err(OrderError::InsufficientFunds { .. }) => {
@@ -63,7 +64,7 @@ mod tests {
             .unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
-        let result = engine.add_order(0, 1, Side::Buy, 100, 10, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
 
         assert!(result.is_ok());
         // In a real system, we would check the OrderBook or Event Log for "New" status

@@ -1,5 +1,7 @@
 use fetcher::ledger::LedgerCommand;
-use fetcher::matching_engine_base::{MatchingEngine, Side, SymbolManager};
+use fetcher::matching_engine_base::MatchingEngine;
+use fetcher::models::{OrderType, Side};
+use fetcher::symbol_manager::SymbolManager;
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -98,20 +100,20 @@ fn test_basic_matching() {
 
     // 1. Add Sell Orders
     // Sell 100 @ 10 (ID 1, User 1)
-    assert!(engine.add_order(btc_id, 1, Side::Sell, 100, 10, 1).is_ok());
+    assert!(engine.add_order(btc_id, 1, Side::Sell, OrderType::Limit, 10, 100, 1).is_ok());
     // Sell 101 @ 5 (ID 2, User 2)
-    assert!(engine.add_order(btc_id, 2, Side::Sell, 101, 5, 2).is_ok());
+    assert!(engine.add_order(btc_id, 2, Side::Sell, OrderType::Limit, 5, 101, 2).is_ok());
 
     // Verify Book State
-    let book = engine.order_books[btc_id].as_ref().unwrap();
+    let book = engine.order_books[btc_id as usize].as_ref().unwrap();
     assert_eq!(book.asks.len(), 2);
     assert_eq!(book.bids.len(), 0);
 
     // 2. Add Buy Order (Partial Match)
     // Buy 100 @ 8 (ID 3, User 3). Matches 8 units of ID 1 (Price 100).
-    assert!(engine.add_order(btc_id, 3, Side::Buy, 100, 8, 3).is_ok());
+    assert!(engine.add_order(btc_id, 3, Side::Buy, OrderType::Limit, 8, 100, 3).is_ok());
 
-    let book = engine.order_books[btc_id].as_ref().unwrap();
+    let book = engine.order_books[btc_id as usize].as_ref().unwrap();
     // ID 1 (Price 100) matched 8. Remaining 2.
     let best_ask = book.asks.values().next().unwrap().front().unwrap();
     assert_eq!(best_ask.order_id, 1);
@@ -122,9 +124,9 @@ fn test_basic_matching() {
     // Matches remaining 2 of ID 1 (Price 100).
     // Matches 5 of ID 2 (Price 101).
     // Remaining 3 units sit on Bid at 102.
-    assert!(engine.add_order(btc_id, 4, Side::Buy, 102, 10, 4).is_ok());
+    assert!(engine.add_order(btc_id, 4, Side::Buy, OrderType::Limit, 10, 102, 4).is_ok());
 
-    let book = engine.order_books[btc_id].as_ref().unwrap();
+    let book = engine.order_books[btc_id as usize].as_ref().unwrap();
     assert!(book.asks.is_empty()); // All asks cleared
     assert_eq!(book.bids.len(), 1);
 
@@ -168,11 +170,11 @@ fn test_dynamic_symbol_registration() {
         .unwrap();
 
     assert!(engine
-        .add_order(new_id, 100, Side::Sell, 50, 100, 1)
+        .add_order(new_id, 100, Side::Sell, OrderType::Limit, 100, 50, 1)
         .is_ok());
 
-    let book = engine.order_books[new_id].as_ref().unwrap();
-    assert_eq!(book.symbol, new_id as u32);
+    let book = engine.order_books[new_id as usize].as_ref().unwrap();
+    assert_eq!(book.symbol_id, new_id as u32);
     assert_eq!(book.asks.len(), 1);
 
     drop(engine);
@@ -187,19 +189,19 @@ fn test_gap_handling() {
     engine.register_symbol(5, "SOL".to_string(), 4, 2).unwrap();
 
     // Access ID 2 (Gap)
-    let result = engine.add_order(2, 999, Side::Buy, 100, 1, 3);
+    let result = engine.add_order(2, 999, Side::Buy, OrderType::Limit, 1, 100, 3);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        fetcher::matching_engine_base::OrderError::InvalidSymbol { .. }
+        fetcher::models::OrderError::InvalidSymbol { .. }
     ));
 
     // Access ID 10 (Out of bounds)
-    let result = engine.add_order(10, 999, Side::Buy, 100, 1, 3);
+    let result = engine.add_order(10, 999, Side::Buy, OrderType::Limit, 1, 100, 3);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        fetcher::matching_engine_base::OrderError::InvalidSymbol { .. }
+        fetcher::models::OrderError::InvalidSymbol { .. }
     ));
 
     drop(engine);
@@ -212,20 +214,20 @@ fn test_duplicate_order_id() {
     engine.register_symbol(0, "BTC".to_string(), 1, 2).unwrap();
 
     // Add Order 1 (Buy 100 @ 10)
-    engine.add_order(0, 1, Side::Buy, 10, 100, 3).unwrap();
+    engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 3).unwrap();
 
     // Add Order 2 (Sell 50 @ 10) -> Match 50
-    engine.add_order(0, 2, Side::Sell, 10, 50, 1).unwrap();
+    engine.add_order(0, 2, Side::Sell, OrderType::Limit, 10, 50, 1).unwrap();
 
     // Add Order 3 (Sell 40 @ 10) -> Match 40, Rem 10 (Order 1 still active)
-    engine.add_order(0, 3, Side::Sell, 10, 40, 2).unwrap();
+    engine.add_order(0, 3, Side::Sell, OrderType::Limit, 10, 40, 2).unwrap();
 
     // Try adding Order 1 again (should fail as it's still active/partially filled)
-    let result = engine.add_order(0, 1, Side::Sell, 100, 10, 1);
+    let result = engine.add_order(0, 1, Side::Sell, OrderType::Limit, 10, 100, 1);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
-        fetcher::matching_engine_base::OrderError::DuplicateOrderId { .. }
+        fetcher::models::OrderError::DuplicateOrderId { .. }
     ));
 
     // Cancel Order 1 to make it inactive
@@ -233,7 +235,7 @@ fn test_duplicate_order_id() {
 
     // Now ID 1 should be inactive (removed from set)
     // Re-using ID 1 should be allowed
-    assert!(engine.add_order(0, 1, Side::Buy, 99, 5, 3).is_ok());
+    assert!(engine.add_order(0, 1, Side::Buy, OrderType::Limit, 5, 99, 3).is_ok());
 
     drop(engine);
     teardown(wal, snap);
@@ -251,7 +253,7 @@ fn test_ledger_integration() {
     // User 1: Sell 100 BTC @ 10 USDT
     // Price 10, Qty 100.
     // Lock: 100 BTC (Asset 1).
-    assert!(engine.add_order(btc_id, 1, Side::Sell, 10, 100, 1).is_ok());
+    assert!(engine.add_order(btc_id, 1, Side::Sell, OrderType::Limit, 10, 100, 1).is_ok());
 
     // Check User 1 Balance
     // Initial: 1,000,000.
@@ -267,7 +269,7 @@ fn test_ledger_integration() {
     // Lock: 50 * 10 = 500 USDT (Asset 2).
     // Match: 50 units.
     // Trade: Price 10, Qty 50.
-    assert!(engine.add_order(btc_id, 2, Side::Buy, 10, 50, 3).is_ok());
+    assert!(engine.add_order(btc_id, 2, Side::Buy, OrderType::Limit, 10, 50, 3).is_ok());
 
     // Check User 1 (Seller)
     // Sold 50.
