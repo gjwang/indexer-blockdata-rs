@@ -323,4 +323,51 @@ mod tests {
         assert!(err.contains("client_order_id"));
         assert!(err.contains("length"));
     }
+
+    #[test]
+    fn test_try_to_internal_invalid_symbol_format() {
+        let sm = setup_symbol_manager();
+        
+        // Short
+        let order1 = ClientOrder {
+            client_order_id: "clientid1234567890123".to_string(),
+            symbol: "AB".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+        let res1 = order1.try_to_internal(&sm, 1);
+        assert!(res1.is_err());
+        assert!(res1.unwrap_err().contains("symbol"));
+
+        // Lowercase
+        let order2 = ClientOrder {
+            client_order_id: "clientid1234567890123".to_string(),
+            symbol: "btc_usdt".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+        let res2 = order2.try_to_internal(&sm, 1);
+        assert!(res2.is_err());
+        assert!(res2.unwrap_err().contains("uppercase"));
+
+        // Invalid char
+        let order3 = ClientOrder {
+            client_order_id: "clientid1234567890123".to_string(),
+            symbol: "BTC-USDT".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+        let res3 = order3.try_to_internal(&sm, 1);
+        assert!(res3.is_err());
+        assert!(res3.unwrap_err().contains("alphanumeric"));
+    }
 }
