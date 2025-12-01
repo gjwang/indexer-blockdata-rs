@@ -1,3 +1,4 @@
+pub mod api_response;
 pub mod client_order;
 pub mod events;
 pub mod order_requests;
@@ -5,6 +6,7 @@ pub mod order_utils;
 pub mod serde_utils;
 pub mod user_account_manager;
 
+pub use api_response::*;
 pub use client_order::*;
 pub use events::*;
 pub use order_requests::*;

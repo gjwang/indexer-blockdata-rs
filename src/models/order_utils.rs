@@ -59,6 +59,7 @@ impl FromStr for OrderType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderStatus {
     New,
+    Accepted,
     PartiallyFilled,
     Filled,
     Cancelled,

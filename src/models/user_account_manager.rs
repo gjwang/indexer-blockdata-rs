@@ -1,27 +1,20 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use rand::Rng;
 
 #[derive(Debug)]
-pub struct UserAccountManager {
-    // Simulating a database or internal state
-    next_user_id: AtomicU64,
-}
+pub struct UserAccountManager;
 
 impl UserAccountManager {
     pub fn new() -> Self {
-        Self {
-            next_user_id: AtomicU64::new(1001),
-        }
+        Self
     }
 
     /// Simulate getting a user ID.
     /// In a real app, this would likely take an auth token or session ID.
-    /// For now, we'll just return a simulated user ID.
+    /// For now, we'll just return a simulated random user ID.
     pub fn get_user_id(&self) -> u64 {
-        // For simulation, let's just return a fixed user or rotate them.
-        // If we want to simulate multiple users, we could increment.
-        // But typically a request comes from ONE user.
-        // Let's just return a fixed ID for the "demo" user.
-        1001
+        // Generate a random user ID between 1000 and 2000
+        let mut rng = rand::rng();
+        rng.random_range(1000..2000)
     }
 }
 
