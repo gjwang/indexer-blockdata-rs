@@ -77,9 +77,9 @@ impl Wal {
         // let f_symbol = builder.create_string(symbol); // Removed string creation
 
         let args = fbs::OrderArgs {
-            id: Some(&order_id_ulid),
+            order_id: Some(&order_id_ulid),
             user_id,
-            symbol: symbol_id, // Direct u32
+            symbol_id, // Direct u32
             side: f_side,
             price,
             quantity,
@@ -110,7 +110,7 @@ impl Wal {
         let order_id_ulid = to_fbs_ulid(order_id);
 
         let args = fbs::CancelArgs {
-            id: Some(&order_id_ulid),
+            order_id: Some(&order_id_ulid),
         };
         let cancel_order = fbs::Cancel::create(&mut builder, &args);
 
@@ -202,12 +202,12 @@ impl WalReader {
         match frame.entry_type() {
             fbs::EntryType::Order => {
                 let order = frame.entry_as_order().unwrap();
-                let order_id = order.id().unwrap().lo();
+                let order_id = order.order_id().unwrap().lo();
 
                 Ok(Some(LogEntry::PlaceOrder {
                     order_id,
                     user_id: order.user_id(),
-                    symbol_id: order.symbol(),
+                    symbol_id: order.symbol_id(),
                     side: match order.side() {
                         fbs::OrderSide::Buy => Side::Buy,
                         fbs::OrderSide::Sell => Side::Sell,
@@ -220,7 +220,7 @@ impl WalReader {
             }
             fbs::EntryType::Cancel => {
                 let cancel = frame.entry_as_cancel().unwrap();
-                let order_id = cancel.id().unwrap().lo();
+                let order_id = cancel.order_id().unwrap().lo();
 
                 Ok(Some(LogEntry::CancelOrder {
                     order_id,
