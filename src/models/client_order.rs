@@ -1,9 +1,9 @@
 use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ClientOrder {
-    //TODO: check valid client_order_id 1 len < 32, is alpha-numeric only
     pub client_order_id: String,
     pub symbol: String,
     pub side: String,
@@ -14,6 +14,11 @@ pub struct ClientOrder {
 }
 
 impl ClientOrder {
+    /// Create ClientOrder from JSON string
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| e.to_string())
+    }
+
     /// Convert ClientOrder to internal OrderRequest
     pub fn try_to_internal(
         &self,
@@ -38,6 +43,12 @@ impl ClientOrder {
         }
         if self.quantity == 0 {
             return Err("Quantity must be greater than 0".to_string());
+        }
+        if self.client_order_id.len() >= 32 {
+            return Err("Client order ID must be less than 32 characters".to_string());
+        }
+        if !self.client_order_id.chars().all(char::is_alphanumeric) {
+            return Err("Client order ID must be alphanumeric".to_string());
         }
 
         Ok(OrderRequest::PlaceOrder {
