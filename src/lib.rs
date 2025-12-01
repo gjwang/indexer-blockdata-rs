@@ -4,7 +4,7 @@ pub mod client_order_convertor;
 pub mod compressor;
 pub mod configure;
 pub mod fast_ulid;
-pub mod gateway;
+
 pub mod ledger;
 pub mod logger;
 pub mod matching_engine_base;
