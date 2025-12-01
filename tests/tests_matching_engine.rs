@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use fetcher::ledger::LedgerCommand;
-    use fetcher::matching_engine_base::{MatchingEngine, OrderError, Side};
+    use fetcher::matching_engine_base::MatchingEngine;
+    use fetcher::models::{OrderError, OrderType, Side};
     use tempfile::TempDir;
 
     fn setup_engine(temp_dir: &TempDir) -> MatchingEngine {
@@ -34,7 +35,7 @@ mod tests {
             .unwrap();
 
         //    // Add order: Buy 50 @ 10 (Cost 500) -> Success
-        let result = engine.add_order(0, 1, Side::Buy, 10, 50, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 50, 1);
         assert!(
             result.is_ok(),
             "Order should be accepted with sufficient funds"
@@ -57,20 +58,20 @@ mod tests {
             .unwrap();
 
         // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
-        let result = engine.add_order(0, 1, Side::Buy, 10, 100, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, OrderError::InsufficientFunds { .. }));
 
         match err {
-            fetcher::matching_engine_base::OrderError::InsufficientFunds {
+            OrderError::InsufficientFunds {
                 user_id,
-                asset,
+                asset_id,
                 required,
                 available,
             } => {
                 assert_eq!(user_id, 1);
-                assert_eq!(asset, 2);
+                assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);
                 assert_eq!(available, 500);
             }
@@ -86,21 +87,21 @@ mod tests {
         // User 2 has no account/funds
 
         // Place Buy Order
-        let result = engine.add_order(0, 1, Side::Buy, 100, 10, 2);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 2);
         assert!(
             result.is_err(),
             "Order should be rejected for user with no funds"
         );
 
         match result.unwrap_err() {
-            fetcher::matching_engine_base::OrderError::InsufficientFunds {
+            OrderError::InsufficientFunds {
                 user_id,
-                asset,
+                asset_id,
                 required,
                 available,
             } => {
                 assert_eq!(user_id, 2);
-                assert_eq!(asset, 2);
+                assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);
                 assert_eq!(available, 0);
             }
@@ -114,12 +115,12 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Add order with invalid symbol_id 999
-        let result = engine.add_order(999, 1, Side::Buy, 100, 10, 1);
+        let result = engine.add_order(999, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
         let err = result.unwrap_err();
         assert!(matches!(err, OrderError::InvalidSymbol { symbol_id: 999 }));
 
         match err {
-            fetcher::matching_engine_base::OrderError::InvalidSymbol { symbol_id } => {
+            OrderError::InvalidSymbol { symbol_id } => {
                 assert_eq!(symbol_id, 999);
             }
             _ => panic!("Expected InvalidSymbol error"),
