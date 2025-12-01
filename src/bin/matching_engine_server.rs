@@ -53,6 +53,11 @@ async fn main() {
         .set("group.id", &config.kafka_group_id)
         .set("bootstrap.servers", &config.kafka_broker)
         .set("auto.offset.reset", "earliest")
+        .set("session.timeout.ms", &config.kafka_session_timeout_ms)
+        .set("heartbeat.interval.ms", &config.kafka_heartbeat_interval_ms)
+        .set("fetch.wait.max.ms", &config.kafka_fetch_wait_max_ms)
+        .set("max.poll.interval.ms", &config.kafka_max_poll_interval_ms)
+        .set("socket.keepalive.enable", &config.kafka_socket_keepalive_enable)
         .create()
         .expect("Consumer creation failed");
 

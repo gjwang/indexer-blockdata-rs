@@ -12,6 +12,8 @@ async fn main() {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &config.kafka_broker)
         .set("message.timeout.ms", "5000")
+        .set("linger.ms", &config.kafka_linger_ms)
+        .set("socket.keepalive.enable", &config.kafka_socket_keepalive_enable)
         .create()
         .expect("Producer creation error");
 
