@@ -50,7 +50,7 @@ pub struct Trade {
 pub enum OrderError {
     InsufficientFunds {
         user_id: u64,
-        asset: u32,
+        asset_id: u32,
         required: u64,
         available: u64,
     },
@@ -79,13 +79,13 @@ impl std::fmt::Display for OrderError {
         match self {
             OrderError::InsufficientFunds {
                 user_id,
-                asset,
+                asset_id,
                 required,
                 available,
             } => write!(
                 f,
                 "Insufficient funds: User {} needs {} of Asset {}, has {}",
-                user_id, required, asset, available
+                user_id, required, asset_id, available
             ),
             OrderError::InvalidSymbol { symbol_id } => {
                 write!(f, "Invalid symbol ID: {}", symbol_id)
@@ -525,7 +525,7 @@ impl MatchingEngine {
         if balance < required_amount {
             return Err(OrderError::InsufficientFunds {
                 user_id,
-                asset: required_asset,
+                asset_id: required_asset,
                 required: required_amount,
                 available: balance,
             });
