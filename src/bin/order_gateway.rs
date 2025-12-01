@@ -1,10 +1,10 @@
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::models::OrderRequest;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tokio::time;
 
+use fetcher::models::{OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 
 #[tokio::main]
@@ -36,16 +36,17 @@ async fn main() {
     );
 
     // Default count and interval if not in config (could add to AppConfig if needed)
-    let count = 1000000;
+    let count: u64 = 1000000;
     let interval_ms = 100;
 
     for i in 0..count {
         // 1. Simulate receiving raw order data
-        let raw_symbol = symbols[i % symbols.len()];
-        let side = if i % 2 == 0 { "Buy" } else { "Sell" }.to_string();
-        let price = 50000 + (i as u64 % 100); // Realistic BTC price
-        let quantity = 1 + (i as u64 % 5);
-        let user_id = 1000 + (i as u64 % 10);
+        let raw_symbol = symbols[i as usize % symbols.len()];
+        let raw_side = if i % 2 == 0 { "Buy" } else { "Sell" };
+        let raw_type = "Limit";
+        let price = 50000 + (i % 100); // Realistic BTC price
+        let quantity = 1 + (i % 5);
+        let user_id = 1000 + (i % 10);
         let order_id = snowflake_gen.generate();
 
         // 2. Map symbol string to ID
@@ -57,6 +58,25 @@ async fn main() {
             }
         };
 
+        // 3. Map raw strings to Enums
+        let side = match raw_side {
+            "Buy" => Side::Buy,
+            "Sell" => Side::Sell,
+            _ => {
+                eprintln!("Error: Unknown side {}", raw_side);
+                continue;
+            }
+        };
+
+        let order_type = match raw_type {
+            "Limit" => OrderType::Limit,
+            "Market" => OrderType::Market,
+            _ => {
+                eprintln!("Error: Unknown order type {}", raw_type);
+                continue;
+            }
+        };
+
         let order = OrderRequest::PlaceOrder {
             order_id,
             user_id,
@@ -64,7 +84,7 @@ async fn main() {
             side,
             price,
             quantity,
-            order_type: "Limit".to_string(),
+            order_type,
         };
 
         let payload = serde_json::to_string(&order).unwrap();

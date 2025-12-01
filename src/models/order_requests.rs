@@ -1,3 +1,4 @@
+use crate::models::{OrderType, Side};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -7,10 +8,10 @@ pub enum OrderRequest {
         order_id: u64,
         user_id: u64,
         symbol_id: u32,
-        side: String, // "Buy" or "Sell"
+        side: Side,
         price: u64,
         quantity: u64,
-        order_type: String, // "Limit"
+        order_type: OrderType,
     },
     CancelOrder {
         order_id: u64,

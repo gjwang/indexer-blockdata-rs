@@ -121,20 +121,8 @@ async fn main() {
                                         if let Some(symbol_name) =
                                             symbol_manager.get_symbol(symbol_id)
                                         {
-                                            let side_enum = if side.eq_ignore_ascii_case("Buy") {
-                                                Side::Buy
-                                            } else {
-                                                Side::Sell
-                                            };
-                                            let type_enum =
-                                                if order_type.eq_ignore_ascii_case("Market") {
-                                                    OrderType::Market
-                                                } else {
-                                                    OrderType::Limit
-                                                };
-
                                             match engine.add_order(
-                                                symbol_id, order_id, side_enum, type_enum, price,
+                                                symbol_id, order_id, side, order_type, price,
                                                 quantity, user_id,
                                             ) {
                                                 Ok(_) => println!(
