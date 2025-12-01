@@ -1,15 +1,10 @@
 use anyhow::Result;
-use crossbeam_channel::{bounded, Receiver, Sender};
 use flatbuffers::FlatBufferBuilder;
-use memmap2::MmapMut;
-use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
-use std::thread;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Read, Write};
+use std::path::Path;
 
-use self::wal_schema::wal_schema::{
-    Cancel, CancelArgs, EntryType, Order as FbsOrder, OrderArgs, OrderSide as FbsSide,
-    Trade as FbsTrade, TradeArgs, UlidStruct, WalFrame, WalFrameArgs,
-};
+use self::wal_schema::wal_schema::{self as fbs, UlidStruct};
 
 #[allow(dead_code, unused_imports, clippy::all, mismatched_lifetime_syntaxes)]
 mod wal_schema {
@@ -25,7 +20,7 @@ pub enum WalSide {
 #[derive(Debug, Clone)]
 pub enum LogEntry {
     PlaceOrder {
-        order_id: u128,
+        order_id: u64,
         symbol: String,
         side: WalSide,
         price: u64,
@@ -34,297 +29,223 @@ pub enum LogEntry {
         timestamp: u64,
     },
     CancelOrder {
-        order_id: u128,
+        order_id: u64,
         symbol: String,
         timestamp: u64,
     },
     Trade {
         match_id: u64,
-        buy_order_id: u128,
-        sell_order_id: u128,
+        buy_order_id: u64,
+        sell_order_id: u64,
         price: u64,
         quantity: u64,
     },
 }
 
-fn to_fbs_ulid(id: u128) -> UlidStruct {
-    // Map u128 ID to UlidStruct (hi, lo)
-    let hi = (id >> 64) as u64;
-    let lo = id as u64;
-    UlidStruct::new(hi, lo)
+fn to_fbs_ulid(id: u64) -> UlidStruct {
+    // Map u64 ID to UlidStruct (hi=0, lo=id)
+    UlidStruct::new(0, id)
 }
 
 pub struct Wal {
-    tx: Sender<LogEntry>,
+    writer: BufWriter<File>,
     pub current_seq: u64,
 }
 
 impl Wal {
-    pub fn open(path: &Path, start_seq: u64) -> Result<Self> {
-        let path = path.to_path_buf();
-        let (tx, rx) = bounded(2_000_000);
-
-        thread::spawn(move || {
-            Self::background_writer(path, rx, start_seq);
-        });
-
+    pub fn new(path: &Path) -> Result<Self, std::io::Error> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self {
-            tx,
-            current_seq: start_seq,
+            writer: BufWriter::new(file),
+            current_seq: 0,
         })
     }
 
-    fn background_writer(path: PathBuf, rx: Receiver<LogEntry>, mut current_seq: u64) {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .unwrap();
-        let mut file_len = 1024 * 1024 * 1024;
-        if file.metadata().unwrap().len() < file_len {
-            file.set_len(file_len).unwrap();
-        }
-        let mut mmap_opt = Some(unsafe { MmapMut::map_mut(&file).unwrap() });
+    pub fn log_place_order(
+        &mut self,
+        order_id: u64,
+        user_id: u64,
+        symbol: &str,
+        side: WalSide,
+        price: u64,
+        quantity: u64,
+    ) -> Result<(), std::io::Error> {
         let mut builder = FlatBufferBuilder::new();
 
-        let mut cursor = 0;
-        {
-            let mmap = mmap_opt.as_ref().unwrap();
-            while cursor + 4 < file_len as usize {
-                let len_bytes: [u8; 4] = mmap[cursor..cursor + 4].try_into().unwrap();
-                let len = u32::from_le_bytes(len_bytes) as usize;
-                if len == 0 {
-                    break;
-                }
-                cursor += 4 + len;
-            }
-        }
+        let f_side = match side {
+            WalSide::Buy => fbs::OrderSide::Buy,
+            WalSide::Sell => fbs::OrderSide::Sell,
+        };
 
-        const SYNC_BATCH: usize = 5000;
-        let mut unsynced_writes = 0;
+        let order_id_ulid = to_fbs_ulid(order_id);
+        let f_symbol = builder.create_string(symbol);
 
-        loop {
-            match rx.recv() {
-                Ok(entry) => {
-                    current_seq += 1;
-                    builder.reset();
+        let args = fbs::OrderArgs {
+            id: Some(&order_id_ulid),
+            user_id,
+            symbol: Some(f_symbol),
+            side: f_side,
+            price,
+            quantity,
+            timestamp: 0,
+        };
+        let place_order = fbs::Order::create(&mut builder, &args);
 
-                    let (entry_type, entry_offset) = match entry {
-                        LogEntry::PlaceOrder {
-                            order_id,
-                            symbol,
-                            side,
-                            price,
-                            quantity,
-                            user_id,
-                            timestamp,
-                        } => {
-                            let f_sym = builder.create_string(&symbol);
-                            let f_side = match side {
-                                WalSide::Buy => FbsSide::Buy,
-                                WalSide::Sell => FbsSide::Sell,
-                            };
-                            let f_ulid = to_fbs_ulid(order_id);
-                            let order = FbsOrder::create(
-                                &mut builder,
-                                &OrderArgs {
-                                    id: Some(&f_ulid),
-                                    symbol: Some(f_sym),
-                                    side: f_side,
-                                    price,
-                                    quantity,
-                                    user_id,
-                                    timestamp,
-                                },
-                            );
-                            (EntryType::Order, order.as_union_value())
-                        }
-                        LogEntry::CancelOrder { order_id, .. } => {
-                            let f_ulid = to_fbs_ulid(order_id);
-                            let cancel =
-                                Cancel::create(&mut builder, &CancelArgs { id: Some(&f_ulid) });
-                            (EntryType::Cancel, cancel.as_union_value())
-                        }
-                        LogEntry::Trade {
-                            match_id,
-                            buy_order_id,
-                            sell_order_id,
-                            price,
-                            quantity,
-                        } => {
-                            let buy_id = to_fbs_ulid(buy_order_id);
-                            let sell_id = to_fbs_ulid(sell_order_id);
-                            let trade = FbsTrade::create(
-                                &mut builder,
-                                &TradeArgs {
-                                    match_id,
-                                    buy_order_id: Some(&buy_id),
-                                    sell_order_id: Some(&sell_id),
-                                    price,
-                                    quantity,
-                                },
-                            );
-                            (EntryType::Trade, trade.as_union_value())
-                        }
-                    };
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::Order,
+            entry: Some(place_order.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
 
-                    let frame = WalFrame::create(
-                        &mut builder,
-                        &WalFrameArgs {
-                            seq: current_seq,
-                            entry_type,
-                            entry: Some(entry_offset),
-                        },
-                    );
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        self.writer.flush()?;
 
-                    builder.finish(frame, None);
-                    let buf = builder.finished_data();
-                    let size = buf.len();
-
-                    // Auto-Grow
-                    if cursor + 4 + size >= file_len as usize {
-                        mmap_opt.as_ref().unwrap().flush().unwrap();
-                        // mmap_opt = None;
-                        let new_len = file_len + (1024 * 1024 * 1024);
-                        file.set_len(new_len).unwrap();
-                        file_len = new_len;
-                        mmap_opt = Some(unsafe { MmapMut::map_mut(&file).unwrap() });
-                    }
-
-                    let mmap = mmap_opt.as_mut().unwrap();
-                    mmap[cursor..cursor + 4].copy_from_slice(&(size as u32).to_le_bytes());
-                    cursor += 4;
-                    mmap[cursor..cursor + size].copy_from_slice(buf);
-                    cursor += size;
-
-                    unsynced_writes += 1;
-                    if unsynced_writes >= SYNC_BATCH {
-                        let _ = mmap.flush_async();
-                        unsynced_writes = 0;
-                    }
-                }
-                Err(_) => {
-                    if let Some(m) = mmap_opt.as_ref() {
-                        let _ = m.flush();
-                    }
-                    break;
-                }
-            }
-        }
+        Ok(())
     }
 
-    pub fn append(&mut self, entry: LogEntry) {
-        let _ = self.tx.send(entry);
-        self.current_seq += 1;
+    pub fn log_cancel_order(&mut self, order_id: u64) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let order_id_ulid = to_fbs_ulid(order_id);
+
+        let args = fbs::CancelArgs {
+            id: Some(&order_id_ulid),
+        };
+        let cancel_order = fbs::Cancel::create(&mut builder, &args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::Cancel,
+            entry: Some(cancel_order.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        self.writer.flush()?;
+
+        Ok(())
     }
 
-    pub fn replay_iter(path: &Path) -> Result<WalIterator> {
-        WalIterator::new(path)
+    pub fn log_match_order(
+        &mut self,
+        match_id: u64,
+        buy_order_id: u64,
+        sell_order_id: u64,
+        price: u64,
+        quantity: u64,
+    ) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let buy_id = to_fbs_ulid(buy_order_id);
+        let sell_id = to_fbs_ulid(sell_order_id);
+
+        let args = fbs::TradeArgs {
+            match_id,
+            buy_order_id: Some(&buy_id),
+            sell_order_id: Some(&sell_id),
+            price,
+            quantity,
+        };
+        let trade = fbs::Trade::create(&mut builder, &args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::Trade,
+            entry: Some(trade.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        self.writer.flush()?;
+
+        Ok(())
     }
 }
 
-pub struct WalIterator {
-    mmap: memmap2::Mmap,
-    cursor: usize,
-    len: usize,
+pub struct WalReader {
+    reader: BufReader<File>,
 }
 
-impl WalIterator {
-    pub fn new(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().read(true).open(path)?;
-        let len = file.metadata()?.len() as usize;
-        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+impl WalReader {
+    pub fn new(path: &Path) -> Result<Self, std::io::Error> {
+        let file = File::open(path)?;
         Ok(Self {
-            mmap,
-            cursor: 0,
-            len,
+            reader: BufReader::new(file),
         })
     }
-}
 
-impl Iterator for WalIterator {
-    type Item = (u64, LogEntry);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.cursor + 4 >= self.len {
-            return None;
+    pub fn read_entry(&mut self) -> Result<Option<LogEntry>, std::io::Error> {
+        let mut len_buf = [0u8; 4];
+        if let Err(e) = self.reader.read_exact(&mut len_buf) {
+            if e.kind() == std::io::ErrorKind::UnexpectedEof {
+                return Ok(None);
+            }
+            return Err(e);
         }
+        let len = u32::from_le_bytes(len_buf) as usize;
 
-        let len_bytes: [u8; 4] = self.mmap[self.cursor..self.cursor + 4].try_into().unwrap();
-        let len = u32::from_le_bytes(len_bytes) as usize;
+        let mut buf = vec![0u8; len];
+        self.reader.read_exact(&mut buf)?;
 
-        if len == 0 || self.cursor + 4 + len > self.len {
-            return None;
-        }
-
-        self.cursor += 4;
-        let buf = &self.mmap[self.cursor..self.cursor + len];
-        self.cursor += len;
-
-        let frame = flatbuffers::root::<WalFrame>(buf).ok()?;
-        let seq = frame.seq();
+        let frame = fbs::root_as_wal_frame(&buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         match frame.entry_type() {
-            EntryType::Order => {
-                let order = frame.entry_as_order()?;
-                let hi = order.id()?.hi();
-                let lo = order.id()?.lo();
-                let order_id = ((hi as u128) << 64) | (lo as u128);
-                Some((
-                    seq,
-                    LogEntry::PlaceOrder {
-                        order_id,
-                        symbol: order.symbol()?.to_string(),
-                        side: match order.side() {
-                            FbsSide::Buy => WalSide::Buy,
-                            FbsSide::Sell => WalSide::Sell,
-                            _ => return None,
-                        },
-                        price: order.price(),
-                        quantity: order.quantity(),
-                        user_id: order.user_id(),
-                        timestamp: order.timestamp(),
-                    },
-                ))
-            }
-            EntryType::Cancel => {
-                let cancel = frame.entry_as_cancel()?;
-                let hi = cancel.id()?.hi();
-                let lo = cancel.id()?.lo();
-                let order_id = ((hi as u128) << 64) | (lo as u128);
-                Some((
-                    seq,
-                    LogEntry::CancelOrder {
-                        order_id,
-                        symbol: "UNKNOWN".to_string(), // TODO: Store symbol in CancelOrder WAL frame
-                        timestamp: 0, // TODO: Store timestamp in CancelOrder WAL frame
-                    },
-                ))
-            }
-            EntryType::Trade => {
-                let trade = frame.entry_as_trade()?;
-                let buy_hi = trade.buy_order_id()?.hi();
-                let buy_lo = trade.buy_order_id()?.lo();
-                let buy_order_id = ((buy_hi as u128) << 64) | (buy_lo as u128);
+            fbs::EntryType::Order => {
+                let order = frame.entry_as_order().unwrap();
+                let order_id = order.id().unwrap().lo();
 
-                let sell_hi = trade.sell_order_id()?.hi();
-                let sell_lo = trade.sell_order_id()?.lo();
-                let sell_order_id = ((sell_hi as u128) << 64) | (sell_lo as u128);
-
-                Some((
-                    seq,
-                    LogEntry::Trade {
-                        match_id: trade.match_id(),
-                        buy_order_id,
-                        sell_order_id,
-                        price: trade.price(),
-                        quantity: trade.quantity(),
+                Ok(Some(LogEntry::PlaceOrder {
+                    order_id,
+                    user_id: order.user_id(),
+                    symbol: order.symbol().unwrap_or("").to_string(),
+                    side: match order.side() {
+                        fbs::OrderSide::Buy => WalSide::Buy,
+                        fbs::OrderSide::Sell => WalSide::Sell,
+                        _ => return Ok(None),
                     },
-                ))
+                    price: order.price(),
+                    quantity: order.quantity(),
+                    timestamp: order.timestamp(),
+                }))
             }
-            _ => None,
+            fbs::EntryType::Cancel => {
+                let cancel = frame.entry_as_cancel().unwrap();
+                let order_id = cancel.id().unwrap().lo();
+
+                Ok(Some(LogEntry::CancelOrder {
+                    order_id,
+                    symbol: "UNKNOWN".to_string(),
+                    timestamp: 0,
+                }))
+            }
+            fbs::EntryType::Trade => {
+                let trade = frame.entry_as_trade().unwrap();
+                let buy_order_id = trade.buy_order_id().unwrap().lo();
+                let sell_order_id = trade.sell_order_id().unwrap().lo();
+
+                Ok(Some(LogEntry::Trade {
+                    match_id: trade.match_id(),
+                    buy_order_id,
+                    sell_order_id,
+                    price: trade.price(),
+                    quantity: trade.quantity(),
+                }))
+            }
+            _ => Ok(None),
         }
     }
 }

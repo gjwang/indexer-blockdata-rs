@@ -63,7 +63,8 @@ fn main() {
     }
 
     let mut engine = MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create engine");
-    let mut ulid_gen = fetcher::fast_ulid::FastUlidGen::new();
+    // Use SnowflakeGenRng (random start) for order IDs
+    let mut snowflake_gen = fetcher::fast_ulid::SnowflakeGenRng::new(1); // Machine ID 1
 
     // === Deposit Funds ===
     println!("=== Depositing Funds ===");
@@ -154,15 +155,13 @@ fn main() {
         .get_id("BTC_USDT")
         .expect("BTC_USDT not found");
     println!("Adding Sell Order: 100 @ 10 (User 1)");
-    println!("Adding Sell Order: 100 @ 10 (User 1)");
-    let order_id_1 = ulid_gen.generate().0;
+    let order_id_1 = snowflake_gen.generate();
     if let Err(e) = engine.add_order(btc_id, order_id_1, Side::Sell, 10, 100, 1) {
         eprintln!("Order failed: {}", e);
     }
 
     println!("Adding Sell Order: 101 @ 5 (User 2)");
-    println!("Adding Sell Order: 101 @ 5 (User 2)");
-    let order_id_2 = ulid_gen.generate().0;
+    let order_id_2 = snowflake_gen.generate();
     if let Err(e) = engine.add_order(btc_id, order_id_2, Side::Sell, 5, 101, 2) {
         eprintln!("Order failed: {}", e);
     }
@@ -171,8 +170,7 @@ fn main() {
     print_user_balances(&engine, &[1, 2]);
 
     println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    println!("Adding Buy Order: 100 @ 8 (User 3) (Should match partial 100)");
-    let order_id_3 = ulid_gen.generate().0;
+    let order_id_3 = snowflake_gen.generate();
     if let Err(e) = engine.add_order(btc_id, order_id_3, Side::Buy, 8, 100, 3) {
         eprintln!("Order failed: {}", e);
     }
@@ -185,8 +183,7 @@ fn main() {
         .get_id("ETH_USDT")
         .expect("ETH_USDT not found");
     println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    println!("Adding Sell Order: 2000 @ 50 (User 101)");
-    let order_id_4 = ulid_gen.generate().0;
+    let order_id_4 = snowflake_gen.generate();
     if let Err(e) = engine.add_order(eth_id, order_id_4, Side::Sell, 50, 2000, 101) {
         eprintln!("Order failed: {}", e);
     }
@@ -195,40 +192,48 @@ fn main() {
 
     println!(">>> Trading BTC_USDT again (using ID directly)");
     println!("Adding Buy Order: 102 @ 10 (User 4)");
-    if let Err(e) = engine.add_order(btc_id, 4, Side::Buy, 10, 102, 4) {
+    let order_id_5 = snowflake_gen.generate();
+    if let Err(e) = engine.add_order(btc_id, order_id_5, Side::Buy, 10, 102, 4) {
         eprintln!("Order failed: {}", e);
     }
 
     engine.print_order_book(btc_id);
-    print_user_balances(&engine, &[1, 2, 4]);
+    print_user_balances(&engine, &[1, 2, 3, 4]);
 
-    // Verify Balances
-    assert_balance(&engine, 1, 1, 9900, 0); // User 1: BTC
-    assert_balance(&engine, 1, 2, 1000, 0); // User 1: USDT
-    assert_balance(&engine, 2, 1, 9899, 0); // User 2: BTC
-    assert_balance(&engine, 2, 2, 505, 0); // User 2: USDT
-    assert_balance(&engine, 4, 1, 101, 0); // User 4: BTC
-    assert_balance(&engine, 4, 2, 98985, 10); // User 4: USDT
-    println!(">>> Balance Assertions Passed!");
+    // === Verify State ===
+    println!("\n=== Verifying State ===");
+    // User 1: Sold 100 BTC @ 10.
+    // Initial: 10000 BTC. Final: 9900 BTC.
+    // Received: 1000 USDT.
+    assert_balance(&engine, 1, 1, 9900, 0);
+    assert_balance(&engine, 1, 2, 1000, 0);
 
-    // === Demonstrate Dynamic Symbol Addition ===
-    println!("\n>>> Dynamically adding new symbol: SOL_USDT with ID 5");
-    let new_symbol = "SOL_USDT";
-    let new_id = 5;
+    // User 2: Sold 100 BTC @ 5.
+    // Initial: 10000 BTC. Final: 9900 BTC.
+    // Received: 500 USDT.
+    // Remaining Sell Order: 1 @ 5. -> Matched by User 4!
+    // So Frozen should be 0.
+    assert_balance(&engine, 2, 1, 9899, 0);
+    assert_balance(&engine, 2, 2, 505, 0); // User 2 sold 101 total. 100@5 + 1@5 = 505.
 
-    // Register in Engine
-    engine
-        .register_symbol(new_id, new_symbol.to_string(), 4, 2)
-        .unwrap();
-    println!("Registered {} with ID: {}", new_symbol, new_id);
+    // User 3: Bought 100 BTC @ 5 (Matched User 2).
+    // Initial: 100000 USDT. Final: 99500 USDT.
+    // Received: 100 BTC.
+    assert_balance(&engine, 3, 1, 100, 0);
+    assert_balance(&engine, 3, 2, 99500, 0);
 
-    println!("Adding Sell Order for SOL_USDT: 50 @ 100 (User 201)");
-    let order_id_5 = ulid_gen.generate().0;
-    if let Err(e) = engine.add_order(new_id, order_id_5, Side::Sell, 50, 100, 201) {
-        eprintln!("Order failed: {}", e);
-    }
-    engine.print_order_book(new_id);
-    print_user_balances(&engine, &[201]);
+    // User 4: Bought 100 BTC @ 10 (Matched User 1) AND 1 BTC @ 5 (Matched User 2).
+    // Initial: 100000 USDT.
+    // Spent: 100*10 + 1*5 = 1000 + 5 = 1005.
+    // Remaining Buy Order: 1 @ 10. Locked 10.
+    // Avail: 100000 - 1005 - 10 = 98985.
+    // Received: 101 BTC.
+    assert_balance(&engine, 4, 1, 101, 0);
+    assert_balance(&engine, 4, 2, 98985, 10);
+
+    println!("All assertions passed!");
+
+    println!("\n=== Demo Completed Successfully ===");
 
     // ==========================================
     // LOAD TEST
@@ -265,7 +270,7 @@ fn main() {
     let snapshot_every_n_orders = 1_000;
 
     for i in 1..=total {
-        let order_id = ulid_gen.generate().0;
+        let order_id = snowflake_gen.generate();
         let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
         let user_id = if side == Side::Buy { 1001 } else { 1000 };
         let price = 50000;

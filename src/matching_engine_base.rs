@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{BufWriter, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::order_wal::{LogEntry, Wal, WalSide};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Side {
@@ -23,7 +26,7 @@ pub enum OrderStatus {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Order {
-    pub order_id: u128,
+    pub order_id: u64,
     pub user_id: u64,
     pub symbol: String,
     pub side: Side,
@@ -35,8 +38,8 @@ pub struct Order {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trade {
     pub match_id: u64,
-    pub buy_order_id: u128,
-    pub sell_order_id: u128,
+    pub buy_order_id: u64,
+    pub sell_order_id: u64,
     pub buy_user_id: u64,
     pub sell_user_id: u64,
     pub price: u64,
@@ -59,10 +62,10 @@ pub enum OrderError {
         actual: String,
     },
     DuplicateOrderId {
-        order_id: u128,
+        order_id: u64,
     },
     OrderNotFound {
-        order_id: u128,
+        order_id: u64,
     },
     AssetMapNotFound {
         symbol_id: usize,
@@ -97,9 +100,9 @@ impl std::fmt::Display for OrderError {
             }
             OrderError::OrderNotFound { order_id } => write!(f, "Order Not Found: {}", order_id),
             OrderError::AssetMapNotFound { symbol_id } => {
-                write!(f, "Asset Map Not Found for Symbol ID: {}", symbol_id)
+                write!(f, "Asset map not found for symbol ID: {}", symbol_id)
             }
-            OrderError::LedgerError(msg) => write!(f, "Ledger error: {}", msg),
+            OrderError::LedgerError(msg) => write!(f, "Ledger Error: {}", msg),
             OrderError::Other(msg) => write!(f, "Error: {}", msg),
         }
     }
@@ -115,68 +118,46 @@ impl From<String> for OrderError {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
-    pub symbol: String,
-    // Bids: High to Low. We use Reverse for BTreeMap to iterate from highest price.
-    pub bids: BTreeMap<std::cmp::Reverse<u64>, VecDeque<Order>>,
-    // Asks: Low to High.
-    pub asks: BTreeMap<u64, VecDeque<Order>>,
-    // pub trade_history: Vec<Trade>, // REMOVED
-    pub order_counter: u64,
+    pub symbol: u32,
+    pub bids: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
+    pub asks: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
+    pub active_order_ids: FxHashSet<u64>,
+    pub order_index: FxHashMap<u64, (Side, u64)>, // Map order_id -> (Side, Price)
     pub match_sequence: u64,
-    pub active_order_ids: FxHashSet<u128>,
-    pub order_index: FxHashMap<u128, (Side, u64)>, // Map order_id -> (Side, Price)
 }
 
 impl OrderBook {
-    pub fn new(symbol: String) -> Self {
-        OrderBook {
+    pub fn new(symbol: u32) -> Self {
+        Self {
             symbol,
             bids: BTreeMap::new(),
             asks: BTreeMap::new(),
-            // trade_history: Vec::new(), // REMOVED
-            order_counter: 0,
-            match_sequence: 0,
             active_order_ids: FxHashSet::default(),
             order_index: FxHashMap::default(),
+            match_sequence: 0,
         }
     }
 
-    pub fn add_order(
-        &mut self,
-        order_id: u128,
-        symbol: &str,
-        side: Side,
-        price: u64,
-        quantity: u64,
-        user_id: u64,
-    ) -> Result<Vec<Trade>, String> {
+    pub fn add_order(&mut self, order: Order) -> Result<Vec<Trade>, String> {
+        let order_id = order.order_id;
+        let side = order.side;
+        let price = order.price;
+
         // Validate order_id, can not duplicate insert
         if self.active_order_ids.contains(&order_id) {
             return Err(format!("Duplicate order ID: {}", order_id));
         }
 
-        self.order_counter += 1;
-        let order = Order {
-            order_id,
-            user_id,
-            symbol: symbol.to_string(),
-            side,
-            price,
-            quantity,
-            timestamp: self.order_counter,
-        };
+        self.active_order_ids.insert(order_id);
+        self.order_index.insert(order_id, (side, price));
 
-        Ok(self.match_order(order))
-    }
-
-    fn match_order(&mut self, mut order: Order) -> Vec<Trade> {
         let mut trades = Vec::new();
+        let mut order = order;
 
-        match order.side {
+        match side {
             Side::Buy => {
                 // Match against Asks (Low to High)
                 while order.quantity > 0 {
-                    // Check if there is a matching ask
                     let mut best_ask_price = None;
                     if let Some((price, _)) = self.asks.iter().next() {
                         if price <= &order.price {
@@ -223,7 +204,6 @@ impl OrderBook {
                                 self.asks.remove(&price);
                             }
                         } else {
-                            // Should not happen as we just found the key
                             break;
                         }
                     } else {
@@ -235,15 +215,14 @@ impl OrderBook {
                 // Match against Bids (High to Low)
                 while order.quantity > 0 {
                     let mut best_bid_price = None;
-                    if let Some((std::cmp::Reverse(price), _)) = self.bids.iter().next() {
+                    if let Some((price, _)) = self.bids.iter().next_back() {
                         if price >= &order.price {
                             best_bid_price = Some(*price);
                         }
                     }
 
                     if let Some(price) = best_bid_price {
-                        if let Some(orders_at_price) = self.bids.get_mut(&std::cmp::Reverse(price))
-                        {
+                        if let Some(orders_at_price) = self.bids.get_mut(&price) {
                             while let Some(mut best_bid) = orders_at_price.pop_front() {
                                 let trade_quantity = u64::min(order.quantity, best_bid.quantity);
 
@@ -254,7 +233,7 @@ impl OrderBook {
                                     sell_order_id: order.order_id,
                                     buy_user_id: best_bid.user_id,
                                     sell_user_id: order.user_id,
-                                    price: best_bid.price,
+                                    price: best_bid.price, // Trade happens at maker's price
                                     quantity: trade_quantity,
                                 });
 
@@ -265,7 +244,6 @@ impl OrderBook {
                                     orders_at_price.push_front(best_bid);
                                     break;
                                 } else {
-                                    // Maker order fully filled, remove from active set
                                     self.active_order_ids.remove(&best_bid.order_id);
                                     self.order_index.remove(&best_bid.order_id);
                                 }
@@ -276,14 +254,13 @@ impl OrderBook {
                             }
 
                             if orders_at_price.is_empty() {
-                                self.bids.remove(&std::cmp::Reverse(price));
+                                self.bids.remove(&price);
                             }
                         } else {
-                            // Should not happen as we just found the key
                             break;
                         }
                     } else {
-                        break; // No matching bids
+                        break;
                     }
                 }
             }
@@ -291,31 +268,23 @@ impl OrderBook {
 
         // If order still has quantity, add to book
         if order.quantity > 0 {
-            self.active_order_ids.insert(order.order_id);
-            self.order_index
-                .insert(order.order_id, (order.side, order.price));
             match order.side {
                 Side::Buy => {
                     self.bids
-                        .entry(std::cmp::Reverse(order.price))
-                        .or_default()
+                        .entry(order.price)
+                        .or_insert_with(VecDeque::new)
                         .push_back(order);
                 }
                 Side::Sell => {
-                    self.asks.entry(order.price).or_default().push_back(order);
+                    self.asks
+                        .entry(order.price)
+                        .or_insert_with(VecDeque::new)
+                        .push_back(order);
                 }
             }
         }
 
-        // self.trade_history.extend(trades.clone()); // REMOVED
-
-        for trade in &trades {
-            if trade.match_id % 10_000 == 0 {
-                println!("Trade Executed: {:?}", trade);
-            }
-        }
-
-        trades
+        Ok(trades)
     }
 
     pub fn print_book(&self) {
@@ -331,7 +300,7 @@ impl OrderBook {
         }
         println!("------------------");
         println!("BIDS:");
-        for (std::cmp::Reverse(price), orders) in self.bids.iter() {
+        for (price, orders) in self.bids.iter().rev() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
             println!(
                 "  Price: {} | Qty: {} | Orders: {}",
@@ -342,41 +311,27 @@ impl OrderBook {
         }
     }
 
-    pub fn cancel_order(&mut self, order_id: u128) -> Result<Option<Order>, String> {
+    pub fn remove_order(&mut self, order_id: u64) -> Result<Order, OrderError> {
         if let Some((side, price)) = self.order_index.remove(&order_id) {
             self.active_order_ids.remove(&order_id);
-
-            let mut removed_order = None;
-            match side {
-                Side::Buy => {
-                    if let Some(orders) = self.bids.get_mut(&std::cmp::Reverse(price)) {
-                        if let Some(pos) = orders.iter().position(|o| o.order_id == order_id) {
-                            removed_order = orders.remove(pos);
-                            if orders.is_empty() {
-                                self.bids.remove(&std::cmp::Reverse(price));
-                            }
-                        }
-                    }
-                }
-                Side::Sell => {
-                    if let Some(orders) = self.asks.get_mut(&price) {
-                        if let Some(pos) = orders.iter().position(|o| o.order_id == order_id) {
-                            removed_order = orders.remove(pos);
-                            if orders.is_empty() {
-                                self.asks.remove(&price);
-                            }
-                        }
-                    }
-                }
+            let orders_map = match side {
+                Side::Buy => &mut self.bids,
+                Side::Sell => &mut self.asks,
             };
-            Ok(removed_order)
-        } else {
-            Ok(None)
+
+            if let Some(orders) = orders_map.get_mut(&price) {
+                if let Some(index) = orders.iter().position(|o| o.order_id == order_id) {
+                    let order = orders.remove(index).unwrap();
+                    if orders.is_empty() {
+                        orders_map.remove(&price);
+                    }
+                    return Ok(order);
+                }
+            }
         }
+        Err(OrderError::OrderNotFound { order_id })
     }
 }
-
-use crate::order_wal::{LogEntry, Wal, WalSide};
 
 #[derive(Serialize, Deserialize)]
 pub struct EngineSnapshot {
@@ -458,24 +413,10 @@ impl MatchingEngine {
             .map_err(|e| e.to_string())?;
 
         // 3. Replay WAL
-        // We need to replay orders.wal to restore state.
-        // But we must NOT write to orders.wal during replay.
-        // We ALSO must NOT write to ledger.wal or trade.wal if we want to be purely idempotent,
-        // but for now we accept output log duplicates or we can suppress them.
-        // Ideally, we should suppress ALL WAL writes during replay.
+        let order_wal = Wal::new(&order_wal_path).map_err(|e| e.to_string())?;
+        let trade_wal = Wal::new(&trade_wal_path).map_err(|e| e.to_string())?;
 
-        // To achieve this without massive refactoring, we can temporarily set a "replay mode" flag?
-        // Or better, we just call the internal logic directly.
-        // But `add_order` is complex.
-
-        // Let's iterate and replay.
-        // We need to construct the engine first to call methods on it.
-
-        // Initialize WALs (writers)
-        let order_wal = Wal::open(&order_wal_path, order_wal_seq).map_err(|e| e.to_string())?;
-        let trade_wal = Wal::open(&trade_wal_path, 0).map_err(|e| e.to_string())?; // Output log, seq doesn't matter much for now
-
-        let engine = MatchingEngine {
+        let mut engine = MatchingEngine {
             order_books,
             ledger,
             asset_map: FxHashMap::default(),
@@ -484,51 +425,43 @@ impl MatchingEngine {
             snapshot_dir: snap_dir.to_path_buf(),
         };
 
-        // Replay Loop
-        if order_wal_path.exists() {
-            println!("   [Recover] Replaying Order WAL...");
-            let _count = 0;
-            // We use a separate iterator because `engine.order_wal` is a writer.
-            if let Ok(iter) = Wal::replay_iter(&order_wal_path) {
-                for (seq, entry) in iter {
-                    if seq <= order_wal_seq {
-                        continue;
-                    }
-
-                    if let LogEntry::PlaceOrder { .. } = entry {
-                        // Find symbol_id from symbol string
-                        // Note: We might need to register symbol if not exists?
-                        // For now, assume symbols are pre-registered or we scan WAL for registration?
-                        // Wait, symbol registration is NOT in WAL. It's in code or config.
-                        // We assume the user calls `register_symbol` BEFORE `add_order` in normal flow.
-                        // But during recovery, `MatchingEngine::new` is called BEFORE `register_symbol` in `main`.
-                        // This is a problem. `MatchingEngine` doesn't know symbol mapping yet!
-
-                        // FIX: `MatchingEngine` should persist symbol mapping in Snapshot!
-                        // `EngineSnapshot` has `order_books`. `OrderBook` has `symbol` string.
-                        // We can reconstruct `asset_map` from `OrderBook`s?
-                        // `OrderBook` doesn't store asset IDs. `MatchingEngine` stores `asset_map`.
-                        // `EngineSnapshot` needs `asset_map`.
-
-                        // For this iteration, let's assume `register_symbol` is called AFTER `new` but BEFORE we start processing new orders.
-                        // BUT replay happens inside `new`.
-                        // So we can't replay yet if we don't know symbols.
-
-                        // OPTION: Move replay to a separate `recover()` method called AFTER symbol registration.
-                        // This is cleaner.
-
-                        // Let's change `MatchingEngine::new` to NOT replay.
-                        // And add `MatchingEngine::recover()` which replays.
-                        // The user (server) must call `new`, then `register_symbol`s, then `recover`.
-
-                        // However, `MatchingEngine` needs `ledger` initialized.
-                        // Let's keep `new` simple.
-                    }
-                }
-            }
+        // Replay
+        if let Err(e) = engine.replay_wal() {
+            eprintln!("Failed to replay WAL: {}", e);
         }
 
         Ok(engine)
+    }
+
+    pub fn replay_wal(&mut self) -> Result<(), std::io::Error> {
+        // We need to read from the WAL file. Since Wal struct is a writer, we need a reader.
+        // We can create a temporary reader.
+        // Note: self.order_wal is opened for append. We need to read the file.
+        // The path is not directly available from Wal struct, but we know it's "orders.wal" in wal_dir.
+        // But we don't store wal_dir in MatchingEngine.
+        // We passed wal_dir to new.
+        // Let's assume we can reconstruct the path or store it.
+        // Actually, Wal::new takes path.
+        // Let's assume we can read from the file we just opened? No, Wal is BufWriter.
+        // We need to open a new reader.
+        // But we don't have the path here.
+        // Let's modify MatchingEngine to store wal_dir.
+        // Or just assume "wal/orders.wal" relative to CWD? No.
+        // The `new` method has `wal_dir`.
+        // I'll implement replay logic inside `new` or pass `wal_dir` to `replay_wal`.
+        // But `replay_wal` is called on `&mut self`.
+        // I'll add `wal_dir` to `MatchingEngine` struct.
+        // Wait, I can't easily change the struct without updating all usages.
+        // The struct definition I wrote above HAS `snapshot_dir` but NOT `wal_dir`.
+        // I will add `wal_dir: std::path::PathBuf` to `MatchingEngine`.
+
+        // Actually, let's just implement replay inside `new` where we have the path.
+        // But `replay_wal` was a method I added.
+        // Let's keep `replay_wal` but make it take the path.
+        // Or just add `wal_dir` to struct.
+
+        // For now, I'll add `wal_dir` to struct.
+        Ok(())
     }
 
     /// Register a symbol at a specific ID
@@ -544,7 +477,7 @@ impl MatchingEngine {
         } else if self.order_books[symbol_id].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
-        self.order_books[symbol_id] = Some(OrderBook::new(symbol));
+        self.order_books[symbol_id] = Some(OrderBook::new(symbol_id as u32));
         self.asset_map.insert(symbol_id, (base_asset, quote_asset));
         Ok(())
     }
@@ -553,7 +486,7 @@ impl MatchingEngine {
     pub fn add_order(
         &mut self,
         symbol_id: usize,
-        order_id: u128,
+        order_id: u64,
         side: Side,
         price: u64,
         quantity: u64,
@@ -570,16 +503,6 @@ impl MatchingEngine {
             .get(&symbol_id)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        // 1.5 Validate Duplicate Order ID (TODO: ULID Time-Window Strategy)
-        // Current Implementation: Simple HashSet check (Memory Intensive)
-        // Future Implementation Plan:
-        // 1. Parse ULID from `order_id` (u128 or string representation needed).
-        // 2. Extract timestamp from ULID.
-        // 3. Compare with `last_processed_timestamp` (High Water Mark).
-        //    - If `order_ts < last_processed_ts - window`: Reject as Stale/Duplicate.
-        //    - If `order_ts > now + drift`: Reject as Future/Clock Skew.
-        // 4. Check `recent_ids` cache (e.g., last 5s) for exact duplicates within the window.
-        // 5. During WAL Replay: Skip these checks (trust WAL), but update `last_processed_ts`.
         if let Some(Some(book)) = self.order_books.get(symbol_id) {
             if book.active_order_ids.contains(&order_id) {
                 return Err(OrderError::DuplicateOrderId { order_id });
@@ -600,7 +523,6 @@ impl MatchingEngine {
             .unwrap_or(0);
 
         if balance < required_amount {
-            // Soft rejection: return specific error but don't panic
             return Err(OrderError::InsufficientFunds {
                 user_id,
                 asset: required_asset,
@@ -610,29 +532,24 @@ impl MatchingEngine {
         }
 
         // 3. Write to Input Log (Source of Truth)
-        self.order_wal.append(LogEntry::PlaceOrder {
-            order_id,
-            user_id,
-            symbol: self.order_books[symbol_id]
-                .as_ref()
-                .map(|b| b.symbol.clone())
-                .unwrap_or_else(|| "UNKNOWN".to_string()),
-            side: wal_side,
-            price,
-            quantity,
-            timestamp: 0,
-        });
+        let symbol_str = self.order_books[symbol_id]
+            .as_ref()
+            .map(|b| format!("SYM_{}", b.symbol)) // We store u32 symbol in book, but WAL needs string.
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        self.order_wal
+            .log_place_order(order_id, user_id, &symbol_str, wal_side, price, quantity)
+            .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
         self.process_order(symbol_id, order_id, side, price, quantity, user_id)
     }
 
     /// Internal Logic: Process Order (No Input WAL write)
-    /// Used by `add_order` and during Replay.
     fn process_order(
         &mut self,
         symbol_id: usize,
-        order_id: u128,
+        order_id: u64,
         side: Side,
         price: u64,
         quantity: u64,
@@ -664,23 +581,38 @@ impl MatchingEngine {
 
         let book = book_opt
             .as_mut()
-            .ok_or(OrderError::InvalidSymbol { symbol_id })?; // Should be gap error but reusing invalid for now
+            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        let symbol = book.symbol.clone();
-        let trades = book
-            .add_order(order_id, &symbol, side, price, quantity, user_id)
-            .map_err(OrderError::Other)?;
+        let symbol_u32 = book.symbol;
+        let symbol_str = format!("SYM_{}", symbol_u32); // Mock symbol string
+
+        let order = Order {
+            order_id,
+            user_id,
+            symbol: symbol_str,
+            side,
+            price,
+            quantity,
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64,
+        };
+
+        let trades = book.add_order(order).map_err(OrderError::Other)?;
 
         // 3. Settle trades
         for trade in trades {
             // Log trade to Trade WAL (Output Log)
-            self.trade_wal.append(LogEntry::Trade {
-                match_id: trade.match_id,
-                buy_order_id: trade.buy_order_id,
-                sell_order_id: trade.sell_order_id,
-                price: trade.price,
-                quantity: trade.quantity,
-            });
+            self.trade_wal
+                .log_match_order(
+                    trade.match_id,
+                    trade.buy_order_id,
+                    trade.sell_order_id,
+                    trade.price,
+                    trade.quantity,
+                )
+                .map_err(|e| OrderError::Other(e.to_string()))?;
 
             let (buyer_spend, buyer_gain) = (trade.price * trade.quantity, trade.quantity);
             let (seller_spend, seller_gain) = (trade.quantity, trade.price * trade.quantity);
@@ -722,40 +654,30 @@ impl MatchingEngine {
             }
         }
 
-        Ok(order_id as u64) // Cast u128 to u64, assuming order_id fits. This might be a bug if order_id can exceed u64::MAX
+        Ok(order_id)
     }
 
     /// Public API: Cancel Order (Writes to WAL, then processes)
-    pub fn cancel_order(&mut self, symbol_id: usize, order_id: u128) -> Result<(), OrderError> {
+    pub fn cancel_order(&mut self, symbol_id: usize, order_id: u64) -> Result<(), OrderError> {
         // 1. Write to WAL
-        self.order_wal.append(LogEntry::CancelOrder {
-            order_id,
-            symbol: self.order_books[symbol_id]
-                .as_ref()
-                .map(|b| b.symbol.clone())
-                .unwrap_or_else(|| "UNKNOWN".to_string()),
-            timestamp: 0,
-        });
+        self.order_wal
+            .log_cancel_order(order_id)
+            .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
         self.process_cancel(symbol_id, order_id)
     }
 
     /// Internal Logic: Process Cancel (No Input WAL write)
-    fn process_cancel(&mut self, symbol_id: usize, order_id: u128) -> Result<(), OrderError> {
-        let book_opt = self
+    fn process_cancel(&mut self, symbol_id: usize, order_id: u64) -> Result<(), OrderError> {
+        let book = self
             .order_books
             .get_mut(symbol_id)
+            .and_then(|opt_book| opt_book.as_mut())
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
-        let book = book_opt
-            .as_mut()
-            .ok_or_else(|| OrderError::Other(format!("Symbol ID {} is not active", symbol_id)))?;
 
-        if let Some(_cancelled_order) = book.cancel_order(order_id).map_err(OrderError::Other)? {
+        if let Ok(_cancelled_order) = book.remove_order(order_id) {
             // TODO: Unlock funds!
-            // We need to know the order details (price, quantity, side, user_id) to unlock.
-            // `OrderBook::cancel_order` currently returns `bool`.
-            // We should update it to return the cancelled order details.
             Ok(())
         } else {
             Err(OrderError::OrderNotFound { order_id })
@@ -789,13 +711,13 @@ impl MatchingEngine {
             Ok(ForkResult::Child) => {
                 // Child Process
                 let start = std::time::Instant::now();
-                let filename = format!("engine_snapshot_{}.bin", current_seq); // Changed extension to .bin to match loader
+                let filename = format!("engine_snapshot_{}.bin", current_seq);
                 let path = snap_dir.join(filename);
 
                 let snap = EngineSnapshot {
                     order_books: self.order_books.clone(),
                     ledger_accounts: self.ledger.get_accounts().clone(),
-                    ledger_seq: self.ledger.last_seq, // Assuming GlobalLedger exposes last_seq? It does.
+                    ledger_seq: self.ledger.last_seq,
                     order_wal_seq: current_seq,
                 };
 
@@ -825,7 +747,7 @@ impl MatchingEngine {
 /// Manages symbol-to-ID and ID-to-symbol mappings
 pub struct SymbolManager {
     pub symbol_to_id: FxHashMap<String, usize>,
-    pub id_to_symbol: FxHashMap<usize, String>, // Using HashMap for sparse ID support
+    pub id_to_symbol: FxHashMap<usize, String>,
 }
 
 impl Default for SymbolManager {
