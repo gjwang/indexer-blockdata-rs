@@ -5,9 +5,14 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::time::Duration;
 use tokio::time;
 
+use fetcher::symbol_manager::SymbolManager;
+
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
+
+    // Initialize SymbolManager to map strings to IDs
+    let symbol_manager = SymbolManager::load_from_db();
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &config.kafka.broker)
@@ -21,7 +26,8 @@ async fn main() {
         .expect("Producer creation error");
 
     let mut snowflake_gen = SnowflakeGenRng::new(1);
-    let symbols: Vec<u32> = vec![0, 1]; // 0=BTC_USDT, 1=ETH_USDT
+    // Simulate raw input symbols
+    let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"];
 
     println!(">>> Starting Order Gateway (Producer)");
     println!(
@@ -34,12 +40,22 @@ async fn main() {
     let interval_ms = 100;
 
     for i in 0..count {
-        let order_id = snowflake_gen.generate();
-        let symbol_id = symbols[i % symbols.len()];
+        // 1. Simulate receiving raw order data
+        let raw_symbol = symbols[i % symbols.len()];
         let side = if i % 2 == 0 { "Buy" } else { "Sell" }.to_string();
         let price = 50000 + (i as u64 % 100); // Realistic BTC price
         let quantity = 1 + (i as u64 % 5);
         let user_id = 1000 + (i as u64 % 10);
+        let order_id = snowflake_gen.generate();
+
+        // 2. Map symbol string to ID
+        let symbol_id = match symbol_manager.get_id(raw_symbol) {
+            Some(id) => id,
+            None => {
+                eprintln!("Error: Unknown symbol {}", raw_symbol);
+                continue;
+            }
+        };
 
         let order = OrderRequest::PlaceOrder {
             order_id,
