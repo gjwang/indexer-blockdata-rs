@@ -42,7 +42,7 @@ async fn test_create_order_api_success() {
     let app = create_app(state);
 
     let client_order = ClientOrder {
-        client_order_id: Some("clientid1234567890123".to_string()),
+        cid: Some("clientid1234567890123".to_string()),
         symbol: "BTC_USDT".to_string(),
         side: "Buy".to_string(),
         price: 50000,
@@ -73,7 +73,7 @@ async fn test_create_order_api_success() {
     assert_eq!(body_json["msg"], "ok");
     assert!(body_json["data"]["order_id"].is_string());
     assert_eq!(
-        body_json["data"]["client_order_id"],
+        body_json["data"]["cid"],
         "clientid1234567890123"
     );
 }

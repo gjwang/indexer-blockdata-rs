@@ -42,7 +42,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 struct OrderResponseData {
     order_id: String,
     order_status: OrderStatus,
-    client_order_id: Option<String>,
+    cid: Option<String>,
 }
 
 async fn create_order(
@@ -71,7 +71,7 @@ async fn create_order(
     let response_data = OrderResponseData {
         order_id: order_id.to_string(),
         order_status: OrderStatus::Accepted,
-        client_order_id: client_order.client_order_id,
+        cid: client_order.cid,
     };
 
     Ok(Json(ApiResponse::success(response_data)))

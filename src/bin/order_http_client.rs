@@ -24,14 +24,14 @@ async fn main() {
         let quantity = 1 + (i % 5);
 
 
-        // Generate a client_order_id. In real app, this might be UUID or similar.
+        // Generate a cid. In real app, this might be UUID or similar.
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
         // "clientorder" is 11 chars. We need 9 more.
         // i is u64.
-        let client_order_id = format!("clientorder{:010}", i); // 11 + 10 = 21 chars.
+        let cid = format!("clientorder{:010}", i); // 11 + 10 = 21 chars.
 
         let payload = serde_json::json!({
-            "client_order_id": client_order_id,
+            "cid": cid,
             "symbol": raw_symbol,
             "side": raw_side,
             "price": price,
