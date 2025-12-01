@@ -14,7 +14,7 @@ mod tests {
     fn test_try_to_internal_success() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -48,7 +48,7 @@ mod tests {
     fn test_try_to_internal_unknown_symbol() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid2234567890123".to_string(),
+            client_order_id: Some("clientid2234567890123".to_string()),
             symbol: "UNKNOWN_SYMBOL".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -66,7 +66,7 @@ mod tests {
     fn test_try_to_internal_invalid_side() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid3234567890123".to_string(),
+            client_order_id: Some("clientid3234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Invalid".to_string(),
             price: 50000,
@@ -86,7 +86,7 @@ mod tests {
     fn test_try_to_internal_invalid_order_type() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid4234567890123".to_string(),
+            client_order_id: Some("clientid4234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -106,7 +106,7 @@ mod tests {
     fn test_try_to_internal_invalid_price() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid5234567890123".to_string(),
+            client_order_id: Some("clientid5234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 0,
@@ -126,7 +126,7 @@ mod tests {
     fn test_try_to_internal_invalid_quantity() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "clientid6234567890123".to_string(),
+            client_order_id: Some("clientid6234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -164,7 +164,7 @@ mod tests {
         assert_eq!(client_order.quantity, 50);
         assert_eq!(client_order.order_type, "Market");
         // We expect an empty string for client_order_id as it's not in OrderRequest
-        assert_eq!(client_order.client_order_id, "");
+        assert_eq!(client_order.client_order_id, None);
     }
 
     #[test]
@@ -206,7 +206,7 @@ mod tests {
     fn test_try_to_internal_invalid_client_order_id_length() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "a".repeat(33),
+            client_order_id: Some("a".repeat(33)),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -226,7 +226,7 @@ mod tests {
     fn test_try_to_internal_invalid_client_order_id_chars() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "invalidid1234567890123!".to_string(),
+            client_order_id: Some("invalidid1234567890123!".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -257,7 +257,7 @@ mod tests {
         let result = ClientOrder::from_json(json);
         assert!(result.is_ok());
         let order = result.unwrap();
-        assert_eq!(order.client_order_id, "clientid1234567890123");
+        assert_eq!(order.client_order_id, Some("clientid1234567890123".to_string()));
         assert_eq!(order.symbol, "BTC_USDT");
         assert_eq!(order.side, "Buy");
         assert_eq!(order.price, 50000);
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn test_new_success() {
         let result = ClientOrder::new(
-            "clientid1234567890123".to_string(),
+            Some("clientid1234567890123".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
             50000,
@@ -288,9 +288,24 @@ mod tests {
     }
 
     #[test]
+    fn test_new_success_no_client_order_id() {
+        let result = ClientOrder::new(
+            None,
+            "BTC_USDT".to_string(),
+            "Buy".to_string(),
+            50000,
+            100,
+            1,
+            "Limit".to_string(),
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().client_order_id, None);
+    }
+
+    #[test]
     fn test_new_invalid() {
         let result = ClientOrder::new(
-            "invalidid1234567890123!".to_string(),
+            Some("invalidid1234567890123!".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
             50000,
@@ -308,7 +323,7 @@ mod tests {
     fn test_try_to_internal_invalid_client_order_id_min_length() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "shortid".to_string(),
+            client_order_id: Some("shortid".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -330,7 +345,7 @@ mod tests {
 
         // Short
         let order1 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "AB".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -344,7 +359,7 @@ mod tests {
 
         // Lowercase
         let order2 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "btc_usdt".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -358,7 +373,7 @@ mod tests {
 
         // Invalid char
         let order3 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "BTC-USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -377,7 +392,7 @@ mod tests {
 
         // No underscore
         let order1 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "BTCUSDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -391,7 +406,7 @@ mod tests {
 
         // Leading underscore
         let order2 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "_BTCUSDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -405,7 +420,7 @@ mod tests {
 
         // Double underscore
         let order3 = ClientOrder {
-            client_order_id: "clientid1234567890123".to_string(),
+            client_order_id: Some("clientid1234567890123".to_string()),
             symbol: "BTC__USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
