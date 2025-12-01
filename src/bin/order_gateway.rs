@@ -1,11 +1,24 @@
+use axum::{
+    extract::{Extension, Json},
+    http::StatusCode,
+    routing::post,
+    Router,
+};
 use fetcher::fast_ulid::SnowflakeGenRng;
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
-use std::time::Duration;
-use tokio::time;
-
 use fetcher::models::ClientOrder;
 use fetcher::symbol_manager::SymbolManager;
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{FutureProducer, FutureRecord};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tower_http::cors::CorsLayer;
+
+struct AppState {
+    symbol_manager: SymbolManager,
+    producer: FutureProducer,
+    snowflake_gen: Mutex<SnowflakeGenRng>,
+    kafka_topic: String,
+}
 
 #[tokio::main]
 async fn main() {
@@ -25,68 +38,62 @@ async fn main() {
         .create()
         .expect("Producer creation error");
 
-    let mut snowflake_gen = SnowflakeGenRng::new(1);
-    // Simulate raw input symbols
-    let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"];
+    let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
-    println!(">>> Starting Order Gateway (Producer)");
-    println!(
-        ">>> Target: {}, Topic: {}",
-        config.kafka.broker, config.kafka.topic
-    );
+    let state = Arc::new(AppState {
+        symbol_manager,
+        producer,
+        snowflake_gen,
+        kafka_topic: config.kafka.topic,
+    });
 
-    // Default count and interval if not in config (could add to AppConfig if needed)
-    let count: u64 = 1000000;
-    let interval_ms = 100;
+    let app = Router::new()
+        .route("/api/orders", post(create_order))
+        .layer(Extension(state))
+        .layer(CorsLayer::permissive());
 
-    for i in 0..count {
-        // 1. Simulate receiving raw order data
-        let raw_symbol = symbols[i as usize % symbols.len()];
-        let raw_side = if i % 2 == 0 { "Buy" } else { "Sell" };
-        let raw_type = "Limit";
-        let price = 50000 + (i % 100); // Realistic BTC price
-        let quantity = 1 + (i % 5);
-        let user_id = 1000 + (i % 10);
-        let order_id = snowflake_gen.generate();
+    println!("🚀 Order Gateway API running on http://localhost:3001");
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
 
-        let client_order = match ClientOrder::new(
-            format!("clientorder{}", order_id),
-            raw_symbol.to_string(),
-            raw_side.to_string(),
-            price,
-            quantity,
-            user_id,
-            raw_type.to_string(),
-        ) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("Error creating order: {}", e);
-                continue;
-            }
-        };
+async fn create_order(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(client_order): Json<ClientOrder>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Validate
+    client_order.validate_order().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-        let order = match client_order.try_to_internal(&symbol_manager, order_id) {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("Error converting order: {}", e);
-                continue;
-            }
-        };
+    // Generate internal order ID
+    let order_id = {
+        let mut gen = state.snowflake_gen.lock().unwrap();
+        gen.generate()
+    };
 
-        let payload = serde_json::to_string(&order).unwrap();
-        let key = order_id.to_string();
+    // Convert to internal
+    let internal_order = client_order.try_to_internal(&state.symbol_manager, order_id)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
-        let record = FutureRecord::to(&config.kafka.topic)
-            .payload(&payload)
-            .key(&key);
+    // Send to Kafka
+    let payload = serde_json::to_string(&internal_order).unwrap();
+    let key = order_id.to_string();
+    let record = FutureRecord::to(&state.kafka_topic)
+        .payload(&payload)
+        .key(&key);
 
-        match producer.send(record, Duration::from_secs(0)).await {
-            Ok((_partition, _offset)) => {
-                println!("Sent Order {} by user_id: {}", order_id, user_id)
-            }
-            Err((e, _)) => eprintln!("Error sending order {}: {:?}", order_id, e),
+    match state.producer.send(record, Duration::from_secs(0)).await {
+        Ok((partition, offset)) => {
+            println!("Sent Order {} to partition {} offset {}", order_id, partition, offset);
         }
-
-        time::sleep(Duration::from_millis(interval_ms)).await;
+        Err((e, _)) => {
+            eprintln!("Error sending order {}: {:?}", order_id, e);
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+        }
     }
+
+    Ok(Json(serde_json::json!({
+        "order_id": order_id.to_string(),
+        "status": "accepted",
+        "client_order_id": client_order.client_order_id
+    })))
 }
