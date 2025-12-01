@@ -6,6 +6,8 @@ pub enum Side {
     Sell,
 }
 
+use std::str::FromStr;
+
 impl std::fmt::Display for Side {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -15,10 +17,34 @@ impl std::fmt::Display for Side {
     }
 }
 
+impl FromStr for Side {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Buy" => Ok(Side::Buy),
+            "Sell" => Ok(Side::Sell),
+            _ => Err(format!("Unknown side: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OrderType {
     Limit,
     Market,
+}
+
+impl FromStr for OrderType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Limit" => Ok(OrderType::Limit),
+            "Market" => Ok(OrderType::Market),
+            _ => Err(format!("Unknown order type: {}", s)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

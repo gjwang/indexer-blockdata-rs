@@ -58,21 +58,19 @@ async fn main() {
             }
         };
 
-        // 3. Map raw strings to Enums
-        let side = match raw_side {
-            "Buy" => Side::Buy,
-            "Sell" => Side::Sell,
-            _ => {
-                eprintln!("Error: Unknown side {}", raw_side);
+        // 3. Map raw strings to Enums using FromStr
+        let side: Side = match raw_side.parse() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("Error parsing side: {}", e);
                 continue;
             }
         };
 
-        let order_type = match raw_type {
-            "Limit" => OrderType::Limit,
-            "Market" => OrderType::Market,
-            _ => {
-                eprintln!("Error: Unknown order type {}", raw_type);
+        let order_type: OrderType = match raw_type.parse() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("Error parsing order type: {}", e);
                 continue;
             }
         };
