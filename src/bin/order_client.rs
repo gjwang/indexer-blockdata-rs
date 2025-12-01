@@ -28,7 +28,7 @@ async fn main() {
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
         // "clientorder" is 11 chars. We need 9 more.
         // i is u64.
-        let client_order_id = format!("clientorder_{:010}", i); // 11 + 1 + 10 = 22 chars.
+        let client_order_id = format!("clientorder{:010}", i); // 11 + 10 = 21 chars.
 
         let payload = serde_json::json!({
             "client_order_id": client_order_id,
