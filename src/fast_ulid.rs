@@ -169,7 +169,7 @@ impl SnowflakeGen {
             if self.sequence == 0 {
                 // Overflow (sequence > 4095), wait for next millisecond
                 while now <= self.last_ts {
-                     now = SystemTime::now()
+                    now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or(std::time::Duration::ZERO)
                         .as_millis() as u64;
@@ -183,6 +183,26 @@ impl SnowflakeGen {
 
         // Construct ID: TS (44) | Machine (8) | Seq (12)
         (now << 20) | ((self.machine_id as u64) << 12) | (self.sequence as u64)
+    }
+
+    /// Extract the timestamp part (milliseconds since epoch)
+    pub fn timestamp_ms(val: u64) -> u64 {
+        val >> 20
+    }
+
+    /// Extract the machine ID part
+    pub fn machine_id(val: u64) -> u8 {
+        ((val >> 12) & 0xFF) as u8
+    }
+
+    /// Extract the sequence part
+    pub fn sequence(val: u64) -> u16 {
+        (val & 0xFFF) as u16
+    }
+
+    /// Create a u64 Snowflake ID from parts
+    pub fn from_parts(timestamp_ms: u64, machine_id: u8, sequence: u16) -> u64 {
+        (timestamp_ms << 20) | ((machine_id as u64) << 12) | ((sequence & 0xFFF) as u64)
     }
 }
 
@@ -294,34 +314,55 @@ mod tests {
     fn test_snowflake_gen() {
         let mut gen = SnowflakeGen::new(1); // Machine ID 1
         let mut last = gen.generate();
-        
+
         println!("Snowflake ID: {}", last);
 
         for _ in 0..10000 {
             let next = gen.generate();
             assert!(next > last, "Snowflake IDs must be strictly increasing");
-            
+
             // Check Machine ID part (bits 12-19)
             let machine_part = (next >> 12) & 0xFF;
             assert_eq!(machine_part, 1);
-            
+
             last = next;
         }
+    }
+
+    #[test]
+    fn test_snowflake_helpers() {
+        let ts = 1_700_000_000_000u64; // Example timestamp
+        let machine_id = 42u8; // Example machine ID
+        let seq = 1234u16; // Example sequence
+
+        let id = SnowflakeGen::from_parts(ts, machine_id, seq);
+
+        assert_eq!(SnowflakeGen::timestamp_ms(id), ts);
+        assert_eq!(SnowflakeGen::machine_id(id), machine_id);
+        assert_eq!(SnowflakeGen::sequence(id), seq);
+
+        // Verify bit structure manually
+        assert_eq!(id >> 20, ts);
+        assert_eq!((id >> 12) & 0xFF, machine_id as u64);
+        assert_eq!(id & 0xFFF, seq as u64);
     }
 
     #[test]
     fn demo_usage_snowflake_gen() {
         let mut gen = SnowflakeGen::new(1); // Machine ID 1
         println!("\n--- SnowflakeGen Demo ---");
-        println!("{:<20} | {:<15} | {:<20}", "u64 (Decimal)", "Machine ID", "Timestamp (ms)");
+        println!(
+            "{:<20} | {:<15} | {:<20}",
+            "u64 (Decimal)", "Machine ID", "Timestamp (ms)"
+        );
         println!("{:-<20}-+-{:-<15}-+-{:-<20}", "", "", "");
 
         for _ in 0..5 {
             let id = gen.generate();
-            let machine = (id >> 12) & 0xFF;
-            let ts = id >> 20;
-            
-            println!("{:<20} | {:<15} | {:<20}", id, machine, ts);
+            let machine_id = SnowflakeGen::machine_id(id);
+            let ts = SnowflakeGen::timestamp_ms(id);
+
+            println!("{:<20} | {:<15} | {:<20}", id, machine_id, ts);
         }
         println!("----------------------------\n");
     }
