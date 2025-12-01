@@ -7,17 +7,17 @@ use validator::{Validate, ValidationError};
 pub struct ClientOrder {
     #[validate(length(min = 20, max = 32), custom(function = "validate_alphanumeric"))]
     pub client_order_id: String,
-    #[validate(length(min = 1))]
+    #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
     pub side: String,
     #[validate(range(min = 1))]
-    pub price: u64,
+    pub price: u64,//TODO: min = 1, max = 10^18
     #[validate(range(min = 1))]
-    pub quantity: u64,
-    pub user_id: u64,
+    pub quantity: u64,//TODO: min = 1, max = 10^18
+    pub user_id: u64,//TODO: min = 1, max = 10^18
     #[validate(custom(function = "validate_order_type"))]
-    pub order_type: String,
+    pub order_type: String,//TODO: OrderType enum
 }
 
 fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
@@ -28,6 +28,20 @@ fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
         err.message = Some("Client order ID must be alphanumeric".into());
         Err(err)
     }
+}
+
+fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
+    if !symbol.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        let mut err = ValidationError::new("invalid_symbol_chars");
+        err.message = Some("Symbol must be alphanumeric (including underscore)".into());
+        return Err(err);
+    }
+    if symbol != symbol.to_uppercase() {
+        let mut err = ValidationError::new("invalid_symbol_case");
+        err.message = Some("Symbol must be uppercase".into());
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn validate_side(side: &str) -> Result<(), ValidationError> {
