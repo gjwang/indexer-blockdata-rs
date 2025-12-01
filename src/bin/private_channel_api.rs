@@ -164,7 +164,7 @@ async fn test_publish_balance(
 struct PublishOrderRequest {
     user_id: String,
     order_id: String,
-    symbol: String,
+    symbol: u32,
     side: String,
     status: String,
     price: f64,

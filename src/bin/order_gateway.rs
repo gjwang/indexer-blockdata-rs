@@ -18,7 +18,7 @@ async fn main() {
         .expect("Producer creation error");
 
     let mut snowflake_gen = SnowflakeGenRng::new(1);
-    let symbols = vec!["BTC_USDT", "ETH_USDT"];
+    let symbols: Vec<u32> = vec![0, 1]; // 0=BTC_USDT, 1=ETH_USDT
 
     println!(">>> Starting Order Gateway (Producer)");
     println!(">>> Target: {}, Topic: {}", config.kafka.broker, config.kafka.topic);
@@ -29,7 +29,7 @@ async fn main() {
 
     for i in 0..count {
         let order_id = snowflake_gen.generate();
-        let symbol = symbols[i % symbols.len()].to_string();
+        let symbol = symbols[i % symbols.len()];
         let side = if i % 2 == 0 { "Buy" } else { "Sell" }.to_string();
         let price = 50000 + (i as u64 % 100); // Realistic BTC price
         let quantity = 1 + (i as u64 % 5);
@@ -38,7 +38,7 @@ async fn main() {
         let order = OrderRequest::PlaceOrder {
             order_id,
             user_id,
-            symbol: symbol.clone(),
+            symbol,
             side,
             price,
             quantity,
