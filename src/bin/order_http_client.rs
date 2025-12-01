@@ -34,8 +34,8 @@ async fn main() {
             "cid": cid,
             "symbol": raw_symbol,
             "side": raw_side,
-            "price": price,
-            "quantity": quantity,
+            "price": price.to_string(),
+            "quantity": quantity.to_string(),
             "order_type": raw_type
         });
 
