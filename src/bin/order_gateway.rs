@@ -7,6 +7,43 @@ use tokio::time;
 use fetcher::models::{OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 
+struct ClientRawOrder {
+    pub symbol: String,
+    pub side: String,
+    pub price: u64,
+    pub quantity: u64,
+    pub user_id: u64,
+    pub order_type: String,
+}
+
+impl ClientRawOrder {
+    pub fn to_internal(
+        &self,
+        symbol_manager: &SymbolManager,
+        order_id: u64,
+    ) -> Result<OrderRequest, String> {
+        let symbol_id = symbol_manager
+            .get_id(&self.symbol)
+            .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
+
+        let side: Side = self.side.parse().map_err(|e| format!("Invalid side: {}", e))?;
+        let order_type: OrderType = self
+            .order_type
+            .parse()
+            .map_err(|e| format!("Invalid order type: {}", e))?;
+
+        Ok(OrderRequest::PlaceOrder {
+            order_id,
+            user_id: self.user_id,
+            symbol_id,
+            side,
+            price: self.price,
+            quantity: self.quantity,
+            order_type,
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
@@ -49,40 +86,21 @@ async fn main() {
         let user_id = 1000 + (i % 10);
         let order_id = snowflake_gen.generate();
 
-        // 2. Map symbol string to ID
-        let symbol_id = match symbol_manager.get_id(raw_symbol) {
-            Some(id) => id,
-            None => {
-                eprintln!("Error: Unknown symbol {}", raw_symbol);
-                continue;
-            }
-        };
-
-        // 3. Map raw strings to Enums using FromStr
-        let side: Side = match raw_side.parse() {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!("Error parsing side: {}", e);
-                continue;
-            }
-        };
-
-        let order_type: OrderType = match raw_type.parse() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Error parsing order type: {}", e);
-                continue;
-            }
-        };
-
-        let order = OrderRequest::PlaceOrder {
-            order_id,
-            user_id,
-            symbol_id,
-            side,
+        let client_order = ClientRawOrder {
+            symbol: raw_symbol.to_string(),
+            side: raw_side.to_string(),
             price,
             quantity,
-            order_type,
+            user_id,
+            order_type: raw_type.to_string(),
+        };
+
+        let order = match client_order.to_internal(&symbol_manager, order_id) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("Error converting order: {}", e);
+                continue;
+            }
         };
 
         let payload = serde_json::to_string(&order).unwrap();
