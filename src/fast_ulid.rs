@@ -1,3 +1,6 @@
+/// Crockford's Base32 Alphabet
+pub const CROCKFORD_ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::Rng;
@@ -83,24 +86,21 @@ impl FastUlidHalfGen {
     /// Format: TTTTTTTTTTRRRR (10 chars timestamp, 4 chars random)
     /// This ensures it looks like a standard ULID (starts with 01...) and sorts lexicographically.
     pub fn to_str_base32(val: u64) -> String {
-        const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
         let ts = val >> 16;
         let rand = val & 0xFFFF;
+        let mut chars = vec!['0'; 14]; // 10 + 4
 
-        let mut chars = vec!['0'; 14];
-
-        // Encode Timestamp (10 chars)
+        // Timestamp: 10 chars (50 bits capacity, we use 48)
         let mut t = ts;
         for i in (0..10).rev() {
-            chars[i] = ALPHABET[(t % 32) as usize] as char;
+            chars[i] = CROCKFORD_ALPHABET[(t % 32) as usize] as char;
             t /= 32;
         }
 
-        // Encode Randomness (4 chars)
+        // Random: 4 chars (20 bits capacity, we use 16)
         let mut r = rand;
         for i in (10..14).rev() {
-            chars[i] = ALPHABET[(r % 32) as usize] as char;
+            chars[i] = CROCKFORD_ALPHABET[(r % 32) as usize] as char;
             r /= 32;
         }
 
@@ -227,18 +227,17 @@ impl<S: SequenceStrategy> SnowflakeGen<S> {
     }
 
     pub fn to_str_base32(val: u64) -> String {
-        const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
         let ts = val >> 20;
         let low = val & 0xFFFFF; // This is 20 bits (7 for machine + 13 for sequence)
         let mut chars = vec!['0'; 13];
         let mut t = ts;
         for i in (0..9).rev() {
-            chars[i] = ALPHABET[(t % 32) as usize] as char;
+            chars[i] = CROCKFORD_ALPHABET[(t % 32) as usize] as char;
             t /= 32;
         }
         let mut r = low;
         for i in (9..13).rev() {
-            chars[i] = ALPHABET[(r % 32) as usize] as char;
+            chars[i] = CROCKFORD_ALPHABET[(r % 32) as usize] as char;
             r /= 32;
         }
         chars.into_iter().collect()
@@ -253,13 +252,13 @@ impl<S: SequenceStrategy> SnowflakeGen<S> {
             let mut map = [-1; 256];
             let mut i = 0;
             while i < 32 {
-                map[b"0123456789ABCDEFGHJKMNPQRSTVWXYZ"[i] as usize] = i as i8;
+                map[CROCKFORD_ALPHABET[i] as usize] = i as i8;
                 i += 1;
             }
             // Support lowercase as well
             let mut i = 0;
             while i < 32 {
-                map[b"0123456789abcdefghjkmnpqrstvwxyz"[i] as usize] = i as i8;
+                map[CROCKFORD_ALPHABET[i] as usize] = i as i8;
                 i += 1;
             }
             map
@@ -342,9 +341,7 @@ mod tests {
         assert!(!dec.is_empty());
 
         // Verify Base32 chars
-        assert!(b32
-            .chars()
-            .all(|c| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c)));
+        assert!(b32.chars().all(|c| CROCKFORD_ALPHABET.contains(&(c as u8))));
     }
     #[test]
     fn demo_usage_half_ulid_gen() {
