@@ -10,10 +10,10 @@ async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
     
     let producer: FutureProducer = ClientConfig::new()
-        .set("bootstrap.servers", &config.kafka_broker)
+        .set("bootstrap.servers", &config.kafka.broker)
         .set("message.timeout.ms", "5000")
-        .set("linger.ms", &config.kafka_linger_ms)
-        .set("socket.keepalive.enable", &config.kafka_socket_keepalive_enable)
+        .set("linger.ms", &config.kafka.linger_ms)
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .create()
         .expect("Producer creation error");
 
@@ -21,7 +21,7 @@ async fn main() {
     let symbols = vec!["BTC_USDT", "ETH_USDT"];
 
     println!(">>> Starting Order Gateway (Producer)");
-    println!(">>> Target: {}, Topic: {}", config.kafka_broker, config.kafka_topic);
+    println!(">>> Target: {}, Topic: {}", config.kafka.broker, config.kafka.topic);
 
     // Default count and interval if not in config (could add to AppConfig if needed)
     let count = 1000;
@@ -48,7 +48,7 @@ async fn main() {
         let payload = serde_json::to_string(&order).unwrap();
         let key = order_id.to_string();
 
-        let record = FutureRecord::to(&config.kafka_topic)
+        let record = FutureRecord::to(&config.kafka.topic)
             .payload(&payload)
             .key(&key);
 

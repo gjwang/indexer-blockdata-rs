@@ -1,10 +1,10 @@
-LOG_FILE: "log/dev.log"
+log_file: "log/dev.log"
 
-# Centrifugo
-centrifugo_url: "ws://localhost:8000/connection/websocket"
-centrifugo_channel: "news:updates"
+centrifugo:
+  url: "ws://localhost:8000/connection/websocket"
+  channel: "news:updates"
 
-# Kafka / Redpanda
-kafka_broker: "localhost:9093"
-kafka_topic: "orders"
-kafka_group_id: "matching_engine_group"
+kafka:
+  broker: "localhost:9093"
+  topic: "orders"
+  group_id: "matching_engine_group"
