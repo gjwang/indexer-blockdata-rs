@@ -1,10 +1,12 @@
+use std::sync::Mutex;
+
+use axum::http::StatusCode;
+
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{ClientOrder, OrderRequest};
 use crate::symbol_manager::SymbolManager;
-use axum::http::StatusCode;
-use std::sync::Mutex;
 
-pub fn process_order(
+pub fn client_order_convert(
     client_order: &ClientOrder,
     symbol_manager: &SymbolManager,
     snowflake_gen: &Mutex<SnowflakeGenRng>,

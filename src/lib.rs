@@ -13,5 +13,5 @@ pub mod s3_service;
 pub mod scylla_service;
 pub mod simple_kv_storage;
 pub mod symbol_manager;
-pub mod order_processor;
+pub mod client_order_convertor;
 pub mod gateway;
