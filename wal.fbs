@@ -11,7 +11,7 @@ enum OrderSide : byte { Buy = 0, Sell = 1 }
 
 table Order {
   id: UlidStruct;
-  symbol: string;
+  symbol: uint32;
   side: OrderSide;
   price: uint64;
   quantity: uint64;

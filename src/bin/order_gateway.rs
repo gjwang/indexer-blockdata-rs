@@ -24,7 +24,7 @@ async fn main() {
     println!(">>> Target: {}, Topic: {}", config.kafka.broker, config.kafka.topic);
 
     // Default count and interval if not in config (could add to AppConfig if needed)
-    let count = 1000;
+    let count = 1000000;
     let interval_ms = 100;
 
     for i in 0..count {
@@ -53,7 +53,7 @@ async fn main() {
             .key(&key);
 
         match producer.send(record, Duration::from_secs(0)).await {
-            Ok((partition, offset)) => println!("Sent Order {}: Partition {}, Offset {}", order_id, partition, offset),
+            Ok((partition, offset)) => println!("Sent Order {} by user_id: {}", order_id, user_id),
             Err((e, _)) => eprintln!("Error sending order {}: {:?}", order_id, e),
         }
 
