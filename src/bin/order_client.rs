@@ -1,0 +1,60 @@
+use reqwest::Client;
+use std::time::Duration;
+use tokio::time;
+
+#[tokio::main]
+async fn main() {
+    let client = Client::new();
+    let api_url = "http://localhost:3001/api/orders";
+
+    // Simulate raw input symbols
+    let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"];
+
+    println!(">>> Starting Order Client");
+    println!(">>> Target: {}", api_url);
+
+    let count: u64 = 1000000;
+    let interval_ms = 100;
+
+    for i in 0..count {
+        let raw_symbol = symbols[i as usize % symbols.len()];
+        let raw_side = if i % 2 == 0 { "Buy" } else { "Sell" };
+        let raw_type = "Limit";
+        let price = 50000 + (i % 100);
+        let quantity = 1 + (i % 5);
+        let user_id = 1000 + (i % 10);
+        
+        // Generate a client_order_id. In real app, this might be UUID or similar.
+        // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
+        // "clientorder" is 11 chars. We need 9 more.
+        // i is u64.
+        let client_order_id = format!("clientorder_{:010}", i); // 11 + 1 + 10 = 22 chars.
+
+        let payload = serde_json::json!({
+            "client_order_id": client_order_id,
+            "symbol": raw_symbol,
+            "side": raw_side,
+            "price": price,
+            "quantity": quantity,
+            "user_id": user_id,
+            "order_type": raw_type
+        });
+
+        match client.post(api_url).json(&payload).send().await {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    println!("Sent order {}: Success", i);
+                } else {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    eprintln!("Failed to send order {}: {} - {}", i, status, text);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error sending request: {}", e);
+            }
+        }
+
+        time::sleep(Duration::from_millis(interval_ms)).await;
+    }
+}
