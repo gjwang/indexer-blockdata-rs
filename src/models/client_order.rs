@@ -11,13 +11,28 @@ pub struct ClientOrder {
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
     pub side: String,
-    #[validate(range(min = 1, max = 1_000_000_000_000_000_000u64))]
-    pub price: u64,
-    #[validate(range(min = 1))]
-    pub quantity: u64,
+    #[validate(custom(function = "validate_price_string"))]
+    pub price: String,//Float
+    #[validate(custom(function = "validate_quantity_string"))]
+    pub quantity: String,//Float
     #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
 }
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct ClientRawOrder {
+    pub user_id: u64,
+    pub cid: Option<String>,// Client order ID
+    pub symbol_id: u64,
+    pub side: Side,
+    pub price: u64,
+    pub price_decimal:u32,
+    pub quantity: u64,
+    pub quantity_decimal:u32,
+    pub order_type: OrderType,
+}
+
+
 
 impl ClientOrder {
     /// Create a new ClientOrder with validation
@@ -25,9 +40,8 @@ impl ClientOrder {
         cid: Option<String>,
         symbol: String,
         side: String,
-        price: u64,
-        quantity: u64,
-
+        price: String,
+        quantity: String,
         order_type: String,
     ) -> Result<Self, String> {
         let order = ClientOrder {
@@ -62,29 +76,16 @@ impl ClientOrder {
         order_id: u64,
         user_id: u64,
     ) -> Result<OrderRequest, String> {
-        self.validate_order()?;
-
-        let symbol_id = symbol_manager
-            .get_id(&self.symbol)
-            .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
-
-        let side: Side = self
-            .side
-            .parse()
-            .map_err(|e| format!("Invalid side: {}", e))?;
-        let order_type: OrderType = self
-            .order_type
-            .parse()
-            .map_err(|e| format!("Invalid order type: {}", e))?;
+        let raw_order = self.to_raw_order(symbol_manager, user_id)?;
 
         Ok(OrderRequest::PlaceOrder {
             order_id,
-            user_id,
-            symbol_id,
-            side,
-            price: self.price,
-            quantity: self.quantity,
-            order_type,
+            user_id: raw_order.user_id,
+            symbol_id: raw_order.symbol_id as u32,
+            side: raw_order.side,
+            price: raw_order.price,
+            quantity: raw_order.quantity,
+            order_type: raw_order.order_type,
         })
     }
 
@@ -107,12 +108,24 @@ impl ClientOrder {
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?
                     .clone();
 
+                let symbol_info = symbol_manager
+                    .get_symbol_info_by_id(*symbol_id)
+                    .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?;
+
+                // Convert price from integer to decimal string
+                let price_divisor = 10_u64.pow(symbol_info.price_decimal) as f64;
+                let price_str = format!("{:.prec$}", *price as f64 / price_divisor, prec = symbol_info.price_decimal as usize);
+
+                // Convert quantity from integer to decimal string
+                let quantity_divisor = 10_u64.pow(symbol_info.quantity_decimal) as f64;
+                let quantity_str = format!("{:.prec$}", *quantity as f64 / quantity_divisor, prec = symbol_info.quantity_decimal as usize);
+
                 Ok(ClientOrder {
                     cid: None, // OrderRequest doesn't store cid yet
                     symbol,
                     side: side.to_string(),
-                    price: *price,
-                    quantity: *quantity,
+                    price: price_str,
+                    quantity: quantity_str,
                     order_type: order_type.to_string(),
                 })
             }
@@ -181,5 +194,76 @@ fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
             err.message = Some("Invalid order type. Must be 'Limit' or 'Market'".into());
             Err(err)
         }
+    }
+}
+
+fn validate_price_string(price: &str) -> Result<(), ValidationError> {
+    match price.parse::<f64>() {
+        Ok(p) if p > 0.0 => Ok(()),
+        _ => {
+            let mut err = ValidationError::new("invalid_price");
+            err.message = Some("Price must be a positive number".into());
+            Err(err)
+        }
+    }
+}
+
+fn validate_quantity_string(quantity: &str) -> Result<(), ValidationError> {
+    match quantity.parse::<f64>() {
+        Ok(q) if q > 0.0 => Ok(()),
+        _ => {
+            let mut err = ValidationError::new("invalid_quantity");
+            err.message = Some("Quantity must be a positive number".into());
+            Err(err)
+        }
+    }
+}
+
+impl ClientOrder {
+    /// Convert ClientOrder to ClientRawOrder using SymbolManager for decimal precision
+    pub fn to_raw_order(
+        &self,
+        symbol_manager: &SymbolManager,
+        user_id: u64,
+    ) -> Result<ClientRawOrder, String> {
+        self.validate_order()?;
+
+        let symbol_info = symbol_manager
+            .get_symbol_info(&self.symbol)
+            .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
+
+        let side: Side = self
+            .side
+            .parse()
+            .map_err(|e| format!("Invalid side: {}", e))?;
+        
+        let order_type: OrderType = self
+            .order_type
+            .parse()
+            .map_err(|e| format!("Invalid order type: {}", e))?;
+
+        // Parse price and convert to integer representation
+        let price_f64 = self.price.parse::<f64>()
+            .map_err(|_| format!("Invalid price format: {}", self.price))?;
+        let price_multiplier = 10_u64.pow(symbol_info.price_decimal);
+        let price = (price_f64 * price_multiplier as f64).round() as u64;
+
+        // Parse quantity and convert to integer representation
+        let quantity_f64 = self.quantity.parse::<f64>()
+            .map_err(|_| format!("Invalid quantity format: {}", self.quantity))?;
+        let quantity_multiplier = 10_u64.pow(symbol_info.quantity_decimal);
+        let quantity = (quantity_f64 * quantity_multiplier as f64).round() as u64;
+
+        Ok(ClientRawOrder {
+            user_id,
+            cid: self.cid.clone(),
+            symbol_id: symbol_info.id as u64,
+            side,
+            price,
+            price_decimal: symbol_info.price_decimal,
+            quantity,
+            quantity_decimal: symbol_info.quantity_decimal,
+            order_type,
+        })
     }
 }

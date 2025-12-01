@@ -21,8 +21,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -39,8 +39,8 @@ mod tests {
         {
             assert_eq!(symbol_id, 1);
             assert_eq!(side, Side::Buy);
-            assert_eq!(price, 50000);
-            assert_eq!(quantity, 100);
+            assert_eq!(price, 5000000); // 50000 * 100 (2 decimals)
+            assert_eq!(quantity, 10000000000); // 100 * 100000000 (8 decimals)
             assert_eq!(order_type, OrderType::Limit);
         } else {
             panic!("Unexpected result type");
@@ -54,8 +54,8 @@ mod tests {
             cid: Some("clientid2234567890123".to_string()),
             symbol: "UNKNOWN_SYMBOL".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -71,8 +71,8 @@ mod tests {
             cid: Some("clientid3234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Invalid".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -90,8 +90,8 @@ mod tests {
             cid: Some("clientid4234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Invalid".to_string(),
         };
 
@@ -109,16 +109,15 @@ mod tests {
             cid: Some("clientid5234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 0,
-            quantity: 100,
+            price: "0".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("price"));
-        assert!(err.contains("range"));
+        assert!(err.contains("Price must be a positive number") || err.contains("invalid_price"));
     }
 
     #[test]
@@ -128,16 +127,15 @@ mod tests {
             cid: Some("clientid6234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 0,
+            price: "50000".to_string(),
+            quantity: "0".to_string(),
             order_type: "Limit".to_string(),
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("quantity"));
-        assert!(err.contains("range"));
+        assert!(err.contains("Quantity must be a positive number") || err.contains("invalid_quantity"));
     }
 
     #[test]
@@ -148,8 +146,8 @@ mod tests {
             user_id: 1,
             symbol_id: 1,
             side: Side::Sell,
-            price: 60000,
-            quantity: 50,
+            price: 6000000, // 60000.00 with 2 decimals
+            quantity: 5000000000, // 50.00000000 with 8 decimals
             order_type: OrderType::Market,
         };
 
@@ -158,8 +156,8 @@ mod tests {
         let client_order = result.unwrap();
         assert_eq!(client_order.symbol, "BTC_USDT");
         assert_eq!(client_order.side, "Sell");
-        assert_eq!(client_order.price, 60000);
-        assert_eq!(client_order.quantity, 50);
+        assert_eq!(client_order.price, "60000.00");
+        assert_eq!(client_order.quantity, "50.00000000");
         assert_eq!(client_order.order_type, "Market");
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);
@@ -173,8 +171,8 @@ mod tests {
             user_id: 1,
             symbol_id: 999, // Unknown ID
             side: Side::Sell,
-            price: 60000,
-            quantity: 50,
+            price: 6000000,
+            quantity: 5000000000,
             order_type: OrderType::Market,
         };
 
@@ -207,8 +205,8 @@ mod tests {
             cid: Some("a".repeat(33)),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -226,8 +224,8 @@ mod tests {
             cid: Some("invalidid1234567890123!".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -244,8 +242,8 @@ mod tests {
             "cid": "clientid1234567890123",
             "symbol": "BTC_USDT",
             "side": "Buy",
-            "price": 50000,
-            "quantity": 100,
+            "price": "50000",
+            "quantity": "100",
             "order_type": "Limit"
         }"#;
 
@@ -258,8 +256,8 @@ mod tests {
         );
         assert_eq!(order.symbol, "BTC_USDT");
         assert_eq!(order.side, "Buy");
-        assert_eq!(order.price, 50000);
-        assert_eq!(order.quantity, 100);
+        assert_eq!(order.price, "50000");
+        assert_eq!(order.quantity, "100");
         assert_eq!(order.order_type, "Limit");
     }
 
@@ -276,8 +274,8 @@ mod tests {
             Some("clientid1234567890123".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            50000,
-            100,
+            "50000".to_string(),
+            "100".to_string(),
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -289,8 +287,8 @@ mod tests {
             None,
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            50000,
-            100,
+            "50000".to_string(),
+            "100".to_string(),
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -303,8 +301,8 @@ mod tests {
             Some("invalidid1234567890123!".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            50000,
-            100,
+            "50000".to_string(),
+            "100".to_string(),
             "Limit".to_string(),
         );
         assert!(result.is_err());
@@ -320,8 +318,8 @@ mod tests {
             cid: Some("shortid".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -341,8 +339,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "AB".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
@@ -354,8 +352,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "btc_usdt".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
@@ -367,8 +365,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC-USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
@@ -385,8 +383,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTCUSDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
@@ -398,8 +396,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "_BTCUSDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
@@ -411,8 +409,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC__USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
@@ -430,8 +428,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
@@ -450,8 +448,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: 50000,
-            quantity: 100,
+            price: "50000".to_string(),
+            quantity: "100".to_string(),
             order_type: "Limit".to_string(),
         };
 
