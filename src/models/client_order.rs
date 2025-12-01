@@ -14,30 +14,37 @@ pub struct ClientOrder {
 }
 
 impl ClientOrder {
-    /// Create ClientOrder from JSON string
-    pub fn from_json(json: &str) -> Result<Self, String> {
-        serde_json::from_str(json).map_err(|e| e.to_string())
+    /// Create a new ClientOrder with validation
+    pub fn new(
+        client_order_id: String,
+        symbol: String,
+        side: String,
+        price: u64,
+        quantity: u64,
+        user_id: u64,
+        order_type: String,
+    ) -> Result<Self, String> {
+        let order = ClientOrder {
+            client_order_id,
+            symbol,
+            side,
+            price,
+            quantity,
+            user_id,
+            order_type,
+        };
+        order.validate()?;
+        Ok(order)
     }
 
-    /// Convert ClientOrder to internal OrderRequest
-    pub fn try_to_internal(
-        &self,
-        symbol_manager: &SymbolManager,
-        order_id: u64,
-    ) -> Result<OrderRequest, String> {
-        let symbol_id = symbol_manager
-            .get_id(&self.symbol)
-            .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
+    /// Create ClientOrder from JSON string
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        let order: Self = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        order.validate()?;
+        Ok(order)
+    }
 
-        let side: Side = self
-            .side
-            .parse()
-            .map_err(|e| format!("Invalid side: {}", e))?;
-        let order_type: OrderType = self
-            .order_type
-            .parse()
-            .map_err(|e| format!("Invalid order type: {}", e))?;
-
+    pub fn validate(&self) -> Result<(), String> {
         if self.price == 0 {
             return Err("Price must be greater than 0".to_string());
         }
@@ -50,6 +57,29 @@ impl ClientOrder {
         if !self.client_order_id.chars().all(char::is_alphanumeric) {
             return Err("Client order ID must be alphanumeric".to_string());
         }
+        Ok(())
+    }
+
+    /// Convert ClientOrder to internal OrderRequest
+    pub fn try_to_internal(
+        &self,
+        symbol_manager: &SymbolManager,
+        order_id: u64,
+    ) -> Result<OrderRequest, String> {
+        self.validate()?;
+
+        let symbol_id = symbol_manager
+            .get_id(&self.symbol)
+            .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
+
+        let side: Side = self
+            .side
+            .parse()
+            .map_err(|e| format!("Invalid side: {}", e))?;
+        let order_type: OrderType = self
+            .order_type
+            .parse()
+            .map_err(|e| format!("Invalid order type: {}", e))?;
 
         Ok(OrderRequest::PlaceOrder {
             order_id,

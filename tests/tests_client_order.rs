@@ -263,4 +263,33 @@ mod tests {
         let result = ClientOrder::from_json(json);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_new_success() {
+        let result = ClientOrder::new(
+            "clientid1".to_string(),
+            "BTC_USDT".to_string(),
+            "Buy".to_string(),
+            50000,
+            100,
+            1,
+            "Limit".to_string(),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_new_invalid() {
+        let result = ClientOrder::new(
+            "invalid-id!".to_string(),
+            "BTC_USDT".to_string(),
+            "Buy".to_string(),
+            50000,
+            100,
+            1,
+            "Limit".to_string(),
+        );
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Client order ID must be alphanumeric");
+    }
 }
