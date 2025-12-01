@@ -49,22 +49,23 @@ async fn main() {
     println!("Funds deposited for users 1000-1100.");
 
     // === Kafka Consumer Setup ===
+    // === Kafka Consumer Setup ===
     let consumer: StreamConsumer = ClientConfig::new()
-        .set("group.id", &config.kafka_group_id)
-        .set("bootstrap.servers", &config.kafka_broker)
+        .set("group.id", &config.kafka.group_id)
+        .set("bootstrap.servers", &config.kafka.broker)
         .set("auto.offset.reset", "earliest")
-        .set("session.timeout.ms", &config.kafka_session_timeout_ms)
-        .set("heartbeat.interval.ms", &config.kafka_heartbeat_interval_ms)
-        .set("fetch.wait.max.ms", &config.kafka_fetch_wait_max_ms)
-        .set("max.poll.interval.ms", &config.kafka_max_poll_interval_ms)
-        .set("socket.keepalive.enable", &config.kafka_socket_keepalive_enable)
+        .set("session.timeout.ms", &config.kafka.session_timeout_ms)
+        .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
+        .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
+        .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .create()
         .expect("Consumer creation failed");
 
-    consumer.subscribe(&[&config.kafka_topic]).expect("Can't subscribe");
+    consumer.subscribe(&[&config.kafka.topic]).expect("Can't subscribe");
 
     println!(">>> Matching Engine Server Started");
-    println!(">>> Listening on Topic: {}", config.kafka_topic);
+    println!(">>> Listening on Topic: {}", config.kafka.topic);
 
     loop {
         match consumer.recv().await {

@@ -1,10 +1,16 @@
-LOG_FILE: "log/eth_block_data.log"
+log_file: "log/eth_block_data.log"
 
-# Centrifugo
-centrifugo_url: "ws://localhost:8000/connection/websocket"
-centrifugo_channel: "news:updates"
+centrifugo:
+  url: "ws://localhost:8000/connection/websocket"
+  channel: "news:updates"
 
-# Kafka / Redpanda
-kafka_broker: "localhost:9093"
-kafka_topic: "latency-test-topic"
-kafka_group_id: "centrifugo-pusher"
+kafka:
+  broker: "localhost:9093"
+  topic: "latency-test-topic"
+  group_id: "centrifugo-pusher"
+  linger_ms: "3"
+  fetch_wait_max_ms: "3"
+  session_timeout_ms: "10000"
+  heartbeat_interval_ms: "3000"
+  max_poll_interval_ms: "30000"
+  socket_keepalive_enable: "true"

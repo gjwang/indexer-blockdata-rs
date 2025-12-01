@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kafka_broker = args
         .kafka_broker
         .clone()
-        .unwrap_or(config.kafka_broker.clone());
+        .unwrap_or(config.kafka.broker.clone());
     let kafka_topic = args
         .kafka_topic
         .clone()
@@ -78,14 +78,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("group.id", &group_id)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
-        .set("session.timeout.ms", &config.kafka_session_timeout_ms)
-        .set("heartbeat.interval.ms", &config.kafka_heartbeat_interval_ms)
-        .set("max.poll.interval.ms", &config.kafka_max_poll_interval_ms)
+        .set("session.timeout.ms", &config.kafka.session_timeout_ms)
+        .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
+        .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
         .set(
             "socket.keepalive.enable",
-            &config.kafka_socket_keepalive_enable,
+            &config.kafka.socket_keepalive_enable,
         )
-        .set("fetch.wait.max.ms", &config.kafka_fetch_wait_max_ms)
+        .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
         .create()?;
 
     consumer.subscribe(&[&kafka_topic])?;

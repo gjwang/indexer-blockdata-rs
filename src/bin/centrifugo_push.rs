@@ -38,23 +38,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let centrifugo_url = args.url.clone().unwrap_or(config.centrifugo_url.clone());
+    let centrifugo_url = args.url.clone().unwrap_or(config.centrifugo.url.clone());
     let centrifugo_channel = args
         .channel
         .clone()
-        .unwrap_or(config.centrifugo_channel.clone());
+        .unwrap_or(config.centrifugo.channel.clone());
     let kafka_broker = args
         .kafka_broker
         .clone()
-        .unwrap_or(config.kafka_broker.clone());
+        .unwrap_or(config.kafka.broker.clone());
     let kafka_topic = args
         .kafka_topic
         .clone()
-        .unwrap_or(config.kafka_topic.clone());
+        .unwrap_or(config.kafka.topic.clone());
     let base_group_id = args
         .group_id
         .clone()
-        .unwrap_or(config.kafka_group_id.clone());
+        .unwrap_or(config.kafka.group_id.clone());
 
     loop {
         println!("Starting bridge...");

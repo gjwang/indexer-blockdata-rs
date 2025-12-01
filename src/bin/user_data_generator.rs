@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kafka_broker = args
         .kafka_broker
         .clone()
-        .unwrap_or(config.kafka_broker.clone());
+        .unwrap_or(config.kafka.broker.clone());
     let kafka_topic = args
         .kafka_topic
         .clone()
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &kafka_broker)
         .set("message.timeout.ms", "5000")
-        .set("linger.ms", &config.kafka_linger_ms)
+        .set("linger.ms", &config.kafka.linger_ms)
         .create()?;
 
     println!("Producer created. Starting data generation loop...\n");
