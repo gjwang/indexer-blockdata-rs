@@ -14,7 +14,7 @@ mod tests {
     fn test_try_to_internal_success() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_1".to_string(),
+            client_order_id: "clientid1".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -24,7 +24,7 @@ mod tests {
         };
 
         let result = client_order.try_to_internal(&sm, 1001);
-        assert!(result.is_ok());
+        assert!(result.is_ok(), "Error: {:?}", result.err());
         if let Ok(OrderRequest::PlaceOrder {
             symbol_id,
             side,
@@ -48,7 +48,7 @@ mod tests {
     fn test_try_to_internal_unknown_symbol() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_2".to_string(),
+            client_order_id: "clientid2".to_string(),
             symbol: "UNKNOWN".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -66,7 +66,7 @@ mod tests {
     fn test_try_to_internal_invalid_side() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_3".to_string(),
+            client_order_id: "clientid3".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Invalid".to_string(),
             price: 50000,
@@ -84,7 +84,7 @@ mod tests {
     fn test_try_to_internal_invalid_order_type() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_4".to_string(),
+            client_order_id: "clientid4".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -102,7 +102,7 @@ mod tests {
     fn test_try_to_internal_invalid_price() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_5".to_string(),
+            client_order_id: "clientid5".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 0,
@@ -120,7 +120,7 @@ mod tests {
     fn test_try_to_internal_invalid_quantity() {
         let sm = setup_symbol_manager();
         let client_order = ClientOrder {
-            client_order_id: "client_id_6".to_string(),
+            client_order_id: "clientid6".to_string(),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
             price: 50000,
@@ -192,5 +192,75 @@ mod tests {
             result.unwrap_err(),
             "Only PlaceOrder can be converted to ClientOrder"
         );
+    }
+
+    #[test]
+    fn test_try_to_internal_invalid_client_order_id_length() {
+        let sm = setup_symbol_manager();
+        let client_order = ClientOrder {
+            client_order_id: "a".repeat(32),
+            symbol: "BTC_USDT".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+
+        let result = client_order.try_to_internal(&sm, 1001);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "Client order ID must be less than 32 characters"
+        );
+    }
+
+    #[test]
+    fn test_try_to_internal_invalid_client_order_id_chars() {
+        let sm = setup_symbol_manager();
+        let client_order = ClientOrder {
+            client_order_id: "invalid-id!".to_string(),
+            symbol: "BTC_USDT".to_string(),
+            side: "Buy".to_string(),
+            price: 50000,
+            quantity: 100,
+            user_id: 1,
+            order_type: "Limit".to_string(),
+        };
+
+        let result = client_order.try_to_internal(&sm, 1001);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Client order ID must be alphanumeric");
+    }
+
+    #[test]
+    fn test_from_json_success() {
+        let json = r#"{
+            "client_order_id": "clientid1",
+            "symbol": "BTC_USDT",
+            "side": "Buy",
+            "price": 50000,
+            "quantity": 100,
+            "user_id": 1,
+            "order_type": "Limit"
+        }"#;
+
+        let result = ClientOrder::from_json(json);
+        assert!(result.is_ok());
+        let order = result.unwrap();
+        assert_eq!(order.client_order_id, "clientid1");
+        assert_eq!(order.symbol, "BTC_USDT");
+        assert_eq!(order.side, "Buy");
+        assert_eq!(order.price, 50000);
+        assert_eq!(order.quantity, 100);
+        assert_eq!(order.user_id, 1);
+        assert_eq!(order.order_type, "Limit");
+    }
+
+    #[test]
+    fn test_from_json_invalid_json() {
+        let json = r#"{ "invalid": "json" }"#;
+        let result = ClientOrder::from_json(json);
+        assert!(result.is_err());
     }
 }
