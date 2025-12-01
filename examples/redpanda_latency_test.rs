@@ -50,11 +50,11 @@ use fetcher::configure;
 async fn main() -> Result<()> {
     let config = configure::load_config().expect("Failed to load config");
 
-    let broker = config.kafka_broker;
-    let topic = config.kafka_topic;
+    let broker = config.kafka.broker;
+    let topic = config.kafka.topic;
     let group_id = format!(
         "{}-{}",
-        config.kafka_group_id,
+        config.kafka.group_id,
         chrono::Utc::now().timestamp()
     );
 

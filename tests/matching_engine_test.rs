@@ -99,10 +99,10 @@ fn test_basic_matching() {
     let btc_id = manager.get_id("BTC_USDT").unwrap();
 
     // 1. Add Sell Orders
-    // Sell 100 @ 10 (ID 1, User 1)
-    assert!(engine.add_order(btc_id, 1, Side::Sell, OrderType::Limit, 10, 100, 1).is_ok());
-    // Sell 101 @ 5 (ID 2, User 2)
-    assert!(engine.add_order(btc_id, 2, Side::Sell, OrderType::Limit, 5, 101, 2).is_ok());
+    // Sell 100 @ 10 (ID 1, User 1) -> Actually Price 100, Qty 10 based on original code
+    assert!(engine.add_order(btc_id, 1, Side::Sell, OrderType::Limit, 100, 10, 1).is_ok());
+    // Sell 101 @ 5 (ID 2, User 2) -> Actually Price 101, Qty 5
+    assert!(engine.add_order(btc_id, 2, Side::Sell, OrderType::Limit, 101, 5, 2).is_ok());
 
     // Verify Book State
     let book = engine.order_books[btc_id as usize].as_ref().unwrap();
@@ -111,7 +111,7 @@ fn test_basic_matching() {
 
     // 2. Add Buy Order (Partial Match)
     // Buy 100 @ 8 (ID 3, User 3). Matches 8 units of ID 1 (Price 100).
-    assert!(engine.add_order(btc_id, 3, Side::Buy, OrderType::Limit, 8, 100, 3).is_ok());
+    assert!(engine.add_order(btc_id, 3, Side::Buy, OrderType::Limit, 100, 8, 3).is_ok());
 
     let book = engine.order_books[btc_id as usize].as_ref().unwrap();
     // ID 1 (Price 100) matched 8. Remaining 2.
@@ -124,7 +124,7 @@ fn test_basic_matching() {
     // Matches remaining 2 of ID 1 (Price 100).
     // Matches 5 of ID 2 (Price 101).
     // Remaining 3 units sit on Bid at 102.
-    assert!(engine.add_order(btc_id, 4, Side::Buy, OrderType::Limit, 10, 102, 4).is_ok());
+    assert!(engine.add_order(btc_id, 4, Side::Buy, OrderType::Limit, 102, 10, 4).is_ok());
 
     let book = engine.order_books[btc_id as usize].as_ref().unwrap();
     assert!(book.asks.is_empty()); // All asks cleared
@@ -170,7 +170,7 @@ fn test_dynamic_symbol_registration() {
         .unwrap();
 
     assert!(engine
-        .add_order(new_id, 100, Side::Sell, OrderType::Limit, 100, 50, 1)
+        .add_order(new_id, 100, Side::Sell, OrderType::Limit, 50, 100, 1)
         .is_ok());
 
     let book = engine.order_books[new_id as usize].as_ref().unwrap();
