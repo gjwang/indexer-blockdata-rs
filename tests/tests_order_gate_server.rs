@@ -4,7 +4,8 @@ use axum::{
 };
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::gateway::{create_app, AppState, OrderPublisher};
-use fetcher::models::ClientOrder;
+
+use fetcher::models::{ClientOrder, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 use std::future::Future;
 use std::pin::Pin;
@@ -35,6 +36,7 @@ async fn test_create_order_api_success() {
         producer: Arc::new(MockPublisher),
         snowflake_gen,
         kafka_topic: "test_topic".to_string(),
+        user_manager: UserAccountManager::new(),
     });
 
     let app = create_app(state);
@@ -45,7 +47,6 @@ async fn test_create_order_api_success() {
         side: "Buy".to_string(),
         price: 50000,
         quantity: 100,
-        user_id: 1,
         order_type: "Limit".to_string(),
     };
 

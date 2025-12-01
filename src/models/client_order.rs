@@ -15,7 +15,6 @@ pub struct ClientOrder {
     pub price: u64,
     #[validate(range(min = 1))]
     pub quantity: u64,
-    pub user_id: u64,
     #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
 }
@@ -28,7 +27,7 @@ impl ClientOrder {
         side: String,
         price: u64,
         quantity: u64,
-        user_id: u64,
+
         order_type: String,
     ) -> Result<Self, String> {
         let order = ClientOrder {
@@ -37,7 +36,6 @@ impl ClientOrder {
             side,
             price,
             quantity,
-            user_id,
             order_type,
         };
         order.validate_order()?;
@@ -62,6 +60,7 @@ impl ClientOrder {
         &self,
         symbol_manager: &SymbolManager,
         order_id: u64,
+        user_id: u64,
     ) -> Result<OrderRequest, String> {
         self.validate_order()?;
 
@@ -80,7 +79,7 @@ impl ClientOrder {
 
         Ok(OrderRequest::PlaceOrder {
             order_id,
-            user_id: self.user_id,
+            user_id,
             symbol_id,
             side,
             price: self.price,
@@ -100,7 +99,6 @@ impl ClientOrder {
                 side,
                 price,
                 quantity,
-                user_id,
                 order_type,
                 ..
             } => {
@@ -115,7 +113,6 @@ impl ClientOrder {
                     side: side.to_string(),
                     price: *price,
                     quantity: *quantity,
-                    user_id: *user_id,
                     order_type: order_type.to_string(),
                 })
             }

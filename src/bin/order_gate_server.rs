@@ -1,5 +1,6 @@
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::gateway::{create_app, AppState, OrderPublisher};
+use fetcher::models::UserAccountManager;
 use fetcher::symbol_manager::SymbolManager;
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
@@ -53,6 +54,7 @@ async fn main() {
         producer: Arc::new(KafkaPublisher(producer)),
         snowflake_gen,
         kafka_topic: config.kafka.topic,
+        user_manager: UserAccountManager::new(),
     });
 
     let app = create_app(state);

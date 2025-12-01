@@ -4,14 +4,14 @@ use axum::{
     routing::post,
     Router,
 };
-use tower_http::cors::CorsLayer;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
 use crate::fast_ulid::SnowflakeGenRng;
-use crate::models::ClientOrder;
+use crate::models::{ClientOrder, UserAccountManager};
 use crate::symbol_manager::SymbolManager;
 
 pub trait OrderPublisher: Send + Sync {
@@ -28,6 +28,7 @@ pub struct AppState {
     pub producer: Arc<dyn OrderPublisher>,
     pub snowflake_gen: Mutex<SnowflakeGenRng>,
     pub kafka_topic: String,
+    pub user_manager: UserAccountManager,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -41,8 +42,9 @@ async fn create_order(
     Extension(state): Extension<Arc<AppState>>,
     Json(client_order): Json<ClientOrder>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let user_id = state.user_manager.get_user_id();
     let (order_id, internal_order) =
-        client_order_convert(&client_order, &state.symbol_manager, &state.snowflake_gen)?;
+        client_order_convert(&client_order, &state.symbol_manager, &state.snowflake_gen, user_id)?;
 
     // Send to Kafka
     let payload = serde_json::to_string(&internal_order).unwrap();
@@ -54,7 +56,10 @@ async fn create_order(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
-    println!("Order {} accepted by user_id {}", order_id, client_order.user_id);
+    println!(
+        "Order {} accepted by user_id {}",
+        order_id, user_id
+    );
 
     Ok(Json(serde_json::json!({
         "order_id": order_id.to_string(),
