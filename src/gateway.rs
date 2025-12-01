@@ -64,8 +64,8 @@ async fn create_order(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
     println!(
-        "Order {} accepted by user_id {}",
-        order_id, user_id
+        "Order {} accepted by user_id {}, client_order: {:?}",
+        order_id, user_id, client_order
     );
 
     let response_data = OrderResponseData {
