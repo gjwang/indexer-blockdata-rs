@@ -11,13 +11,13 @@ pub struct ClientOrder {
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
     pub side: String,
+    #[validate(range(min = 1, max = 1_000_000_000_000_000_000u64))]
+    pub price: u64,
     #[validate(range(min = 1))]
-    pub price: u64,//TODO: min = 1, max = 10^18
-    #[validate(range(min = 1))]
-    pub quantity: u64,//TODO: min = 1, max = 10^18
-    pub user_id: u64,//TODO: min = 1, max = 10^18
+    pub quantity: u64,
+    pub user_id: u64,
     #[validate(custom(function = "validate_order_type"))]
-    pub order_type: String,//TODO: OrderType enum
+    pub order_type: String,
 }
 
 fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
@@ -31,6 +31,9 @@ fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
 }
 
 fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
+    // Check for alphanumeric chars, uppercase, and underscore placement
+
+    
     if !symbol.chars().all(|c| c.is_alphanumeric() || c == '_') {
         let mut err = ValidationError::new("invalid_symbol_chars");
         err.message = Some("Symbol must be alphanumeric (including underscore)".into());
@@ -39,6 +42,21 @@ fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
     if symbol != symbol.to_uppercase() {
         let mut err = ValidationError::new("invalid_symbol_case");
         err.message = Some("Symbol must be uppercase".into());
+        return Err(err);
+    }
+    if !symbol.contains('_') {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Symbol must contain an underscore".into());
+        return Err(err);
+    }
+    if symbol.starts_with('_') || symbol.ends_with('_') {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Underscore cannot be at the start or end".into());
+        return Err(err);
+    }
+    if symbol.contains("__") {
+        let mut err = ValidationError::new("invalid_symbol_format");
+        err.message = Some("Symbol cannot contain consecutive underscores".into());
         return Err(err);
     }
     Ok(())
