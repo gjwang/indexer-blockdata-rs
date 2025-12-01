@@ -18,6 +18,7 @@ impl SymbolManager {
             symbol_to_id: FxHashMap::default(),
             id_to_symbol: FxHashMap::default(),
         }
+
     }
 
     pub fn insert(&mut self, symbol: &str, id: u32) {
