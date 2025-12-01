@@ -128,19 +128,26 @@ impl FastUlidHalfGen {
     }
 }
 
+use rand::rngs::StdRng;
+use rand::SeedableRng;
+
+// ... (imports)
+
+// ...
+
 /// Strategy for initializing the sequence number
 pub trait SequenceStrategy {
-    fn next_sequence(current: u16, rng: &mut rand::rngs::ThreadRng) -> u16;
-    fn reset_sequence(rng: &mut rand::rngs::ThreadRng) -> u16;
+    fn next_sequence(current: u16, rng: &mut StdRng) -> u16;
+    fn reset_sequence(rng: &mut StdRng) -> u16;
 }
 
 /// Strategy: Always start sequence at 0
 pub struct ZeroSequence;
 impl SequenceStrategy for ZeroSequence {
-    fn next_sequence(current: u16, _rng: &mut rand::rngs::ThreadRng) -> u16 {
+    fn next_sequence(current: u16, _rng: &mut StdRng) -> u16 {
         (current + 1) & 0x1FFF
     }
-    fn reset_sequence(_rng: &mut rand::rngs::ThreadRng) -> u16 {
+    fn reset_sequence(_rng: &mut StdRng) -> u16 {
         0
     }
 }
@@ -148,10 +155,10 @@ impl SequenceStrategy for ZeroSequence {
 /// Strategy: Start sequence at random value
 pub struct RandomSequence;
 impl SequenceStrategy for RandomSequence {
-    fn next_sequence(current: u16, _rng: &mut rand::rngs::ThreadRng) -> u16 {
+    fn next_sequence(current: u16, _rng: &mut StdRng) -> u16 {
         (current + 1) & 0x1FFF
     }
-    fn reset_sequence(rng: &mut rand::rngs::ThreadRng) -> u16 {
+    fn reset_sequence(rng: &mut StdRng) -> u16 {
         rng.random::<u16>() & 0x1FFF
     }
 }
@@ -165,7 +172,7 @@ pub struct SnowflakeGen<S: SequenceStrategy> {
     machine_id: u8,
     last_ts: u64,
     sequence: u16,
-    rng: rand::rngs::ThreadRng,
+    rng: StdRng,
     _marker: std::marker::PhantomData<S>,
 }
 
@@ -177,7 +184,7 @@ impl<S: SequenceStrategy> SnowflakeGen<S> {
             machine_id,
             last_ts: 0,
             sequence: 0,
-            rng: rand::rng(),
+            rng: StdRng::from_rng(&mut rand::rng()),
             _marker: std::marker::PhantomData,
         }
     }
