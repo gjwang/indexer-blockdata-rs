@@ -25,7 +25,7 @@ pub enum OrderStatus {
 pub struct Order {
     pub order_id: u64,
     pub user_id: u64,
-    pub symbol: u32,
+    pub symbol_id: u32,
     pub side: Side,
     pub order_type: OrderType,
     pub price: u64,

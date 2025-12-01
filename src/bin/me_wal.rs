@@ -72,7 +72,7 @@ impl MatchingEngine {
             .log_place_order(
                 order.order_id,
                 order.user_id,
-                order.symbol,
+                order.symbol_id,
                 wal_side,
                 order.price,
                 order.quantity,
@@ -210,7 +210,7 @@ fn main() -> Result<()> {
 
     let mut engine = MatchingEngine::new(wal_path, snap_dir)?;
     let start = Instant::now();
-    let symbol = 1; // Use u32 ID
+    let symbol_id = 1; // Use u32 ID
 
     // Store some order IDs for matching demonstration
     let mut buy_orders = Vec::new();
@@ -227,7 +227,7 @@ fn main() -> Result<()> {
 
         let order = Order {
             order_id,
-            symbol,
+            symbol_id,
             side,
             order_type: OrderType::Limit,
             price: 50000,

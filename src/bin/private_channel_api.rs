@@ -164,7 +164,7 @@ async fn test_publish_balance(
 struct PublishOrderRequest {
     user_id: String,
     order_id: String,
-    symbol: u32,
+    symbol_id: u32,
     side: String,
     status: String,
     price: f64,
@@ -177,7 +177,7 @@ async fn test_publish_order(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let order = OrderUpdate {
         order_id: payload.order_id,
-        symbol: payload.symbol,
+        symbol_id: payload.symbol_id,
         side: payload.side,
         order_type: "limit".to_string(),
         status: payload.status,
