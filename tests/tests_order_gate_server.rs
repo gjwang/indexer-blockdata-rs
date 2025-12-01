@@ -8,9 +8,8 @@ use axum::{
 };
 use tower::util::ServiceExt;
 
-use fetcher::client_order_convertor::client_order_convert;
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{create_app, AppState, OrderPublisher};
+use fetcher::gateway::{AppState, create_app, OrderPublisher};
 use fetcher::models::ClientOrder;
 use fetcher::symbol_manager::SymbolManager;
 
@@ -22,7 +21,7 @@ impl OrderPublisher for MockPublisher {
         _topic: String,
         _key: String,
         _payload: String,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
         Box::pin(async { Ok(()) })
     }
 }
