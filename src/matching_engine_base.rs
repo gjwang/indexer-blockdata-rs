@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::order_wal::{LogEntry, Wal, WalSide};
+use crate::order_wal::{LogEntry, Wal};
 
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 
@@ -388,10 +388,7 @@ impl MatchingEngine {
         quantity: u64,
         user_id: u64,
     ) -> Result<u64, OrderError> {
-        let wal_side = match side {
-            Side::Buy => WalSide::Buy,
-            Side::Sell => WalSide::Sell,
-        };
+        let wal_side = side;
 
         // 1. Validate Symbol
         let (base_asset, quote_asset) = *self
