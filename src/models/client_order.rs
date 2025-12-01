@@ -1,7 +1,7 @@
 use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
 
-pub struct ClientRawOrder {
+pub struct ClientOrder {
     pub symbol: String,
     pub side: String,
     pub price: u64,
@@ -10,8 +10,9 @@ pub struct ClientRawOrder {
     pub order_type: String,
 }
 
-impl ClientRawOrder {
-    pub fn to_internal(
+impl ClientOrder {
+    /// Convert ClientOrder to internal OrderRequest
+    pub fn try_to_internal(
         &self,
         symbol_manager: &SymbolManager,
         order_id: u64,
@@ -35,5 +36,38 @@ impl ClientRawOrder {
             quantity: self.quantity,
             order_type,
         })
+    }
+
+    /// Convert internal OrderRequest back to ClientOrder
+    pub fn try_from_internal(
+        request: &OrderRequest,
+        symbol_manager: &SymbolManager,
+    ) -> Result<Self, String> {
+        match request {
+            OrderRequest::PlaceOrder {
+                symbol_id,
+                side,
+                price,
+                quantity,
+                user_id,
+                order_type,
+                ..
+            } => {
+                let symbol = symbol_manager
+                    .get_symbol(*symbol_id)
+                    .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?
+                    .clone();
+
+                Ok(ClientOrder {
+                    symbol,
+                    side: side.to_string(),
+                    price: *price,
+                    quantity: *quantity,
+                    user_id: *user_id,
+                    order_type: order_type.to_string(),
+                })
+            }
+            _ => Err("Only PlaceOrder can be converted to ClientOrder".to_string()),
+        }
     }
 }
