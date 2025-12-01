@@ -1,5 +1,6 @@
 use fetcher::ledger::LedgerCommand;
-use fetcher::matching_engine_base::{MatchingEngine, SymbolManager};
+use fetcher::matching_engine_base::MatchingEngine;
+use fetcher::symbol_manager::SymbolManager;
 use fetcher::models::{OrderRequest, OrderType, Side};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};

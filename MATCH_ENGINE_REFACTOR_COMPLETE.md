@@ -22,6 +22,7 @@ The `symbol` field (which was a `u32` or `usize` representing an ID) has been co
 The `MatchingEngine` struct and its methods now explicitly use `u32` for `symbol_id` instead of `usize`.
 -   Methods updated: `register_symbol`, `add_order`, `process_order`, `cancel_order`, `process_cancel`, `print_order_book`.
 -   **SymbolManager Updated**: `SymbolManager` now uses `u32` for `symbol_id` instead of `usize` in its hashmaps and methods.
+-   **SymbolManager Extracted**: `SymbolManager` has been moved to `src/symbol_manager.rs` for better reusability.
 
 ### 4. Removal of `WalSide`
 The `WalSide` enum in `src/order_wal.rs` was redundant and has been removed. The codebase now uses the shared `Side` enum from `src/models/order_utils.rs` directly.
