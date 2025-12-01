@@ -49,14 +49,20 @@ async fn main() {
         let user_id = 1000 + (i % 10);
         let order_id = snowflake_gen.generate();
 
-        let client_order = ClientOrder {
-            client_order_id: order_id.to_string(),
-            symbol: raw_symbol.to_string(),
-            side: raw_side.to_string(),
+        let client_order = match ClientOrder::new(
+            order_id.to_string(),
+            raw_symbol.to_string(),
+            raw_side.to_string(),
             price,
             quantity,
             user_id,
-            order_type: raw_type.to_string(),
+            raw_type.to_string(),
+        ) {
+            Ok(o) => o,
+            Err(e) => {
+                eprintln!("Error creating order: {}", e);
+                continue;
+            }
         };
 
         let order = match client_order.try_to_internal(&symbol_manager, order_id) {
