@@ -11,7 +11,7 @@ use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
 use crate::fast_ulid::SnowflakeGenRng;
-use crate::models::{ClientOrder, UserAccountManager};
+use crate::models::{ApiResponse, ClientOrder, OrderStatus, UserAccountManager};
 use crate::symbol_manager::SymbolManager;
 
 pub trait OrderPublisher: Send + Sync {
@@ -38,10 +38,17 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .layer(CorsLayer::permissive())
 }
 
+#[derive(Debug, serde::Serialize)]
+struct OrderResponseData {
+    order_id: String,
+    order_status: OrderStatus,
+    client_order_id: Option<String>,
+}
+
 async fn create_order(
     Extension(state): Extension<Arc<AppState>>,
     Json(client_order): Json<ClientOrder>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
     let user_id = state.user_manager.get_user_id();
     let (order_id, internal_order) =
         client_order_convert(&client_order, &state.symbol_manager, &state.snowflake_gen, user_id)?;
@@ -61,9 +68,11 @@ async fn create_order(
         order_id, user_id
     );
 
-    Ok(Json(serde_json::json!({
-        "order_id": order_id.to_string(),
-        "status": "accepted",
-        "client_order_id": client_order.client_order_id
-    })))
+    let response_data = OrderResponseData {
+        order_id: order_id.to_string(),
+        order_status: OrderStatus::Accepted,
+        client_order_id: client_order.client_order_id,
+    };
+
+    Ok(Json(ApiResponse::success(response_data)))
 }

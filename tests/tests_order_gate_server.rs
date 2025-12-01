@@ -63,4 +63,17 @@ async fn test_create_order_api_success() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+
+    let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+    assert_eq!(body_json["status"], 0);
+    assert_eq!(body_json["msg"], "ok");
+    assert!(body_json["data"]["order_id"].is_string());
+    assert_eq!(
+        body_json["data"]["client_order_id"],
+        "clientid1234567890123"
+    );
 }
