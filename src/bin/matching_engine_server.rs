@@ -35,7 +35,7 @@ async fn main() {
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine.register_symbol(symbol_id as u32, symbol.clone(), base, quote).unwrap();
+        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
         println!("Loaded symbol: {}", symbol);
     }
 
@@ -81,7 +81,7 @@ async fn main() {
                                         // Symbol is now u32 (ID). We can check if it exists in our manager or just pass it.
                                         // The engine will validate if the symbol ID is registered.
                                         // But we might want to log the string name.
-                                        if let Some(symbol_name) = symbol_manager.get_symbol(symbol_id as usize) {
+                                        if let Some(symbol_name) = symbol_manager.get_symbol(symbol_id) {
                                             let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
                                             let type_enum = if order_type.eq_ignore_ascii_case("Market") { OrderType::Market } else { OrderType::Limit };
                                             
@@ -94,7 +94,7 @@ async fn main() {
                                         }
                                     },
                                     OrderRequest::CancelOrder { order_id, symbol_id, .. } => {
-                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id as usize) {
+                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
                                             match engine.cancel_order(symbol_id, order_id) {
                                                 Ok(_) => println!("Order {} Cancelled", order_id),
                                                 Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
