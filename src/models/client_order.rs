@@ -6,7 +6,7 @@ use validator::{Validate, ValidationError};
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientOrder {
     #[validate(length(min = 20, max = 32), custom(function = "validate_alphanumeric"))]
-    pub client_order_id: Option<String>,
+    pub cid: Option<String>,// Client order ID
     #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
@@ -22,7 +22,7 @@ pub struct ClientOrder {
 impl ClientOrder {
     /// Create a new ClientOrder with validation
     pub fn new(
-        client_order_id: Option<String>,
+        cid: Option<String>,
         symbol: String,
         side: String,
         price: u64,
@@ -31,7 +31,7 @@ impl ClientOrder {
         order_type: String,
     ) -> Result<Self, String> {
         let order = ClientOrder {
-            client_order_id,
+            cid,
             symbol,
             side,
             price,
@@ -108,7 +108,7 @@ impl ClientOrder {
                     .clone();
 
                 Ok(ClientOrder {
-                    client_order_id: None, // OrderRequest doesn't store client_order_id yet
+                    cid: None, // OrderRequest doesn't store cid yet
                     symbol,
                     side: side.to_string(),
                     price: *price,
