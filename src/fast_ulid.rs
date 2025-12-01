@@ -122,144 +122,61 @@ impl FastUlidHalfGen {
         (timestamp_ms << 16) | (random_part as u64)
     }
 
-    /// 7.2 Serialize as Decimal String
+    /// Serialize as Decimal String
     pub fn to_str_decimal(val: u64) -> String {
         val.to_string()
+    }
+}
+
+/// Strategy for initializing the sequence number
+pub trait SequenceStrategy {
+    fn next_sequence(current: u16, rng: &mut rand::rngs::ThreadRng) -> u16;
+    fn reset_sequence(rng: &mut rand::rngs::ThreadRng) -> u16;
+}
+
+/// Strategy: Always start sequence at 0
+pub struct ZeroSequence;
+impl SequenceStrategy for ZeroSequence {
+    fn next_sequence(current: u16, _rng: &mut rand::rngs::ThreadRng) -> u16 {
+        (current + 1) & 0xFFF
+    }
+    fn reset_sequence(_rng: &mut rand::rngs::ThreadRng) -> u16 {
+        0
+    }
+}
+
+/// Strategy: Start sequence at random value
+pub struct RandomSequence;
+impl SequenceStrategy for RandomSequence {
+    fn next_sequence(current: u16, _rng: &mut rand::rngs::ThreadRng) -> u16 {
+        (current + 1) & 0xFFF
+    }
+    fn reset_sequence(rng: &mut rand::rngs::ThreadRng) -> u16 {
+        rng.random::<u16>() & 0xFFF
     }
 }
 
 /// A 64-bit Snowflake ID generator.
 /// Structure:
 /// - 44 bits: Timestamp (milliseconds)
-///   - Max time: 2^44 ms = ~557 years from epoch (1970)
-///   - Valid until: Year 2527
 /// - 8 bits: Machine ID
-///   - Capacity: 2^8 = 256 unique machines/gateways
 /// - 12 bits: Sequence
-///   - Capacity: 2^12 = 4096 IDs per millisecond per machine
-///   - Throughput: ~4 million IDs/sec per machine
-pub struct SnowflakeGen {
-    machine_id: u8,
-    last_ts: u64,
-    sequence: u16,
-}
-
-impl SnowflakeGen {
-    pub fn new(machine_id: u8) -> Self {
-        Self {
-            machine_id,
-            last_ts: 0,
-            sequence: 0,
-        }
-    }
-
-    pub fn generate(&mut self) -> u64 {
-        let mut now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or(std::time::Duration::ZERO)
-            .as_millis() as u64;
-
-        if now < self.last_ts {
-            // Clock moved backwards: use last_ts to maintain monotonicity
-            now = self.last_ts;
-        }
-
-        if now == self.last_ts {
-            self.sequence = (self.sequence + 1) & 0xFFF; // 12 bits mask (4095)
-            if self.sequence == 0 {
-                // Overflow (sequence > 4095), wait for next millisecond
-                while now <= self.last_ts {
-                    now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or(std::time::Duration::ZERO)
-                        .as_millis() as u64;
-                }
-            }
-        } else {
-            self.sequence = 0;
-        }
-
-        self.last_ts = now;
-
-        // Construct ID: TS (44) | Machine (8) | Seq (12)
-        (now << 20) | ((self.machine_id as u64) << 12) | (self.sequence as u64)
-    }
-
-    /// Extract the timestamp part (milliseconds since epoch)
-    pub fn timestamp_ms(val: u64) -> u64 {
-        val >> 20
-    }
-
-    /// Extract the machine ID part
-    pub fn machine_id(val: u64) -> u8 {
-        ((val >> 12) & 0xFF) as u8
-    }
-
-    /// Extract the sequence part
-    pub fn sequence(val: u64) -> u16 {
-        (val & 0xFFF) as u16
-    }
-
-    /// Create a u64 Snowflake ID from parts
-    pub fn from_parts(timestamp_ms: u64, machine_id: u8, sequence: u16) -> u64 {
-        (timestamp_ms << 20) | ((machine_id as u64) << 12) | ((sequence & 0xFFF) as u64)
-    }
-
-    /// Serialize as Base32 (Crockford)
-    /// Format: TTTTTTTTTMMSS (9 chars timestamp, 4 chars machine+seq)
-    /// Total 13 chars.
-    pub fn to_str_base32(val: u64) -> String {
-        const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-        let ts = val >> 20; // 44 bits
-        let low = val & 0xFFFFF; // 20 bits (8 machine + 12 seq)
-
-        let mut chars = vec!['0'; 13];
-
-        // Encode Timestamp (9 chars)
-        let mut t = ts;
-        for i in (0..9).rev() {
-            chars[i] = ALPHABET[(t % 32) as usize] as char;
-            t /= 32;
-        }
-
-        // Encode Machine+Seq (4 chars)
-        let mut r = low;
-        for i in (9..13).rev() {
-            chars[i] = ALPHABET[(r % 32) as usize] as char;
-            r /= 32;
-        }
-
-        chars.into_iter().collect()
-    }
-
-    /// Serialize as Decimal String
-    pub fn to_str_decimal(val: u64) -> String {
-        val.to_string()
-    }
-}
-
-/// A 64-bit Snowflake ID generator with Random Sequence Start.
-/// Same structure as SnowflakeGen, but initializes sequence randomly
-/// to prevent volume estimation.
-/// Structure:
-/// - 44 bits: Timestamp
-/// - 8 bits: Machine ID
-/// - 12 bits: Sequence (Starts random, wraps around)
-pub struct SnowflakeGenRng {
+pub struct SnowflakeGen<S: SequenceStrategy> {
     machine_id: u8,
     last_ts: u64,
     sequence: u16,
     rng: rand::rngs::ThreadRng,
+    _marker: std::marker::PhantomData<S>,
 }
 
-impl SnowflakeGenRng {
+impl<S: SequenceStrategy> SnowflakeGen<S> {
     pub fn new(machine_id: u8) -> Self {
         Self {
             machine_id,
             last_ts: 0,
             sequence: 0,
             rng: rand::rng(),
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -274,53 +191,64 @@ impl SnowflakeGenRng {
         }
 
         if now == self.last_ts {
-            self.sequence = (self.sequence + 1) & 0xFFF;
+            self.sequence = S::next_sequence(self.sequence, &mut self.rng);
             if self.sequence == 0 {
-                // Overflow, wait for next ms
-                while now <= self.last_ts {
-                     now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap_or(std::time::Duration::ZERO)
-                        .as_millis() as u64;
-                }
-                // On new ms (forced wait), randomize sequence
-                self.sequence = self.rng.random::<u16>() & 0xFFF;
+                // Overflow: Move to next millisecond immediately
+                self.last_ts += 1;
+                now = self.last_ts;
+                // Reset sequence for new virtual ms
+                self.sequence = S::reset_sequence(&mut self.rng);
             }
         } else {
-            // New millisecond: Start with random sequence
-            self.sequence = self.rng.random::<u16>() & 0xFFF;
+            // New millisecond
+            self.sequence = S::reset_sequence(&mut self.rng);
         }
 
         self.last_ts = now;
-
         (now << 20) | ((self.machine_id as u64) << 12) | (self.sequence as u64)
     }
 
-    /// Extract the timestamp part (milliseconds since epoch)
+    // Static helpers
     pub fn timestamp_ms(val: u64) -> u64 {
         val >> 20
     }
-
-    /// Extract the machine ID part
     pub fn machine_id(val: u64) -> u8 {
         ((val >> 12) & 0xFF) as u8
     }
-
-    /// Extract the sequence part
     pub fn sequence(val: u64) -> u16 {
         (val & 0xFFF) as u16
     }
 
-    /// Serialize as Base32 (Crockford)
-    pub fn to_str_base32(val: u64) -> String {
-        SnowflakeGen::to_str_base32(val)
+    pub fn from_parts(timestamp_ms: u64, machine_id: u8, sequence: u16) -> u64 {
+        (timestamp_ms << 20) | ((machine_id as u64) << 12) | ((sequence & 0xFFF) as u64)
     }
 
-    /// Serialize as Decimal String
+    pub fn to_str_base32(val: u64) -> String {
+        const ALPHABET: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+        let ts = val >> 20;
+        let low = val & 0xFFFFF;
+        let mut chars = vec!['0'; 13];
+        let mut t = ts;
+        for i in (0..9).rev() {
+            chars[i] = ALPHABET[(t % 32) as usize] as char;
+            t /= 32;
+        }
+        let mut r = low;
+        for i in (9..13).rev() {
+            chars[i] = ALPHABET[(r % 32) as usize] as char;
+            r /= 32;
+        }
+        chars.into_iter().collect()
+    }
+
     pub fn to_str_decimal(val: u64) -> String {
         val.to_string()
     }
 }
+
+// Type aliases for convenience
+pub type SnowflakeGenZero = SnowflakeGen<ZeroSequence>;
+pub type SnowflakeGenRng = SnowflakeGen<RandomSequence>;
 
 #[cfg(test)]
 mod tests {
@@ -428,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_snowflake_gen() {
-        let mut gen = SnowflakeGen::new(1); // Machine ID 1
+        let mut gen = SnowflakeGenZero::new(1); // Machine ID 1
         let mut last = gen.generate();
 
         println!("Snowflake ID: {}", last);
@@ -451,11 +379,11 @@ mod tests {
         let machine_id = 42u8; // Example machine ID
         let seq = 1234u16; // Example sequence
 
-        let id = SnowflakeGen::from_parts(ts, machine_id, seq);
+        let id = SnowflakeGenZero::from_parts(ts, machine_id, seq);
 
-        assert_eq!(SnowflakeGen::timestamp_ms(id), ts);
-        assert_eq!(SnowflakeGen::machine_id(id), machine_id);
-        assert_eq!(SnowflakeGen::sequence(id), seq);
+        assert_eq!(SnowflakeGenZero::timestamp_ms(id), ts);
+        assert_eq!(SnowflakeGenZero::machine_id(id), machine_id);
+        assert_eq!(SnowflakeGenZero::sequence(id), seq);
 
         // Verify bit structure manually
         assert_eq!(id >> 20, ts);
@@ -465,24 +393,117 @@ mod tests {
 
     #[test]
     fn demo_usage_snowflake_gen() {
-        let mut gen = SnowflakeGen::new(1); // Machine ID 1
+        let mut gen = SnowflakeGenZero::new(1); // Machine ID 1
         println!("\n--- SnowflakeGen Demo ---");
         println!(
             "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
             "u64 (Decimal)", "Base32", "Machine ID", "Timestamp (ms)", "Sequence"
         );
-        println!("{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}", "", "", "", "", "");
+        println!(
+            "{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}",
+            "", "", "", "", ""
+        );
 
         for _ in 0..5 {
             let id = gen.generate();
-            let machine_id = SnowflakeGen::machine_id(id);
-            let ts = SnowflakeGen::timestamp_ms(id);
-            let seq = SnowflakeGen::sequence(id);
-            let b32 = SnowflakeGen::to_str_base32(id);
+            let machine_id = SnowflakeGenZero::machine_id(id);
+            let ts = SnowflakeGenZero::timestamp_ms(id);
+            let seq = SnowflakeGenZero::sequence(id);
+            let b32 = SnowflakeGenZero::to_str_base32(id);
 
-            println!("{:<20} | {:<13} | {:<15} | {:<20} | {:<20}", id, b32, machine_id, ts, seq);
+            println!(
+                "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
+                id, b32, machine_id, ts, seq
+            );
         }
         println!("----------------------------\n");
+    }
+
+    #[test]
+    fn test_snowflake_gen_rng() {
+        let mut gen = SnowflakeGenRng::new(1);
+        let mut last = gen.generate();
+
+        // Verify that the sequence part is not 0 (highly likely)
+        let first_seq = SnowflakeGenRng::sequence(last);
+        println!("First Random Sequence: {}", first_seq);
+
+        // Basic monotonicity check
+        for _ in 0..1000 {
+            let next = gen.generate();
+            assert!(next > last, "Snowflake IDs must be strictly increasing");
+            last = next;
+        }
+    }
+
+    #[test]
+    fn test_snowflake_gen_zero_overflow_behavior() {
+        let mut gen = SnowflakeGenZero::new(1);
+        let mut last_id = gen.generate();
+        let mut last_ts = SnowflakeGenZero::timestamp_ms(last_id);
+        let mut last_seq = SnowflakeGenZero::sequence(last_id);
+
+        // Generate enough IDs to force multiple sequence overflows (4096 per ms)
+        // 20,000 IDs guarantees at least ~4 overflows if time doesn't advance much
+        for _ in 0..200_000 {
+            let id = gen.generate();
+            let ts = SnowflakeGenZero::timestamp_ms(id);
+            let seq = SnowflakeGenZero::sequence(id);
+
+            // 1. Strict Monotonicity
+            assert!(id > last_id, "IDs must be strictly increasing");
+
+            // 2. Sequence/Timestamp Logic
+            if ts == last_ts {
+                // Same millisecond: sequence must increment
+                assert_eq!(seq, last_seq + 1, "Sequence must increment within same ms");
+            } else {
+                // New millisecond (either wall clock advanced OR we overflowed)
+                assert!(ts > last_ts, "Timestamp must increase");
+                // For ZeroSequence, it must reset to 0
+                assert_eq!(
+                    seq, 0,
+                    "Sequence must reset to 0 on new timestamp for ZeroGen"
+                );
+            }
+
+            last_id = id;
+            last_ts = ts;
+            last_seq = seq;
+        }
+    }
+
+    #[test]
+    fn test_snowflake_gen_rng_overflow_behavior() {
+        let mut gen = SnowflakeGenRng::new(1);
+        let mut last_id = gen.generate();
+        let mut last_ts = SnowflakeGenRng::timestamp_ms(last_id);
+        let mut last_seq = SnowflakeGenRng::sequence(last_id);
+
+        for _ in 0..2_000_000 {
+            let id = gen.generate();
+            let ts = SnowflakeGenRng::timestamp_ms(id);
+            let seq = SnowflakeGenRng::sequence(id);
+
+            // 1. Strict Monotonicity
+            assert!(id > last_id, "IDs must be strictly increasing");
+
+            // 2. Sequence/Timestamp Logic
+            if ts == last_ts {
+                // Same millisecond: sequence must increment
+                assert_eq!(seq, last_seq + 1, "Sequence must increment within same ms");
+            } else {
+                // New millisecond (either wall clock advanced OR we overflowed)
+                assert!(ts > last_ts, "Timestamp must increase");
+                // For RandomSequence, it resets to a random value (likely non-zero, but could be 0)
+                // We just verify it's a valid u12 (which is guaranteed by type/mask)
+                assert!(seq < 4096);
+            }
+
+            last_id = id;
+            last_ts = ts;
+            last_seq = seq;
+        }
     }
 
     #[test]
@@ -493,16 +514,22 @@ mod tests {
             "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
             "u64 (Decimal)", "Base32", "Machine ID", "Timestamp (ms)", "Sequence"
         );
-        println!("{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}", "", "", "", "", "");
+        println!(
+            "{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}",
+            "", "", "", "", ""
+        );
 
         for _ in 0..5 {
             let id = gen.generate();
             let machine_id = SnowflakeGenRng::machine_id(id); // Reuse helper
-            let ts = SnowflakeGenRng::timestamp_ms(id);       // Reuse helper
-            let seq = SnowflakeGenRng::sequence(id);          // Reuse helper
-            let b32 = SnowflakeGenRng::to_str_base32(id);     // Reuse helper
+            let ts = SnowflakeGenRng::timestamp_ms(id); // Reuse helper
+            let seq = SnowflakeGenRng::sequence(id); // Reuse helper
+            let b32 = SnowflakeGenRng::to_str_base32(id); // Reuse helper
 
-            println!("{:<20} | {:<13} | {:<15} | {:<20} | {:<20}", id, b32, machine_id, ts, seq);
+            println!(
+                "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
+                id, b32, machine_id, ts, seq
+            );
         }
         println!("----------------------------\n");
     }
