@@ -24,12 +24,11 @@ async fn main() {
         let price_base = 50000.0 + (i % 100) as f64;
         let price_cents = ((i % 100) as f64) / 100.0;
         let price = format!("{:.2}", price_base + price_cents);
-        
+
         // Generate realistic quantity with decimals (e.g., 0.5, 1.25, 2.0, etc.)
         let quantity_base = (1 + (i % 5)) as f64;
         let quantity_fraction = ((i % 4) as f64) * 0.25;
         let quantity = format!("{:.8}", quantity_base + quantity_fraction);
-
 
         // Generate a cid. In real app, this might be UUID or similar.
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).

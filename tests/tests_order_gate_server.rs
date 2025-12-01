@@ -72,8 +72,5 @@ async fn test_create_order_api_success() {
     assert_eq!(body_json["status"], 0);
     assert_eq!(body_json["msg"], "ok");
     assert!(body_json["data"]["order_id"].is_string());
-    assert_eq!(
-        body_json["data"]["cid"],
-        "clientid1234567890123"
-    );
+    assert_eq!(body_json["data"]["cid"], "clientid1234567890123");
 }

@@ -6,15 +6,15 @@ use validator::{Validate, ValidationError};
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientOrder {
     #[validate(length(min = 20, max = 32), custom(function = "validate_alphanumeric"))]
-    pub cid: Option<String>,// Client order ID
+    pub cid: Option<String>, // Client order ID
     #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
     pub side: String,
     #[validate(custom(function = "validate_price_string"))]
-    pub price: String,//Float
+    pub price: String, //Float
     #[validate(custom(function = "validate_quantity_string"))]
-    pub quantity: String,//Float
+    pub quantity: String, //Float
     #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
 }
@@ -22,17 +22,15 @@ pub struct ClientOrder {
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientRawOrder {
     pub user_id: u64,
-    pub cid: Option<String>,// Client order ID
+    pub cid: Option<String>, // Client order ID
     pub symbol_id: u64,
     pub side: Side,
     pub price: u64,
-    pub price_decimal:u32,
+    pub price_decimal: u32,
     pub quantity: u64,
-    pub quantity_decimal:u32,
+    pub quantity_decimal: u32,
     pub order_type: OrderType,
 }
-
-
 
 impl ClientOrder {
     /// Create a new ClientOrder with validation
@@ -114,11 +112,19 @@ impl ClientOrder {
 
                 // Convert price from integer to decimal string
                 let price_divisor = 10_u64.pow(symbol_info.price_decimal) as f64;
-                let price_str = format!("{:.prec$}", *price as f64 / price_divisor, prec = symbol_info.price_decimal as usize);
+                let price_str = format!(
+                    "{:.prec$}",
+                    *price as f64 / price_divisor,
+                    prec = symbol_info.price_decimal as usize
+                );
 
                 // Convert quantity from integer to decimal string
                 let quantity_divisor = 10_u64.pow(symbol_info.quantity_decimal) as f64;
-                let quantity_str = format!("{:.prec$}", *quantity as f64 / quantity_divisor, prec = symbol_info.quantity_decimal as usize);
+                let quantity_str = format!(
+                    "{:.prec$}",
+                    *quantity as f64 / quantity_divisor,
+                    prec = symbol_info.quantity_decimal as usize
+                );
 
                 Ok(ClientOrder {
                     cid: None, // OrderRequest doesn't store cid yet
@@ -236,20 +242,24 @@ impl ClientOrder {
             .side
             .parse()
             .map_err(|e| format!("Invalid side: {}", e))?;
-        
+
         let order_type: OrderType = self
             .order_type
             .parse()
             .map_err(|e| format!("Invalid order type: {}", e))?;
 
         // Parse price and convert to integer representation
-        let price_f64 = self.price.parse::<f64>()
+        let price_f64 = self
+            .price
+            .parse::<f64>()
             .map_err(|_| format!("Invalid price format: {}", self.price))?;
         let price_multiplier = 10_u64.pow(symbol_info.price_decimal);
         let price = (price_f64 * price_multiplier as f64).round() as u64;
 
         // Parse quantity and convert to integer representation
-        let quantity_f64 = self.quantity.parse::<f64>()
+        let quantity_f64 = self
+            .quantity
+            .parse::<f64>()
             .map_err(|_| format!("Invalid quantity format: {}", self.quantity))?;
         let quantity_multiplier = 10_u64.pow(symbol_info.quantity_decimal);
         let quantity = (quantity_f64 * quantity_multiplier as f64).round() as u64;

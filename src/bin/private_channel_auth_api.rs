@@ -3,8 +3,8 @@ use std::sync::Arc;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    Router,
     routing::{get, post},
+    Router,
 };
 use serde::{Deserialize, Serialize};
 use tower_http::cors::CorsLayer;

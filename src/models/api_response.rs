@@ -17,10 +17,6 @@ impl<T> ApiResponse<T> {
     }
 
     pub fn error(status: i32, msg: String, data: T) -> Self {
-        Self {
-            status,
-            msg,
-            data,
-        }
+        Self { status, msg, data }
     }
 }
