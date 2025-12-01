@@ -135,7 +135,9 @@ mod tests {
         let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("Quantity must be a positive number") || err.contains("invalid_quantity"));
+        assert!(
+            err.contains("Quantity must be a positive number") || err.contains("invalid_quantity")
+        );
     }
 
     #[test]
@@ -146,7 +148,7 @@ mod tests {
             user_id: 1,
             symbol_id: 1,
             side: Side::Sell,
-            price: 350075, // 3500.75 * 100 (2 decimals)
+            price: 350075,      // 3500.75 * 100 (2 decimals)
             quantity: 12345678, // 0.12345678 * 100000000 (8 decimals)
             order_type: OrderType::Market,
         };
@@ -250,10 +252,7 @@ mod tests {
         let result = ClientOrder::from_json(json);
         assert!(result.is_ok());
         let order = result.unwrap();
-        assert_eq!(
-            order.cid,
-            Some("clientid1234567890123".to_string())
-        );
+        assert_eq!(order.cid, Some("clientid1234567890123".to_string()));
         assert_eq!(order.symbol, "BTC_USDT");
         assert_eq!(order.side, "Buy");
         assert_eq!(order.price, "50000.99");

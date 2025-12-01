@@ -67,7 +67,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         println!("Starting HTTP API bridge...");
+        println!("centrifugo_url: {}", centrifugo_url);
+        println!("centrifugo_channel: {}", centrifugo_channel);
+        println!("kafka_broker: {}", kafka_broker);
         println!("kafka_topic: {}", kafka_topic);
+        println!("base_group_id: {}", base_group_id);
+
         if let Err(e) = run_http_bridge(
             &centrifugo_url,
             &centrifugo_channel,
@@ -76,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &base_group_id,
             &api_key,
         )
-            .await
+        .await
         {
             eprintln!("Bridge error: {}", e);
         } else {

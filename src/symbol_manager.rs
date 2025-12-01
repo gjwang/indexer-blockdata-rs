@@ -34,15 +34,24 @@ impl SymbolManager {
         self.insert_with_decimals(symbol, id, 2, 8); // Default: 2 for price, 8 for quantity
     }
 
-    pub fn insert_with_decimals(&mut self, symbol: &str, id: u32, price_decimal: u32, quantity_decimal: u32) {
+    pub fn insert_with_decimals(
+        &mut self,
+        symbol: &str,
+        id: u32,
+        price_decimal: u32,
+        quantity_decimal: u32,
+    ) {
         self.symbol_to_id.insert(symbol.to_string(), id);
         self.id_to_symbol.insert(id, symbol.to_string());
-        self.symbol_info.insert(id, SymbolInfo {
-            symbol: symbol.to_string(),
+        self.symbol_info.insert(
             id,
-            price_decimal,
-            quantity_decimal,
-        });
+            SymbolInfo {
+                symbol: symbol.to_string(),
+                id,
+                price_decimal,
+                quantity_decimal,
+            },
+        );
     }
 
     pub fn get_id(&self, symbol: &str) -> Option<u32> {
