@@ -38,7 +38,7 @@ pub enum OrderSide {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Order {
     pub id: u64,
-    pub symbol: [u8; 8],
+    pub symbol: u32,
     pub side: OrderSide,
     pub price: u64,
     pub quantity: u64,
@@ -92,16 +92,11 @@ impl MatchingEngine {
             OrderSide::Sell => WalSide::Sell,
         };
 
-        let symbol_str = std::str::from_utf8(&order.symbol)
-            .unwrap_or("UNKNOWN")
-            .trim_matches('\0')
-            .to_string();
-
         self.wal
             .log_place_order(
                 order.id,
                 order.user_id,
-                &symbol_str,
+                order.symbol,
                 wal_side,
                 order.price,
                 order.quantity,
@@ -238,7 +233,7 @@ fn main() -> Result<()> {
 
     let mut engine = MatchingEngine::new(wal_path, snap_dir)?;
     let start = Instant::now();
-    let symbol = *b"BTC_USDT";
+    let symbol = 1; // Use u32 ID
 
     // Store some order IDs for matching demonstration
     let mut buy_orders = Vec::new();

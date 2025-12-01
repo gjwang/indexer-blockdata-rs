@@ -28,7 +28,7 @@ pub enum OrderStatus {
 pub struct Order {
     pub order_id: u64,
     pub user_id: u64,
-    pub symbol: String,
+    pub symbol: u32,
     pub side: Side,
     pub price: u64,
     pub quantity: u64,
@@ -58,8 +58,8 @@ pub enum OrderError {
         symbol_id: usize,
     },
     SymbolMismatch {
-        expected: String,
-        actual: String,
+        expected: u32,
+        actual: u32,
     },
     DuplicateOrderId {
         order_id: u64,
@@ -532,13 +532,10 @@ impl MatchingEngine {
         }
 
         // 3. Write to Input Log (Source of Truth)
-        let symbol_str = self.order_books[symbol_id]
-            .as_ref()
-            .map(|b| format!("SYM_{}", b.symbol)) // We store u32 symbol in book, but WAL needs string.
-            .unwrap_or_else(|| "UNKNOWN".to_string());
+        let symbol_u32 = symbol_id as u32;
 
         self.order_wal
-            .log_place_order(order_id, user_id, &symbol_str, wal_side, price, quantity)
+            .log_place_order(order_id, user_id, symbol_u32, wal_side, price, quantity)
             .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
@@ -584,12 +581,11 @@ impl MatchingEngine {
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
         let symbol_u32 = book.symbol;
-        let symbol_str = format!("SYM_{}", symbol_u32); // Mock symbol string
 
         let order = Order {
             order_id,
             user_id,
-            symbol: symbol_str,
+            symbol: symbol_u32,
             side,
             price,
             quantity,
