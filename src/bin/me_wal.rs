@@ -17,7 +17,7 @@ use tikv_jemallocator::Jemalloc;
 // Use the shared library module
 use fetcher::order_wal::{LogEntry, Wal};
 
-use fetcher::models::{Order, Side, Trade, OrderType};
+use fetcher::models::{Order, OrderType, Side, Trade};
 
 // =================================================================
 // MEMORY ALLOCATOR CONFIG
@@ -212,11 +212,7 @@ fn main() -> Result<()> {
     let mut sell_orders = Vec::new();
 
     for i in 1..=total {
-        let side = if i % 2 == 0 {
-            Side::Buy
-        } else {
-            Side::Sell
-        };
+        let side = if i % 2 == 0 { Side::Buy } else { Side::Sell };
         // Use u64 ID (simulated by i)
         let order_id = i;
 

@@ -1,7 +1,7 @@
 use fetcher::ledger::LedgerCommand;
 use fetcher::matching_engine_base::MatchingEngine;
-use fetcher::symbol_manager::SymbolManager;
 use fetcher::models::{OrderRequest, OrderType, Side};
+use fetcher::symbol_manager::SymbolManager;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
@@ -28,7 +28,7 @@ async fn main() {
     // === Initialize Symbols & Funds (Hardcoded for Demo) ===
     println!("=== Initializing Engine State ===");
     let symbol_manager = SymbolManager::load_from_db();
-    
+
     // Register Symbols
     for (&symbol_id, symbol) in &symbol_manager.id_to_symbol {
         let (base, quote) = match symbol.as_str() {
@@ -36,16 +36,39 @@ async fn main() {
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
+        engine
+            .register_symbol(symbol_id, symbol.clone(), base, quote)
+            .unwrap();
         println!("Loaded symbol: {}", symbol);
     }
 
     // Deposit Funds for generic users (1000-1100 range used by gateway)
     // Let's just give a lot of funds to user 1000-1100
     for uid in 1000..1100 {
-         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 1, amount: 1_000_000_000 }).unwrap(); // BTC
-         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 2, amount: 1_000_000_000 }).unwrap(); // USDT
-         engine.ledger.apply(&LedgerCommand::Deposit { user_id: uid, asset: 3, amount: 1_000_000_000 }).unwrap(); // ETH
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: uid,
+                asset: 1,
+                amount: 1_000_000_000,
+            })
+            .unwrap(); // BTC
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: uid,
+                asset: 2,
+                amount: 1_000_000_000,
+            })
+            .unwrap(); // USDT
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: uid,
+                asset: 3,
+                amount: 1_000_000_000,
+            })
+            .unwrap(); // ETH
     }
     println!("Funds deposited for users 1000-1100.");
 
@@ -59,11 +82,16 @@ async fn main() {
         .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
         .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
-        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
+        .set(
+            "socket.keepalive.enable",
+            &config.kafka.socket_keepalive_enable,
+        )
         .create()
         .expect("Consumer creation failed");
 
-    consumer.subscribe(&[&config.kafka.topic]).expect("Can't subscribe");
+    consumer
+        .subscribe(&[&config.kafka.topic])
+        .expect("Can't subscribe");
 
     println!(">>> Matching Engine Server Started");
     println!(">>> Listening on Topic: {}", config.kafka.topic);
@@ -78,27 +106,62 @@ async fn main() {
                             // Deserialize
                             if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
                                 match req {
-                                    OrderRequest::PlaceOrder { order_id, user_id, symbol_id, side, price, quantity, order_type } => {
+                                    OrderRequest::PlaceOrder {
+                                        order_id,
+                                        user_id,
+                                        symbol_id,
+                                        side,
+                                        price,
+                                        quantity,
+                                        order_type,
+                                    } => {
                                         // Symbol is now u32 (ID). We can check if it exists in our manager or just pass it.
                                         // The engine will validate if the symbol ID is registered.
                                         // But we might want to log the string name.
-                                        if let Some(symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                            let side_enum = if side.eq_ignore_ascii_case("Buy") { Side::Buy } else { Side::Sell };
-                                            let type_enum = if order_type.eq_ignore_ascii_case("Market") { OrderType::Market } else { OrderType::Limit };
-                                            
-                                            match engine.add_order(symbol_id, order_id, side_enum, type_enum, price, quantity, user_id) {
-                                                Ok(_) => println!("Order {} Placed: {} {} @ {} ({})", order_id, side, quantity, price, symbol_name),
-                                                Err(e) => eprintln!("Order {} Failed: {}", order_id, e),
+                                        if let Some(symbol_name) =
+                                            symbol_manager.get_symbol(symbol_id)
+                                        {
+                                            let side_enum = if side.eq_ignore_ascii_case("Buy") {
+                                                Side::Buy
+                                            } else {
+                                                Side::Sell
+                                            };
+                                            let type_enum =
+                                                if order_type.eq_ignore_ascii_case("Market") {
+                                                    OrderType::Market
+                                                } else {
+                                                    OrderType::Limit
+                                                };
+
+                                            match engine.add_order(
+                                                symbol_id, order_id, side_enum, type_enum, price,
+                                                quantity, user_id,
+                                            ) {
+                                                Ok(_) => println!(
+                                                    "Order {} Placed: {} {} @ {} ({})",
+                                                    order_id, side, quantity, price, symbol_name
+                                                ),
+                                                Err(e) => {
+                                                    eprintln!("Order {} Failed: {}", order_id, e)
+                                                }
                                             }
                                         } else {
                                             eprintln!("Unknown symbol ID: {}", symbol_id);
                                         }
-                                    },
-                                    OrderRequest::CancelOrder { order_id, symbol_id, .. } => {
-                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                    }
+                                    OrderRequest::CancelOrder {
+                                        order_id,
+                                        symbol_id,
+                                        ..
+                                    } => {
+                                        if let Some(_symbol_name) =
+                                            symbol_manager.get_symbol(symbol_id)
+                                        {
                                             match engine.cancel_order(symbol_id, order_id) {
                                                 Ok(_) => println!("Order {} Cancelled", order_id),
-                                                Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                                Err(e) => {
+                                                    eprintln!("Cancel {} Failed: {}", order_id, e)
+                                                }
                                             }
                                         } else {
                                             eprintln!("Unknown symbol ID: {}", symbol_id);
@@ -108,7 +171,7 @@ async fn main() {
                             } else {
                                 eprintln!("Failed to parse JSON: {}", text);
                             }
-                        },
+                        }
                         Err(e) => eprintln!("Error reading payload: {}", e),
                     }
                 }

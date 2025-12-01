@@ -16,5 +16,5 @@ pub enum OrderRequest {
         order_id: u64,
         user_id: u64,
         symbol_id: u32,
-    }
+    },
 }

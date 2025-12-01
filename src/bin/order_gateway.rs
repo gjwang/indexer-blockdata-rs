@@ -8,12 +8,15 @@ use tokio::time;
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
-    
+
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &config.kafka.broker)
         .set("message.timeout.ms", "5000")
         .set("linger.ms", &config.kafka.linger_ms)
-        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
+        .set(
+            "socket.keepalive.enable",
+            &config.kafka.socket_keepalive_enable,
+        )
         .create()
         .expect("Producer creation error");
 
@@ -21,7 +24,10 @@ async fn main() {
     let symbols: Vec<u32> = vec![0, 1]; // 0=BTC_USDT, 1=ETH_USDT
 
     println!(">>> Starting Order Gateway (Producer)");
-    println!(">>> Target: {}, Topic: {}", config.kafka.broker, config.kafka.topic);
+    println!(
+        ">>> Target: {}, Topic: {}",
+        config.kafka.broker, config.kafka.topic
+    );
 
     // Default count and interval if not in config (could add to AppConfig if needed)
     let count = 1000000;
