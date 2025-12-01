@@ -110,6 +110,8 @@ async fn create_order(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
 
+    println!("Order {} accepted by user_id {}", order_id, client_order.user_id);
+
     Ok(Json(serde_json::json!({
         "order_id": order_id.to_string(),
         "status": "accepted",
