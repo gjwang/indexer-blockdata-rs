@@ -74,7 +74,7 @@ fn on_event(event: &MarketEvent, sequence: Sequence, end_of_batch: bool) {
     // Simulate processing logic
     // In a real matching engine, this is where matching logic happens
     if event.id % 10 == 0 {
-         println!(
+        println!(
             "[Consumer] Seq: {}, BatchEnd: {}, Data: {:?}",
             sequence, end_of_batch, event
         );

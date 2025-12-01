@@ -368,7 +368,8 @@ impl MatchingEngine {
         quote_asset: u32,
     ) -> Result<(), String> {
         if symbol_id as usize >= self.order_books.len() {
-            self.order_books.resize_with(symbol_id as usize + 1, || None);
+            self.order_books
+                .resize_with(symbol_id as usize + 1, || None);
         } else if self.order_books[symbol_id as usize].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
@@ -430,7 +431,9 @@ impl MatchingEngine {
             .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
-        self.process_order(symbol_id, order_id, side, order_type, price, quantity, user_id)
+        self.process_order(
+            symbol_id, order_id, side, order_type, price, quantity, user_id,
+        )
     }
 
     /// Internal Logic: Process Order (No Input WAL write)
@@ -630,5 +633,3 @@ impl MatchingEngine {
         }
     }
 }
-
-

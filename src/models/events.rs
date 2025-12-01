@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use super::serde_utils as float_as_string;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BalanceUpdate {
