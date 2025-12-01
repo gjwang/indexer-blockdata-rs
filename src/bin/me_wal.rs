@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tikv_jemallocator::Jemalloc;
 
 // Use the shared library module
-use fetcher::order_wal::{LogEntry, Wal, WalSide};
+use fetcher::order_wal::{LogEntry, Wal};
 
 use fetcher::models::{Order, Side, Trade, OrderType};
 
@@ -63,17 +63,12 @@ impl MatchingEngine {
 
     #[inline(always)]
     pub fn place_order(&mut self, order: Order) {
-        let wal_side = match order.side {
-            Side::Buy => WalSide::Buy,
-            Side::Sell => WalSide::Sell,
-        };
-
         self.wal
             .log_place_order(
                 order.order_id,
                 order.user_id,
                 order.symbol_id,
-                wal_side,
+                order.side,
                 order.price,
                 order.quantity,
             )

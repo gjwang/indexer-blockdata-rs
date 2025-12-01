@@ -11,18 +11,14 @@ mod wal_schema {
     include!(concat!(env!("OUT_DIR"), "/wal_generated.rs"));
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum WalSide {
-    Buy,
-    Sell,
-}
+use crate::models::Side;
 
 #[derive(Debug, Clone)]
 pub enum LogEntry {
     PlaceOrder {
         order_id: u64,
         symbol_id: u32,
-        side: WalSide,
+        side: Side,
         price: u64,
         quantity: u64,
         user_id: u64,
@@ -66,15 +62,15 @@ impl Wal {
         order_id: u64,
         user_id: u64,
         symbol_id: u32,
-        side: WalSide,
+        side: Side,
         price: u64,
         quantity: u64,
     ) -> Result<(), std::io::Error> {
         let mut builder = FlatBufferBuilder::new();
 
         let f_side = match side {
-            WalSide::Buy => fbs::OrderSide::Buy,
-            WalSide::Sell => fbs::OrderSide::Sell,
+            Side::Buy => fbs::OrderSide::Buy,
+            Side::Sell => fbs::OrderSide::Sell,
         };
 
         let order_id_ulid = to_fbs_ulid(order_id);
@@ -213,8 +209,8 @@ impl WalReader {
                     user_id: order.user_id(),
                     symbol_id: order.symbol(),
                     side: match order.side() {
-                        fbs::OrderSide::Buy => WalSide::Buy,
-                        fbs::OrderSide::Sell => WalSide::Sell,
+                        fbs::OrderSide::Buy => Side::Buy,
+                        fbs::OrderSide::Sell => Side::Sell,
                         _ => return Ok(None),
                     },
                     price: order.price(),
