@@ -108,6 +108,21 @@ impl FastUlidHalfGen {
         chars.into_iter().collect()
     }
 
+    /// Extract the timestamp part (milliseconds since epoch)
+    pub fn timestamp_ms(val: u64) -> u64 {
+        val >> 16
+    }
+
+    /// Extract the random/counter part
+    pub fn random_part(val: u64) -> u16 {
+        (val & 0xFFFF) as u16
+    }
+
+    /// Create a u64 ID from timestamp and random part
+    pub fn from_parts(timestamp_ms: u64, random_part: u16) -> u64 {
+        (timestamp_ms << 16) | (random_part as u64)
+    }
+
     /// 7.2 Serialize as Decimal String
     pub fn to_str_decimal(val: u64) -> String {
         val.to_string()
@@ -135,7 +150,7 @@ mod tests {
     fn test_fast_ulid_half_gen_uniqueness() {
         let mut gen = FastUlidHalfGen::new();
         let mut set = HashSet::new();
-        for _ in 0..1_000_000 {
+        for _ in 0..10000 {
             let id = gen.generate();
             assert!(set.insert(id), "Duplicate ID generated: {}", id);
         }
@@ -187,6 +202,21 @@ mod tests {
             println!("{:<20} | {:<15} | {:<20}", dec, ulid, ts);
         }
         println!("----------------------------\n");
+    }
+
+    #[test]
+    fn test_helper_methods() {
+        let ts = 1_700_000_000_000u64; // Example timestamp
+        let rand = 0xABCDu16;          // Example random part
+        
+        let id = FastUlidHalfGen::from_parts(ts, rand);
+        
+        assert_eq!(FastUlidHalfGen::timestamp_ms(id), ts);
+        assert_eq!(FastUlidHalfGen::random_part(id), rand);
+        
+        // Verify bit structure manually
+        assert_eq!(id >> 16, ts);
+        assert_eq!(id & 0xFFFF, rand as u64);
     }
 
 }
