@@ -64,10 +64,8 @@ impl FastUlidHalfGen {
 
         // 48 bits timestamp, shifted to high bits
         let ts_part = now << 16;
-        // Get the timestamp part of the last value
-        let last_ts_part = self.last_val & 0xFFFF_FFFF_FFFF_0000;
 
-        if ts_part > last_ts_part {
+        if ts_part > self.last_val {
             // New millisecond: generate random low 16 bits
             let rand_part = self.rng.random::<u16>() as u64;
             self.last_val = ts_part | rand_part;
