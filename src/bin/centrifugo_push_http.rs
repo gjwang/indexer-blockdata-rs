@@ -1,9 +1,11 @@
 use clap::Parser;
-use fetcher::configure;
+use nix::libc::proc_pid_rusage;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::Message as KafkaMessage;
 use serde_json::json;
+
+use fetcher::configure;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -65,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     loop {
         println!("Starting HTTP API bridge...");
+        println!("kafka_topic: {}", kafka_topic);
         if let Err(e) = run_http_bridge(
             &centrifugo_url,
             &centrifugo_channel,
@@ -73,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &base_group_id,
             &api_key,
         )
-        .await
+            .await
         {
             eprintln!("Bridge error: {}", e);
         } else {
