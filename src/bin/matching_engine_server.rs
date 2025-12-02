@@ -22,8 +22,14 @@ impl LedgerListener for RedpandaTradeProducer {
             let batch = batch.clone();
 
             tokio::spawn(async move {
-                for data in batch {
-                    let trade = fetcher::models::Trade {
+                if batch.is_empty() {
+                    return;
+                }
+
+                // 1. Convert to Trade Models
+                let trades: Vec<fetcher::models::Trade> = batch
+                    .iter()
+                    .map(|data| fetcher::models::Trade {
                         trade_id: data.trade_id,
                         buy_order_id: data.buy_order_id,
                         sell_order_id: data.sell_order_id,
@@ -31,18 +37,21 @@ impl LedgerListener for RedpandaTradeProducer {
                         sell_user_id: data.seller_user_id,
                         price: data.price,
                         quantity: data.quantity,
-                    };
+                    })
+                    .collect();
 
-                    if let Ok(payload) = serde_json::to_string(&trade) {
-                        let _ = producer
-                            .send(
-                                FutureRecord::to(&topic)
-                                    .payload(&payload)
-                                    .key(&trade.trade_id.to_string()),
-                                std::time::Duration::from_secs(0),
-                            )
-                            .await;
-                    }
+                // 2. Determine Key (Symbol Pair) to ensure ordering
+                let first = &batch[0];
+                let key = format!("{}_{}", first.base_asset, first.quote_asset);
+
+                // 3. Serialize and Send Batch
+                if let Ok(payload) = serde_json::to_string(&trades) {
+                    let _ = producer
+                        .send(
+                            FutureRecord::to(&topic).payload(&payload).key(&key),
+                            std::time::Duration::from_secs(0),
+                        )
+                        .await;
                 }
             });
         }
