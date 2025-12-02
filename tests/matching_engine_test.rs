@@ -1,10 +1,11 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use fetcher::ledger::LedgerCommand;
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
-use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 fn setup_engine(test_name: &str) -> (MatchingEngine, PathBuf, PathBuf) {
     let ts = SystemTime::now()
@@ -80,8 +81,8 @@ fn teardown(wal_dir: PathBuf, snap_dir: PathBuf) {
 #[test]
 fn test_symbol_manager_loading() {
     let manager = SymbolManager::load_from_db();
-    assert_eq!(manager.get_id("BTC_USDT"), Some(0));
-    assert_eq!(manager.get_id("ETH_USDT"), Some(1));
+    assert_eq!(manager.get_symbol_id("BTC_USDT"), Some(0));
+    assert_eq!(manager.get_symbol_id("ETH_USDT"), Some(1));
     assert_eq!(manager.get_symbol(0), Some(&"BTC_USDT".to_string()));
     assert_eq!(manager.get_symbol(1), Some(&"ETH_USDT".to_string()));
 }
@@ -96,7 +97,7 @@ fn test_basic_matching() {
         engine.register_symbol(id, symbol.clone(), 1, 2).unwrap();
     }
 
-    let btc_id = manager.get_id("BTC_USDT").unwrap();
+    let btc_id = manager.get_symbol_id("BTC_USDT").unwrap();
 
     // 1. Add Sell Orders
     // Sell 100 @ 10 (ID 1, User 1) -> Actually Price 100, Qty 10 based on original code
@@ -261,7 +262,7 @@ fn test_duplicate_order_id() {
 fn test_ledger_integration() {
     let (mut engine, wal, snap) = setup_engine("ledger");
     let manager = SymbolManager::load_from_db();
-    let btc_id = manager.get_id("BTC_USDT").unwrap();
+    let btc_id = manager.get_symbol_id("BTC_USDT").unwrap();
     engine
         .register_symbol(btc_id, "BTC_USDT".to_string(), 1, 2)
         .unwrap();
