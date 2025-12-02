@@ -12,35 +12,35 @@ use crate::ledger::{GlobalLedger, LedgerCommand, LedgerListener, MatchExecData, 
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 
-pub struct TradeWalListener {
-    pub wal: Wal,
-}
+// pub struct TradeWalListener {
+//     pub wal: Wal,
+// }
 
-impl LedgerListener for TradeWalListener {
-    fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
-        if let LedgerCommand::MatchExecBatch(batch) = cmd {
-            // Convert MatchExecData back to TradeModel for logging
-            // Note: TradeModel has buy_order_id, sell_order_id, etc.
-            // MatchExecData has the same fields.
-            // We need to map them.
-            let trades: Vec<crate::models::Trade> = batch
-                .iter()
-                .map(|data| crate::models::Trade {
-                    trade_id: data.trade_id,
-                    buy_order_id: data.buy_order_id,
-                    sell_order_id: data.sell_order_id,
-                    buy_user_id: data.buyer_user_id,
-                    sell_user_id: data.seller_user_id,
-                    price: data.price,
-                    quantity: data.quantity,
-                })
-                .collect();
+// impl LedgerListener for TradeWalListener {
+//     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
+//         if let LedgerCommand::MatchExecBatch(batch) = cmd {
+//             // Convert MatchExecData back to TradeModel for logging
+//             // Note: TradeModel has buy_order_id, sell_order_id, etc.
+//             // MatchExecData has the same fields.
+//             // We need to map them.
+//             let trades: Vec<crate::models::Trade> = batch
+//                 .iter()
+//                 .map(|data| crate::models::Trade {
+//                     trade_id: data.trade_id,
+//                     buy_order_id: data.buy_order_id,
+//                     sell_order_id: data.sell_order_id,
+//                     buy_user_id: data.buyer_user_id,
+//                     sell_user_id: data.seller_user_id,
+//                     price: data.price,
+//                     quantity: data.quantity,
+//                 })
+//                 .collect();
 
-            self.wal.log_trade_batch(&trades)?;
-        }
-        Ok(())
-    }
-}
+//             self.wal.log_trade_batch(&trades)?;
+//         }
+//         Ok(())
+//     }
+// }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
