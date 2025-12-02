@@ -7,6 +7,7 @@ use nix::unistd::{fork, ForkResult};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::fast_ulid::SnowflakeGenRng;
 use crate::ledger::{GlobalLedger, LedgerCommand, UserAccount};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
@@ -18,7 +19,6 @@ pub struct OrderBook {
     pub asks: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
     pub active_order_ids: FxHashSet<u64>,
     pub order_index: FxHashMap<u64, (Side, u64)>, // Map order_id -> (Side, Price)
-    pub match_seq: u64,
 }
 
 impl OrderBook {
@@ -29,11 +29,14 @@ impl OrderBook {
             asks: BTreeMap::new(),
             active_order_ids: FxHashSet::default(),
             order_index: FxHashMap::default(),
-            match_seq: 0,
         }
     }
 
-    pub fn add_order(&mut self, order: Order) -> Result<Vec<Trade>, String> {
+    pub fn add_order(
+        &mut self,
+        order: Order,
+        trade_id_gen: &mut SnowflakeGenRng,
+    ) -> Result<Vec<Trade>, String> {
         let order_id = order.order_id;
         let side = order.side;
         let price = order.price;
@@ -65,9 +68,8 @@ impl OrderBook {
                             while let Some(mut best_ask) = orders_at_price.pop_front() {
                                 let trade_quantity = u64::min(order.quantity, best_ask.quantity);
 
-                                self.match_seq += 1;
                                 trades.push(Trade {
-                                    trade_id: self.match_seq,
+                                    trade_id: trade_id_gen.generate(),
                                     buy_order_id: order.order_id,
                                     sell_order_id: best_ask.order_id,
                                     buy_user_id: order.user_id,
@@ -121,9 +123,8 @@ impl OrderBook {
                             while let Some(mut best_bid) = orders_at_price.pop_front() {
                                 let trade_quantity = u64::min(order.quantity, best_bid.quantity);
 
-                                self.match_seq += 1;
                                 trades.push(Trade {
-                                    trade_id: self.match_seq,
+                                    trade_id: trade_id_gen.generate(),
                                     buy_order_id: best_bid.order_id,
                                     sell_order_id: order.order_id,
                                     buy_user_id: best_bid.user_id,
@@ -243,6 +244,7 @@ pub struct MatchingEngine {
     pub order_wal: Wal,
     pub trade_wal: Wal,
     pub snapshot_dir: std::path::PathBuf,
+    pub trade_id_gen: SnowflakeGenRng,
 }
 
 impl MatchingEngine {
@@ -318,6 +320,7 @@ impl MatchingEngine {
             order_wal,
             trade_wal,
             snapshot_dir: snap_dir.to_path_buf(),
+            trade_id_gen: SnowflakeGenRng::new(1),
         };
 
         // Replay
@@ -489,13 +492,15 @@ impl MatchingEngine {
                 .as_millis() as u64,
         };
 
-        let trades = book.add_order(order).map_err(OrderError::Other)?;
+        let trades = book
+            .add_order(order, &mut self.trade_id_gen)
+            .map_err(OrderError::Other)?;
 
         // 3. Settle trades
         for trade in trades {
             // Log trade to Trade WAL (Output Log)
             self.trade_wal
-                .log_match_order(
+                .log_trade(
                     trade.trade_id,
                     trade.buy_order_id,
                     trade.sell_order_id,
