@@ -156,8 +156,16 @@ async fn main() {
         .subscribe(&[&config.kafka.topics.orders])
         .expect("Can't subscribe");
 
+    println!("--------------------------------------------------");
+    println!("Boot Parameters:");
+    println!("  Kafka Broker:      {}", config.kafka.broker);
+    println!("  Orders Topic:      {}", config.kafka.topics.orders);
+    println!("  Trades Topic:      {}", config.kafka.topics.trades);
+    println!("  Consumer Group:    {}", config.kafka.group_id);
+    println!("  WAL Directory:     {:?}", wal_dir);
+    println!("  Snapshot Dir:      {:?}", snap_dir);
+    println!("--------------------------------------------------");
     println!(">>> Matching Engine Server Started");
-    println!(">>> Listening on Topic: {}", config.kafka.topics.orders);
 
     loop {
         match consumer.recv().await {
