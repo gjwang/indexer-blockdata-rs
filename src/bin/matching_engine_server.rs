@@ -215,6 +215,7 @@ async fn main() {
         println!("Processing batch of {} orders", batch.len());
 
         // 3. Process the batch
+        let batch_len = batch.len();
         let mut place_orders = Vec::with_capacity(batch.len());
 
         for m in batch {
@@ -280,6 +281,10 @@ async fn main() {
                 total_orders = 0;
                 last_report = std::time::Instant::now();
             }
+        }
+
+        if batch_len > 0 {
+            println!("[PERF] Loop Active: {:?}", poll_start.elapsed() - wait_time);
         }
     }
 }
