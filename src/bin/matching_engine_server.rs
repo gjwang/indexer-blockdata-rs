@@ -170,76 +170,88 @@ async fn main() {
     println!(">>> Matching Engine Server Started");
 
     loop {
+        let mut batch = Vec::with_capacity(1000);
+
+        // 1. Block for at least one message
         match consumer.recv().await {
+            Ok(m) => batch.push(m),
             Err(e) => eprintln!("Kafka error: {}", e),
-            Ok(m) => {
-                if let Some(payload) = m.payload_view::<str>() {
-                    match payload {
-                        Ok(text) => {
-                            // Deserialize
-                            if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
-                                match req {
-                                    OrderRequest::PlaceOrder {
-                                        order_id,
-                                        user_id,
-                                        symbol_id,
-                                        side,
-                                        price,
-                                        quantity,
-                                        order_type,
-                                    } => {
-                                        // Symbol is now u32 (ID). We can check if it exists in our manager or just pass it.
-                                        // The engine will validate if the symbol ID is registered.
-                                        // But we might want to log the string name.
-                                        if let Some(symbol_name) =
-                                            symbol_manager.get_symbol(symbol_id)
-                                        {
-                                            // Process order
-                                            match engine.add_order(
-                                                symbol_id,
-                                                order_id,
-                                                side,
-                                                order_type,
-                                                price,
-                                                quantity,
-                                                user_id,
-                                            ) {
-                                                Ok(_oid) => {
-                                                    println!("Order placed: id={}, symbol_id={}, side={:?}, price={}, qty={}", order_id, symbol_id, side, price, quantity);
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("Failed to add order: {}", e);
-                                                }
+        }
+
+        // 2. Drain whatever else is already in the local buffer (up to 999 more)
+        for _ in 0..999 {
+            match tokio::time::timeout(std::time::Duration::from_millis(0), consumer.recv()).await {
+                Ok(Ok(m)) => batch.push(m), // Message received
+                Ok(Err(e)) => eprintln!("Kafka error: {}", e), // Kafka error
+                Err(_) => break, // Timeout (Buffer empty), stop batching
+            }
+        }
+
+        if batch.is_empty() {
+            continue;
+        }
+
+        // println!("Processing batch of {} orders", batch.len());
+
+        // 3. Process the batch
+        for m in batch {
+            if let Some(payload) = m.payload_view::<str>() {
+                match payload {
+                    Ok(text) => {
+                        // Deserialize
+                        if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
+                            match req {
+                                OrderRequest::PlaceOrder {
+                                    order_id,
+                                    user_id,
+                                    symbol_id,
+                                    side,
+                                    price,
+                                    quantity,
+                                    order_type,
+                                } => {
+                                    if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                        // Process order
+                                        match engine.add_order(
+                                            symbol_id,
+                                            order_id,
+                                            side,
+                                            order_type,
+                                            price,
+                                            quantity,
+                                            user_id,
+                                        ) {
+                                            Ok(_oid) => {
+                                                // println!("Order placed: id={}, symbol_id={}, side={:?}, price={}, qty={}", order_id, symbol_id, side, price, quantity);
                                             }
-                                        } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol_id);
-                                        }
-                                    }
-                                    OrderRequest::CancelOrder {
-                                        order_id,
-                                        symbol_id,
-                                        ..
-                                    } => {
-                                        if let Some(_symbol_name) =
-                                            symbol_manager.get_symbol(symbol_id)
-                                        {
-                                            match engine.cancel_order(symbol_id, order_id) {
-                                                Ok(_) => println!("Order {} Cancelled", order_id),
-                                                Err(e) => {
-                                                    eprintln!("Cancel {} Failed: {}", order_id, e)
-                                                }
+                                            Err(e) => {
+                                                eprintln!("Failed to add order: {}", e);
                                             }
-                                        } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol_id);
                                         }
+                                    } else {
+                                        eprintln!("Unknown symbol ID: {}", symbol_id);
                                     }
                                 }
-                            } else {
-                                eprintln!("Failed to parse JSON: {}", text);
+                                OrderRequest::CancelOrder {
+                                    order_id,
+                                    symbol_id,
+                                    ..
+                                } => {
+                                    if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                        match engine.cancel_order(symbol_id, order_id) {
+                                            Ok(_) => println!("Order {} Cancelled", order_id),
+                                            Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                        }
+                                    } else {
+                                        eprintln!("Unknown symbol ID: {}", symbol_id);
+                                    }
+                                }
                             }
+                        } else {
+                            eprintln!("Failed to parse JSON: {}", text);
                         }
-                        Err(e) => eprintln!("Error reading payload: {}", e),
                     }
+                    Err(e) => eprintln!("Error reading payload: {}", e),
                 }
             }
         }
