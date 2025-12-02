@@ -4,8 +4,9 @@ use rustc_hash::FxHashMap;
 pub struct SymbolInfo {
     pub symbol: String,
     pub id: u32,
+    pub base_asset_id: u32,
+    pub quote_asset_id: u32,
     pub price_decimal: u32,
-    pub quantity_decimal: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -39,16 +40,17 @@ impl SymbolManager {
         }
     }
 
-    pub fn insert(&mut self, symbol: &str, id: u32) {
-        self.insert_with_decimals(symbol, id, 2, 8); // Default: 2 for price, 8 for quantity
+    pub fn insert(&mut self, symbol: &str, id: u32, base_asset_id: u32, quote_asset_id: u32) {
+        self.insert_symbol(symbol, id, base_asset_id, quote_asset_id, 2); // Default: 2 for price
     }
 
-    pub fn insert_with_decimals(
+    pub fn insert_symbol(
         &mut self,
         symbol: &str,
         id: u32,
+        base_asset_id: u32,
+        quote_asset_id: u32,
         price_decimal: u32,
-        quantity_decimal: u32,
     ) {
         self.symbol_to_id.insert(symbol.to_string(), id);
         self.id_to_symbol.insert(id, symbol.to_string());
@@ -57,8 +59,9 @@ impl SymbolManager {
             SymbolInfo {
                 symbol: symbol.to_string(),
                 id,
+                base_asset_id,
+                quote_asset_id,
                 price_decimal,
-                quantity_decimal,
             },
         );
     }
@@ -98,15 +101,16 @@ impl SymbolManager {
     /// Load initial state (simulating DB load)
     pub fn load_from_db() -> Self {
         let mut manager = SymbolManager::new();
-        // BTC_USDT: price decimal 2 (e.g., 50000.12), quantity decimal 8 (e.g., 0.00000001 BTC)
-        manager.insert_with_decimals("BTC_USDT", 0, 2, 8);
-        // ETH_USDT: price decimal 2 (e.g., 3000.50), quantity decimal 8 (e.g., 0.00000001 ETH)
-        manager.insert_with_decimals("ETH_USDT", 1, 2, 8);
-
+        //TODO: refactor: we do NOT need quantity decimal any more,juse use get_asset_decimal
         // Add Assets
         manager.add_asset(1, "BTC", 8);
         manager.add_asset(2, "USDT", 8);
         manager.add_asset(3, "ETH", 8);
+
+        // BTC_USDT: Base 1 (BTC), Quote 2 (USDT), Price Decimal 2
+        manager.insert_symbol("BTC_USDT", 0, 1, 2, 2);
+        // ETH_USDT: Base 3 (ETH), Quote 2 (USDT), Price Decimal 2
+        manager.insert_symbol("ETH_USDT", 1, 3, 2, 2);
 
         manager
     }
