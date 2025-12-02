@@ -672,39 +672,8 @@ impl GlobalLedger {
         Ok(())
     }
 
-    pub fn apply_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
-        for cmd in cmds {
-            let new_seq = self.last_seq + 1;
-            // Use append_no_flush for batching
-            self.wal.append_no_flush(new_seq, cmd)?;
-            Self::apply_transaction(&mut self.accounts, cmd)?;
-
-            if let Some(listener) = &mut self.listener {
-                listener.on_command(cmd)?;
-            }
-            self.last_seq = new_seq;
-        }
-        // Flush once at the end
-        self.wal.flush()?;
-        Ok(())
-    }
-
-    pub fn apply_memory_only(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        Self::apply_transaction(&mut self.accounts, cmd)?;
-        if let Some(listener) = &mut self.listener {
-            listener.on_command(cmd)?;
-        }
-        Ok(())
-    }
-
-    pub fn log_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
-        for cmd in cmds {
-            let new_seq = self.last_seq + 1;
-            self.wal.append_no_flush(new_seq, cmd)?;
-            self.last_seq = new_seq;
-        }
-        self.wal.flush()?;
-        Ok(())
+    pub fn flush(&mut self) -> Result<()> {
+        self.wal.flush()
     }
 
     pub fn apply_transaction(
