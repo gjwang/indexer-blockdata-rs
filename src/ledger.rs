@@ -460,6 +460,96 @@ impl Iterator for WalIterator {
 }
 
 // ==========================================
+// Ledger Trait and Shadow Implementation
+// ==========================================
+
+pub trait Ledger {
+    fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64;
+    fn apply(&mut self, cmd: &LedgerCommand) -> Result<()>;
+}
+
+pub struct ShadowLedger<'a> {
+    real_ledger: &'a GlobalLedger,
+    delta_accounts: FxHashMap<UserId, UserAccount>,
+    pub pending_commands: Vec<LedgerCommand>,
+}
+
+impl<'a> ShadowLedger<'a> {
+    pub fn new(real_ledger: &'a GlobalLedger) -> Self {
+        Self {
+            real_ledger,
+            delta_accounts: FxHashMap::default(),
+            pending_commands: Vec::new(),
+        }
+    }
+}
+
+impl<'a> Ledger for ShadowLedger<'a> {
+    fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        if let Some(account) = self.delta_accounts.get(&user_id) {
+            return account
+                .assets
+                .iter()
+                .find(|(a, _)| *a == asset_id)
+                .map(|(_, b)| b.avail)
+                .unwrap_or(0);
+        }
+        self.real_ledger.get_balance(user_id, asset_id)
+    }
+
+    fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
+        // Record command
+        self.pending_commands.push(cmd.clone());
+
+        // Apply to delta state
+        match cmd {
+            LedgerCommand::Lock { user_id, .. }
+            | LedgerCommand::Unlock { user_id, .. }
+            | LedgerCommand::Deposit { user_id, .. }
+            | LedgerCommand::Withdraw { user_id, .. }
+            | LedgerCommand::TradeSettle { user_id, .. } => {
+                let account = self
+                    .delta_accounts
+                    .entry(*user_id)
+                    .or_insert_with(|| self.real_ledger.get_account_copy(*user_id));
+                
+                // We use a static helper to apply to a single account map, 
+                // but apply_transaction takes the whole map.
+                // Let's reuse apply_transaction but pass a temporary map containing just this user?
+                // Or better: extract apply logic to work on UserAccount.
+                // For now, let's just use apply_transaction on our delta map.
+                // But apply_transaction expects the map to have the user. We ensured that.
+                
+                // Wait, apply_transaction takes &mut FxHashMap<UserId, UserAccount>.
+                // We can pass &mut self.delta_accounts.
+                // But we need to ensure ALL users involved in the command are in delta_accounts.
+                // For single-user commands, we did that above.
+                // For MatchExec, it involves TWO users.
+                GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
+            }
+            LedgerCommand::MatchExec(data) => {
+                self.delta_accounts.entry(data.buyer_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
+                self.delta_accounts.entry(data.seller_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
+                GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
+            }
+            LedgerCommand::MatchExecBatch(batch) => {
+                for data in batch {
+                    self.delta_accounts.entry(data.buyer_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
+                    self.delta_accounts.entry(data.seller_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
+                }
+                GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
+            }
+            LedgerCommand::Batch(cmds) => {
+                for c in cmds {
+                    self.apply(c)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ==========================================
 // 6. Global Ledger
 // ==========================================
 
@@ -655,8 +745,48 @@ impl GlobalLedger {
         self.accounts.get(&user_id).map(|u| u.assets.clone())
     }
 
+    pub fn get_account_copy(&self, user_id: UserId) -> UserAccount {
+        self.accounts.get(&user_id).cloned().unwrap_or_else(|| UserAccount::new(user_id))
+    }
+
     pub fn set_listener(&mut self, listener: Box<dyn LedgerListener>) {
         self.listener = Some(listener);
+    }
+
+    // Inherent apply (already exists below)
+    // pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> ...
+}
+
+impl Ledger for GlobalLedger {
+    fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        self.accounts.get(&user_id)
+            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
+            .map(|(_, b)| b.avail)
+            .unwrap_or(0)
+    }
+
+    fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
+        self.apply(cmd)
+    }
+}
+
+impl GlobalLedger {
+
+    pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        for cmd in cmds {
+            let new_seq = self.last_seq + 1;
+            self.wal.append_no_flush(new_seq, cmd)?;
+            self.last_seq = new_seq;
+        }
+        self.wal.flush()?;
+
+        for cmd in cmds {
+            Self::apply_transaction(&mut self.accounts, cmd)?;
+            if let Some(listener) = &mut self.listener {
+                listener.on_command(cmd)?;
+            }
+        }
+        Ok(())
     }
 
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
