@@ -30,7 +30,9 @@ impl OrderPublisher for MockPublisher {
 #[tokio::test]
 async fn test_create_order_api_success() {
     let mut sm = SymbolManager::new();
-    sm.insert("BTC_USDT", 1);
+    sm.add_asset(1, 8); // BTC
+    sm.add_asset(2, 8); // USDT
+    sm.insert("BTC_USDT", 1, 1, 2);
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
     let state = Arc::new(AppState {

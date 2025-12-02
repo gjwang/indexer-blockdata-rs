@@ -161,7 +161,8 @@ fn test_dynamic_symbol_registration() {
     // Add new symbol
     let new_symbol = "SOL_USDT";
     let new_id = 5;
-    manager.insert(new_symbol, new_id);
+    manager.add_asset(4, 8); // SOL
+    manager.insert(new_symbol, new_id, 4, 2);
 
     assert!(engine
         .register_symbol(new_id, new_symbol.to_string(), 4, 2)
