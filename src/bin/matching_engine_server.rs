@@ -92,41 +92,27 @@ async fn main() {
         println!("Loaded symbol: {}", symbol);
     }
 
-    // Deposit Funds for generic users (1000-1100 range used by gateway)
-    // Let's just give a lot of funds to user 1000-1100
+    // Deposit Funds for generic users
     println!("=== Depositing Funds ===");
     let amount = 100_000_000_u64;
-     //TODO get the asset decimal from symbol_manager
-     //if symbol_manager not have the interface to get the asset decimal, we should add it
-    let decimal = 8;
-    let amount_raw = amount * 10_u64.pow(decimal);
+
     for uid in 0..5000 {
-        engine
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: uid,
-                asset: 1,
-                amount: amount_raw,
-            })
-            .unwrap(); // BTC
-        engine
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: uid,
-                asset: 2,
-                amount: amount_raw,
-            })
-            .unwrap(); // USDT
-        engine
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: uid,
-                asset: 3,
-                amount: amount_raw,
-            })
-            .unwrap(); // ETH
+        for asset_id in [1, 2, 3] {
+            // BTC, USDT, ETH
+            let decimal = symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+            let amount_raw = amount * 10_u64.pow(decimal);
+
+            engine
+                .ledger
+                .apply(&LedgerCommand::Deposit {
+                    user_id: uid,
+                    asset: asset_id,
+                    amount: amount_raw,
+                })
+                .unwrap();
+        }
     }
-    println!("Funds deposited for users 1000-1100.");
+    println!("Funds deposited for users 0-5000.");
 
     // === Kafka Consumer Setup ===
     // === Kafka Consumer Setup ===

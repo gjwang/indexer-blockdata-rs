@@ -107,7 +107,7 @@ impl SymbolManager {
         manager.add_asset(1, "BTC", 8);
         manager.add_asset(2, "USDT", 8);
         manager.add_asset(3, "ETH", 8);
-        
+
         manager
     }
 }
