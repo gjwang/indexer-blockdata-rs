@@ -584,6 +584,19 @@ impl MatchingEngine {
         Ok(order_id)
     }
 
+    pub fn add_order_batch(
+        &mut self,
+        requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
+    ) -> Vec<Result<u64, OrderError>> {
+        let mut results = Vec::with_capacity(requests.len());
+        for (symbol_id, order_id, side, order_type, price, quantity, user_id) in requests {
+            results.push(self.add_order(
+                symbol_id, order_id, side, order_type, price, quantity, user_id,
+            ));
+        }
+        results
+    }
+
     /// Public API: Cancel Order (Writes to WAL, then processes)
     pub fn cancel_order(&mut self, symbol_id: u32, order_id: u64) -> Result<(), OrderError> {
         // 1. Write to WAL
