@@ -221,6 +221,121 @@ impl Wal {
 
         Ok(())
     }
+    pub fn flush(&mut self) -> Result<(), std::io::Error> {
+        self.writer.flush()
+    }
+
+    pub fn log_place_order_no_flush(
+        &mut self,
+        order_id: u64,
+        user_id: u64,
+        symbol_id: u32,
+        side: Side,
+        price: u64,
+        quantity: u64,
+    ) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let f_side = match side {
+            Side::Buy => fbs::OrderSide::Buy,
+            Side::Sell => fbs::OrderSide::Sell,
+        };
+
+        let order_id_ulid = to_fbs_ulid(order_id);
+
+        let args = fbs::OrderArgs {
+            order_id: Some(&order_id_ulid),
+            user_id,
+            symbol_id, // Direct u32
+            side: f_side,
+            price,
+            quantity,
+            timestamp: 0,
+        };
+        let place_order = fbs::Order::create(&mut builder, &args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::Order,
+            entry: Some(place_order.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        // No flush here
+        Ok(())
+    }
+
+    pub fn log_cancel_order_no_flush(&mut self, order_id: u64) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let order_id_ulid = to_fbs_ulid(order_id);
+
+        let args = fbs::CancelArgs {
+            order_id: Some(&order_id_ulid),
+        };
+        let cancel_order = fbs::Cancel::create(&mut builder, &args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::Cancel,
+            entry: Some(cancel_order.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        // No flush here
+        Ok(())
+    }
+
+    pub fn log_trade_batch_no_flush(&mut self, trades: &[TradeModel]) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let mut trade_offsets = Vec::with_capacity(trades.len());
+
+        for trade in trades {
+            let buy_id = to_fbs_ulid(trade.buy_order_id);
+            let sell_id = to_fbs_ulid(trade.sell_order_id);
+
+            let args = fbs::TradeArgs {
+                trade_id: trade.trade_id,
+                buy_order_id: Some(&buy_id),
+                sell_order_id: Some(&sell_id),
+                price: trade.price,
+                quantity: trade.quantity,
+            };
+            trade_offsets.push(fbs::Trade::create(&mut builder, &args));
+        }
+
+        let trades_vec = builder.create_vector(&trade_offsets);
+        let batch_args = fbs::TradeBatchArgs {
+            trades: Some(trades_vec),
+        };
+        let batch = fbs::TradeBatch::create(&mut builder, &batch_args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::TradeBatch,
+            entry: Some(batch.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        // No flush here
+        Ok(())
+    }
 }
 
 pub struct WalReader {

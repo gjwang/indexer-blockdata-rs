@@ -478,13 +478,21 @@ impl MatchingEngine {
             .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
-        self.process_order(
+        let (oid, cmds) = self.process_order_internal(
             symbol_id, order_id, side, order_type, price, quantity, user_id,
-        )
+        )?;
+
+        // 3. Log to Ledger WAL (Flush)
+        self.ledger
+            .log_batch(&cmds)
+            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+
+        Ok(oid)
     }
 
     /// Internal Logic: Process Order (No Input WAL write)
-    fn process_order(
+    /// Returns (order_id, List of LedgerCommands generated)
+    fn process_order_internal(
         &mut self,
         symbol_id: u32,
         order_id: u64,
@@ -493,11 +501,13 @@ impl MatchingEngine {
         price: u64,
         quantity: u64,
         user_id: u64,
-    ) -> Result<u64, OrderError> {
+    ) -> Result<(u64, Vec<LedgerCommand>), OrderError> {
         let (base_asset, quote_asset) = *self
             .asset_map
             .get(&symbol_id)
             .ok_or(OrderError::AssetMapNotFound { symbol_id })?;
+
+        let mut commands = Vec::new();
 
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -505,13 +515,15 @@ impl MatchingEngine {
             Side::Sell => (base_asset, quantity),
         };
 
+        let lock_cmd = LedgerCommand::Lock {
+            user_id,
+            asset: lock_asset,
+            amount: lock_amount,
+        };
         self.ledger
-            .apply(&LedgerCommand::Lock {
-                user_id,
-                asset: lock_asset,
-                amount: lock_amount,
-            })
+            .apply_memory_only(&lock_cmd)
             .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        commands.push(lock_cmd);
 
         let book_opt = self
             .order_books
@@ -539,13 +551,6 @@ impl MatchingEngine {
         let trades = book
             .add_order(order, &mut self.trade_id_gen)
             .map_err(OrderError::Other)?;
-
-        // 3. Log trades batch (Handled by LedgerListener now)
-        // if !match_batch.is_empty() {
-        //     self.trade_wal
-        //         .log_trade_batch(&trades)
-        //         .map_err(|e| OrderError::Other(e.to_string()))?;
-        // }
 
         let mut match_batch = Vec::with_capacity(trades.len());
 
@@ -576,12 +581,14 @@ impl MatchingEngine {
         }
 
         if !match_batch.is_empty() {
+            let exec_cmd = LedgerCommand::MatchExecBatch(match_batch);
             self.ledger
-                .apply(&LedgerCommand::MatchExecBatch(match_batch))
+                .apply_memory_only(&exec_cmd)
                 .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+            commands.push(exec_cmd);
         }
 
-        Ok(order_id)
+        Ok((order_id, commands))
     }
 
     pub fn add_order_batch(
@@ -589,11 +596,73 @@ impl MatchingEngine {
         requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
     ) -> Vec<Result<u64, OrderError>> {
         let mut results = Vec::with_capacity(requests.len());
+        let mut all_commands = Vec::new();
+
         for (symbol_id, order_id, side, order_type, price, quantity, user_id) in requests {
-            results.push(self.add_order(
+            // 1. Validation (Duplicated from add_order for now, ideally extract)
+            let wal_side = side;
+            let (base_asset, quote_asset) = match self.asset_map.get(&symbol_id) {
+                Some(&pair) => pair,
+                None => {
+                    results.push(Err(OrderError::AssetMapNotFound { symbol_id }));
+                    continue;
+                }
+            };
+            let (required_asset, required_amount) = match side {
+                Side::Buy => (quote_asset, price * quantity),
+                Side::Sell => (base_asset, quantity),
+            };
+
+            let accounts = self.ledger.get_accounts();
+            let balance = accounts
+                .get(&user_id)
+                .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
+                .map(|(_, b)| b.avail)
+                .unwrap_or(0);
+
+            if balance < required_amount {
+                results.push(Err(OrderError::InsufficientFunds {
+                    user_id,
+                    asset_id: required_asset,
+                    required: required_amount,
+                    available: balance,
+                }));
+                continue;
+            }
+
+            // 2. Log to Order WAL (No Flush)
+            if let Err(e) = self.order_wal.log_place_order_no_flush(
+                order_id, user_id, symbol_id, wal_side, price, quantity,
+            ) {
+                results.push(Err(OrderError::Other(e.to_string())));
+                continue;
+            }
+
+            // 3. Process
+            match self.process_order_internal(
                 symbol_id, order_id, side, order_type, price, quantity, user_id,
-            ));
+            ) {
+                Ok((oid, cmds)) => {
+                    all_commands.extend(cmds);
+                    results.push(Ok(oid));
+                }
+                Err(e) => results.push(Err(e)),
+            }
         }
+
+        // 4. Flush Order WAL
+        if let Err(e) = self.order_wal.flush() {
+            eprintln!("Failed to flush order WAL: {}", e);
+        }
+
+        // 5. Log Batch to Ledger WAL (Flush once)
+        if !all_commands.is_empty() {
+            if let Err(e) = self.ledger.log_batch(&all_commands) {
+                eprintln!("Failed to log ledger batch: {}", e);
+                // In production, this is critical failure (memory updated but WAL failed)
+            }
+        }
+
         results
     }
 
