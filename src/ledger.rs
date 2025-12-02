@@ -675,7 +675,14 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                bal.deposit(*amount);
+                bal.deposit(*amount).map_err(|e| {
+                    anyhow::anyhow!(
+                        "Deposit failed for User {} Asset {}: {}",
+                        user_id,
+                        asset,
+                        e
+                    )
+                })?;
             }
             LedgerCommand::Withdraw {
                 user_id,
