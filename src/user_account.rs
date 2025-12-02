@@ -12,16 +12,17 @@ pub struct Balance {
 }
 
 impl Balance {
-    pub fn deposit(&mut self, amount: u64) {
-        self.avail = self.avail.saturating_add(amount);
+    pub fn deposit(&mut self, amount: u64) -> Result<(), &'static str> {
+        self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
         self.version = self.version.wrapping_add(1);
+        Ok(())
     }
 
     pub fn withdraw(&mut self, amount: u64) -> Result<(), &'static str> {
         if self.avail < amount {
             return Err("Insufficient funds");
         }
-        self.avail -= amount;
+        self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -30,8 +31,8 @@ impl Balance {
         if self.avail < amount {
             return Err("Insufficient funds");
         }
-        self.avail -= amount;
-        self.frozen = self.frozen.saturating_add(amount);
+        self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
+        self.frozen = self.frozen.checked_add(amount).ok_or("Frozen balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -40,8 +41,8 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen -= amount;
-        self.avail = self.avail.saturating_add(amount);
+        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
+        self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -50,7 +51,7 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen -= amount;
+        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -138,7 +139,7 @@ impl UserAccount {
 
         // Credit Base (Available)
         let base_bal = self.get_balance_mut(base_asset);
-        base_bal.deposit(gain_base);
+        base_bal.deposit(gain_base)?;
 
         // Refund Quote (Frozen -> Available)
         if refund_quote > 0 {
@@ -162,7 +163,7 @@ impl UserAccount {
 
         // Credit Quote (Available)
         let quote_bal = self.get_balance_mut(quote_asset);
-        quote_bal.deposit(gain_quote);
+        quote_bal.deposit(gain_quote)?;
 
         // Refund Base (Frozen -> Available)
         if refund_base > 0 {
