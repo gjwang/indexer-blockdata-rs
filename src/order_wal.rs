@@ -11,7 +11,16 @@ mod wal_schema {
     include!(concat!(env!("OUT_DIR"), "/wal_generated.rs"));
 }
 
-use crate::models::Side;
+use crate::models::{Side, Trade as TradeModel};
+
+#[derive(Debug, Clone)]
+pub struct TradeLogEntry {
+    pub trade_id: u64,
+    pub buy_order_id: u64,
+    pub sell_order_id: u64,
+    pub price: u64,
+    pub quantity: u64,
+}
 
 #[derive(Debug, Clone)]
 pub enum LogEntry {
@@ -36,6 +45,7 @@ pub enum LogEntry {
         price: u64,
         quantity: u64,
     },
+    TradeBatch(Vec<TradeLogEntry>),
 }
 
 fn to_fbs_ulid(id: u64) -> UlidStruct {
@@ -169,6 +179,48 @@ impl Wal {
 
         Ok(())
     }
+
+    pub fn log_trade_batch(&mut self, trades: &[TradeModel]) -> Result<(), std::io::Error> {
+        let mut builder = FlatBufferBuilder::new();
+
+        let mut trade_offsets = Vec::with_capacity(trades.len());
+
+        for trade in trades {
+            let buy_id = to_fbs_ulid(trade.buy_order_id);
+            let sell_id = to_fbs_ulid(trade.sell_order_id);
+
+            let args = fbs::TradeArgs {
+                trade_id: trade.trade_id,
+                buy_order_id: Some(&buy_id),
+                sell_order_id: Some(&sell_id),
+                price: trade.price,
+                quantity: trade.quantity,
+            };
+            trade_offsets.push(fbs::Trade::create(&mut builder, &args));
+        }
+
+        let trades_vec = builder.create_vector(&trade_offsets);
+        let batch_args = fbs::TradeBatchArgs {
+            trades: Some(trades_vec),
+        };
+        let batch = fbs::TradeBatch::create(&mut builder, &batch_args);
+
+        let log_entry_args = fbs::WalFrameArgs {
+            entry_type: fbs::EntryType::TradeBatch,
+            entry: Some(batch.as_union_value()),
+            seq: 0,
+        };
+        let frame = fbs::WalFrame::create(&mut builder, &log_entry_args);
+        builder.finish(frame, None);
+
+        let buf = builder.finished_data();
+        let len = buf.len() as u32;
+        self.writer.write_all(&len.to_le_bytes())?;
+        self.writer.write_all(buf)?;
+        self.writer.flush()?;
+
+        Ok(())
+    }
 }
 
 pub struct WalReader {
@@ -240,6 +292,24 @@ impl WalReader {
                     price: trade.price(),
                     quantity: trade.quantity(),
                 }))
+            }
+            fbs::EntryType::TradeBatch => {
+                let batch = frame.entry_as_trade_batch().unwrap();
+                let trades = batch.trades().unwrap();
+                let mut entries = Vec::with_capacity(trades.len());
+
+                for trade in trades {
+                    let buy_order_id = trade.buy_order_id().unwrap().lo();
+                    let sell_order_id = trade.sell_order_id().unwrap().lo();
+                    entries.push(TradeLogEntry {
+                        trade_id: trade.trade_id(),
+                        buy_order_id,
+                        sell_order_id,
+                        price: trade.price(),
+                        quantity: trade.quantity(),
+                    });
+                }
+                Ok(Some(LogEntry::TradeBatch(entries)))
             }
             _ => Ok(None),
         }
