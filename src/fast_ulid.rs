@@ -38,7 +38,7 @@ impl FastUlidGen {
 /// - 16 bits: Randomness / Counter
 pub struct FastUlidHalfGen {
     last_val: u64,
-    rng: rand::rngs::ThreadRng,
+    rng: rand::rngs::StdRng,
 }
 
 impl Default for FastUlidHalfGen {
@@ -51,7 +51,7 @@ impl FastUlidHalfGen {
     pub fn new() -> Self {
         Self {
             last_val: 0,
-            rng: rand::rng(),
+            rng: rand::rngs::StdRng::from_rng(&mut rand::rng()),
         }
     }
 
