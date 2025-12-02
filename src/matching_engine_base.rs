@@ -21,6 +21,8 @@ pub struct OrderBook {
     pub order_index: FxHashMap<u64, (Side, u64)>, // Map order_id -> (Side, Price)
 }
 
+//TODO: define and implement fee rate
+
 impl OrderBook {
     pub fn new(symbol_id: u32) -> Self {
         Self {
@@ -503,41 +505,29 @@ impl MatchingEngine {
                 .map_err(|e| OrderError::Other(e.to_string()))?;
         }
 
-        let mut ledger_cmds = Vec::with_capacity(trades.len() * 3);
+        let mut ledger_cmds = Vec::with_capacity(trades.len());
 
         for trade in &trades {
-            let (buyer_spend, buyer_gain) = (trade.price * trade.quantity, trade.quantity);
-            let (seller_spend, seller_gain) = (trade.quantity, trade.price * trade.quantity);
-
-            // Buyer Settle
-            ledger_cmds.push(LedgerCommand::TradeSettle {
-                user_id: trade.buy_user_id,
-                spend_asset: quote_asset,
-                spend_amount: buyer_spend,
-                gain_asset: base_asset,
-                gain_amount: buyer_gain,
-            });
-
-            // Seller Settle
-            ledger_cmds.push(LedgerCommand::TradeSettle {
-                user_id: trade.sell_user_id,
-                spend_asset: base_asset,
-                spend_amount: seller_spend,
-                gain_asset: quote_asset,
-                gain_amount: seller_gain,
-            });
-
+            let mut buyer_refund = 0;
             // Refund excess frozen for Taker Buyer
             if side == Side::Buy && trade.buy_user_id == user_id {
                 let excess = (price - trade.price) * trade.quantity;
                 if excess > 0 {
-                    ledger_cmds.push(LedgerCommand::Unlock {
-                        user_id,
-                        asset: quote_asset,
-                        amount: excess,
-                    });
+                    buyer_refund = excess;
                 }
             }
+
+            ledger_cmds.push(LedgerCommand::MatchExec {
+                trade_id: trade.trade_id,
+                buyer_user_id: trade.buy_user_id,
+                seller_user_id: trade.sell_user_id,
+                price: trade.price,
+                quantity: trade.quantity,
+                base_asset,
+                quote_asset,
+                buyer_refund,
+                seller_refund: 0, // Seller usually doesn't get refund in this model
+            });
         }
 
         if !ledger_cmds.is_empty() {

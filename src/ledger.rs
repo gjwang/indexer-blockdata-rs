@@ -108,6 +108,17 @@ pub enum LedgerCommand {
         gain_asset: AssetId,
         gain_amount: u64,
     },
+    MatchExec {
+        trade_id: u64,
+        buyer_user_id: UserId,
+        seller_user_id: UserId,
+        price: u64,
+        quantity: u64,
+        base_asset: AssetId,
+        quote_asset: AssetId,
+        buyer_refund: u64,
+        seller_refund: u64,
+    },
     Batch(Vec<LedgerCommand>),
 }
 
@@ -781,6 +792,80 @@ impl GlobalLedger {
                             frozen: 0,
                         },
                     ));
+                }
+            }
+            LedgerCommand::MatchExec {
+                trade_id: _,
+                buyer_user_id,
+                seller_user_id,
+                price,
+                quantity,
+                base_asset,
+                quote_asset,
+                buyer_refund,
+                seller_refund,
+            } => {
+                let buyer_spend = price * quantity;
+                let buyer_gain = *quantity;
+                let seller_spend = *quantity;
+                let seller_gain = price * quantity;
+
+                // 1. Buyer Settle
+                let buyer = accounts
+                    .entry(*buyer_user_id)
+                    .or_insert_with(|| UserAccount::new(*buyer_user_id));
+
+                // Debit Quote (Frozen)
+                let quote_bal = buyer.get_balance_mut(*quote_asset);
+                if quote_bal.frozen < buyer_spend {
+                    anyhow::bail!("Insufficient frozen quote for buyer {}", buyer_user_id);
+                }
+                quote_bal.frozen -= buyer_spend;
+
+                // Credit Base (Available)
+                let base_bal = buyer.get_balance_mut(*base_asset);
+                base_bal.available += buyer_gain;
+
+                // Refund Quote (Frozen -> Available)
+                if *buyer_refund > 0 {
+                    let quote_bal = buyer.get_balance_mut(*quote_asset);
+                    if quote_bal.frozen < *buyer_refund {
+                        anyhow::bail!(
+                            "Insufficient frozen quote for refund buyer {}",
+                            buyer_user_id
+                        );
+                    }
+                    quote_bal.frozen -= buyer_refund;
+                    quote_bal.available += buyer_refund;
+                }
+
+                // 2. Seller Settle
+                let seller = accounts
+                    .entry(*seller_user_id)
+                    .or_insert_with(|| UserAccount::new(*seller_user_id));
+
+                // Debit Base (Frozen)
+                let base_bal = seller.get_balance_mut(*base_asset);
+                if base_bal.frozen < seller_spend {
+                    anyhow::bail!("Insufficient frozen base for seller {}", seller_user_id);
+                }
+                base_bal.frozen -= seller_spend;
+
+                // Credit Quote (Available)
+                let quote_bal = seller.get_balance_mut(*quote_asset);
+                quote_bal.available += seller_gain;
+
+                // Refund Base (Frozen -> Available) - unlikely but supported
+                if *seller_refund > 0 {
+                    let base_bal = seller.get_balance_mut(*base_asset);
+                    if base_bal.frozen < *seller_refund {
+                        anyhow::bail!(
+                            "Insufficient frozen base for refund seller {}",
+                            seller_user_id
+                        );
+                    }
+                    base_bal.frozen -= seller_refund;
+                    base_bal.available += seller_refund;
                 }
             }
             LedgerCommand::Batch(cmds) => {
