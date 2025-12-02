@@ -288,7 +288,7 @@ impl MatchingEngine {
         }
 
         let order_wal_path = wal_dir.join("orders.wal");
-        let trade_wal_path = wal_dir.join("trades.wal");
+        // let trade_wal_path = wal_dir.join("trades.wal");
 
         // 1. Try Load Snapshot
         let mut order_books = Vec::new();
@@ -344,9 +344,9 @@ impl MatchingEngine {
             GlobalLedger::new(&ledger_wal_path, &ledger_snap_path).map_err(|e| e.to_string())?;
 
         // Initialize Trade WAL Listener
-        let trade_wal = Wal::new(&trade_wal_path).map_err(|e| e.to_string())?;
-        let listener = Box::new(TradeWalListener { wal: trade_wal });
-        ledger.set_listener(listener);
+        // let trade_wal = Wal::new(&trade_wal_path).map_err(|e| e.to_string())?;
+        // let listener = Box::new(TradeWalListener { wal: trade_wal });
+        // ledger.set_listener(listener);
 
         // 3. Replay WAL
         let order_wal = Wal::new(&order_wal_path).map_err(|e| e.to_string())?;
