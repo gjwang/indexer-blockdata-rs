@@ -1,0 +1,68 @@
+use fetcher::configure;
+use fetcher::models::Trade;
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::Message;
+
+#[tokio::main]
+async fn main() {
+    let config = configure::load_config().expect("Failed to load config");
+
+    let broker = config.kafka.broker;
+    let topic = config.kafka.topics.trades;
+    let group_id = format!("{}-history-viewer", config.kafka.group_id);
+
+    println!("=== Trade History Consumer ===");
+    println!("Broker: {}", broker);
+    println!("Topic: {}", topic);
+    println!("Group ID: {}", group_id);
+    println!("------------------------------");
+
+    let consumer: StreamConsumer = ClientConfig::new()
+        .set("bootstrap.servers", &broker)
+        .set("group.id", &group_id)
+        .set("enable.auto.commit", "true")
+        .set("auto.offset.reset", "earliest")
+        .create()
+        .expect("Consumer creation failed");
+
+    consumer.subscribe(&[&topic]).expect("Can't subscribe");
+
+    println!("Listening for trades...");
+
+    loop {
+        match consumer.recv().await {
+            Err(e) => eprintln!("Kafka error: {}", e),
+            Ok(m) => {
+                if let Some(payload) = m.payload_view::<str>() {
+                    match payload {
+                        Ok(text) => {
+                            // Deserialize JSON array of trades
+                            match serde_json::from_str::<Vec<Trade>>(text) {
+                                Ok(trades) => {
+                                    for trade in trades {
+                                        println!(
+                                            "Trade #{}: Price={} Qty={} (BuyOrder={}, SellOrder={} | Buyer={}, Seller={})",
+                                            trade.trade_id,
+                                            trade.price,
+                                            trade.quantity,
+                                            trade.buy_order_id,
+                                            trade.sell_order_id,
+                                            trade.buy_user_id,
+                                            trade.sell_user_id
+                                        );
+                                    }
+                                }
+                                Err(e) => eprintln!(
+                                    "Failed to parse trade batch: {} | Payload: {}",
+                                    e, text
+                                ),
+                            }
+                        }
+                        Err(e) => eprintln!("Error reading payload: {}", e),
+                    }
+                }
+            }
+        }
+    }
+}
