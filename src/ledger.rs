@@ -262,6 +262,17 @@ impl RollingWal {
         Ok(())
     }
 
+    pub fn append_no_flush(&mut self, seq: u64, cmd: &LedgerCommand) -> Result<()> {
+        self.append(seq, cmd)
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        if let Some(segment) = &mut self.current_segment {
+            segment.flush()?;
+        }
+        Ok(())
+    }
+
     fn rotate(&mut self, next_seq: u64) -> Result<()> {
         if let Some(mut old_segment) = self.current_segment.take() {
             old_segment.flush()?;
@@ -664,8 +675,8 @@ impl GlobalLedger {
     pub fn apply_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
         for cmd in cmds {
             let new_seq = self.last_seq + 1;
-            // TODO: Optimize WAL to support batch append (single flush)
-            self.wal.append(new_seq, cmd)?;
+            // Use append_no_flush for batching
+            self.wal.append_no_flush(new_seq, cmd)?;
             Self::apply_transaction(&mut self.accounts, cmd)?;
 
             if let Some(listener) = &mut self.listener {
@@ -673,10 +684,30 @@ impl GlobalLedger {
             }
             self.last_seq = new_seq;
         }
+        // Flush once at the end
+        self.wal.flush()?;
         Ok(())
     }
 
-    fn apply_transaction(
+    pub fn apply_memory_only(&mut self, cmd: &LedgerCommand) -> Result<()> {
+        Self::apply_transaction(&mut self.accounts, cmd)?;
+        if let Some(listener) = &mut self.listener {
+            listener.on_command(cmd)?;
+        }
+        Ok(())
+    }
+
+    pub fn log_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        for cmd in cmds {
+            let new_seq = self.last_seq + 1;
+            self.wal.append_no_flush(new_seq, cmd)?;
+            self.last_seq = new_seq;
+        }
+        self.wal.flush()?;
+        Ok(())
+    }
+
+    pub fn apply_transaction(
         accounts: &mut FxHashMap<UserId, UserAccount>,
         cmd: &LedgerCommand,
     ) -> Result<()> {
