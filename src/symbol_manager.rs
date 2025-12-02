@@ -8,11 +8,19 @@ pub struct SymbolInfo {
     pub quantity_decimal: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct AssetInfo {
+    pub id: u32,
+    pub symbol: String,
+    pub decimals: u32,
+}
+
 /// Manages symbol-to-ID and ID-to-symbol mappings
 pub struct SymbolManager {
     pub symbol_to_id: FxHashMap<String, u32>,
     pub id_to_symbol: FxHashMap<u32, String>,
     pub symbol_info: FxHashMap<u32, SymbolInfo>,
+    pub assets: FxHashMap<u32, AssetInfo>,
 }
 
 impl Default for SymbolManager {
@@ -27,6 +35,7 @@ impl SymbolManager {
             symbol_to_id: FxHashMap::default(),
             id_to_symbol: FxHashMap::default(),
             symbol_info: FxHashMap::default(),
+            assets: FxHashMap::default(),
         }
     }
 
@@ -71,6 +80,21 @@ impl SymbolManager {
         self.symbol_info.get(&id)
     }
 
+    pub fn add_asset(&mut self, id: u32, symbol: &str, decimals: u32) {
+        self.assets.insert(
+            id,
+            AssetInfo {
+                id,
+                symbol: symbol.to_string(),
+                decimals,
+            },
+        );
+    }
+
+    pub fn get_asset_decimal(&self, asset_id: u32) -> Option<u32> {
+        self.assets.get(&asset_id).map(|a| a.decimals)
+    }
+
     /// Load initial state (simulating DB load)
     pub fn load_from_db() -> Self {
         let mut manager = SymbolManager::new();
@@ -78,6 +102,12 @@ impl SymbolManager {
         manager.insert_with_decimals("BTC_USDT", 0, 2, 8);
         // ETH_USDT: price decimal 2 (e.g., 3000.50), quantity decimal 8 (e.g., 0.00000001 ETH)
         manager.insert_with_decimals("ETH_USDT", 1, 2, 8);
+
+        // Add Assets
+        manager.add_asset(1, "BTC", 8);
+        manager.add_asset(2, "USDT", 8);
+        manager.add_asset(3, "ETH", 8);
+        
         manager
     }
 }
