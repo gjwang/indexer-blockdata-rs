@@ -1,5 +1,6 @@
 use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
 
@@ -12,9 +13,9 @@ pub struct ClientOrder {
     #[validate(custom(function = "validate_side"))]
     pub side: String,
     #[validate(custom(function = "validate_price_string"))]
-    pub price: String, //Float
+    pub price: String, //TODO: Decimal
     #[validate(custom(function = "validate_quantity_string"))]
-    pub quantity: String, //Float
+    pub quantity: String, //TODO: Decimal
     #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
 }
@@ -204,8 +205,8 @@ fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
 }
 
 fn validate_price_string(price: &str) -> Result<(), ValidationError> {
-    match price.parse::<f64>() {
-        Ok(p) if p > 0.0 => Ok(()),
+    match price.parse::<Decimal>() {
+        Ok(p) if p > Decimal::ZERO => Ok(()),
         _ => {
             let mut err = ValidationError::new("invalid_price");
             err.message = Some("Price must be a positive number".into());
@@ -215,8 +216,8 @@ fn validate_price_string(price: &str) -> Result<(), ValidationError> {
 }
 
 fn validate_quantity_string(quantity: &str) -> Result<(), ValidationError> {
-    match quantity.parse::<f64>() {
-        Ok(q) if q > 0.0 => Ok(()),
+    match quantity.parse::<Decimal>() {
+        Ok(q) if q > Decimal::ZERO => Ok(()),
         _ => {
             let mut err = ValidationError::new("invalid_quantity");
             err.message = Some("Quantity must be a positive number".into());
@@ -248,21 +249,30 @@ impl ClientOrder {
             .parse()
             .map_err(|e| format!("Invalid order type: {}", e))?;
 
-        // Parse price and convert to integer representation
-        let price_f64 = self
-            .price
-            .parse::<f64>()
-            .map_err(|_| format!("Invalid price format: {}", self.price))?;
-        let price_multiplier = 10_u64.pow(symbol_info.price_decimal);
-        let price = (price_f64 * price_multiplier as f64).round() as u64;
 
-        // Parse quantity and convert to integer representation
-        let quantity_f64 = self
+        // Parse price and convert to integer representation using Decimal for precision
+        let price_decimal = self
+            .price
+            .parse::<Decimal>()
+            .map_err(|_| format!("Invalid price format: {}", self.price))?;
+        let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
+        let price = (price_decimal * price_multiplier)
+            .round()
+            .to_string()
+            .parse::<u64>()
+            .map_err(|_| format!("Price overflow: {}", self.price))?;
+
+        // Parse quantity and convert to integer representation using Decimal for precision
+        let quantity_decimal = self
             .quantity
-            .parse::<f64>()
+            .parse::<Decimal>()
             .map_err(|_| format!("Invalid quantity format: {}", self.quantity))?;
-        let quantity_multiplier = 10_u64.pow(symbol_info.quantity_decimal);
-        let quantity = (quantity_f64 * quantity_multiplier as f64).round() as u64;
+        let quantity_multiplier = Decimal::from(10_u64.pow(symbol_info.quantity_decimal));
+        let quantity = (quantity_decimal * quantity_multiplier)
+            .round()
+            .to_string()
+            .parse::<u64>()
+            .map_err(|_| format!("Quantity overflow: {}", self.quantity))?;
 
         Ok(ClientRawOrder {
             user_id,
