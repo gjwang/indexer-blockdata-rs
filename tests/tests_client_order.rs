@@ -22,7 +22,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.50").unwrap(),
             quantity: Decimal::from_str("1.5").unwrap(),
             order_type: OrderType::Limit,
@@ -55,7 +55,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid2234567890123".to_string()),
             symbol: "UNKNOWN_SYMBOL".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -66,29 +66,11 @@ mod tests {
         assert_eq!(result.unwrap_err(), "Unknown symbol: UNKNOWN_SYMBOL");
     }
 
-    #[test]
-    fn test_try_to_internal_invalid_side() {
-        let sm = setup_symbol_manager();
-        let client_order = ClientOrder {
-            cid: Some("clientid3234567890123".to_string()),
-            symbol: "BTC_USDT".to_string(),
-            side: "Invalid".to_string(),
-            price: Decimal::from_str("50000.99").unwrap(),
-            quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: OrderType::Limit,
-        };
-
-        let result = client_order.try_to_internal(&sm, 1001, 1);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("side"));
-        assert!(err.contains("Invalid side"));
-    }
-
+    // Note: test_try_to_internal_invalid_side is no longer applicable
+    // since side is now a Side enum which cannot be invalid at compile time
 
     // Note: test_try_to_internal_invalid_order_type is no longer applicable
     // since order_type is now an OrderType enum which cannot be invalid at compile time
-
 
     #[test]
     fn test_try_to_internal_invalid_price() {
@@ -96,7 +78,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid5234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("0").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -114,7 +96,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid6234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("0").unwrap(),
             order_type: OrderType::Limit,
@@ -145,7 +127,7 @@ mod tests {
         assert!(result.is_ok());
         let client_order = result.unwrap();
         assert_eq!(client_order.symbol, "BTC_USDT");
-        assert_eq!(client_order.side, "Sell");
+        assert_eq!(client_order.side, Side::Sell);
         assert_eq!(client_order.price, Decimal::from_str("3500.75").unwrap());
         assert_eq!(
             client_order.quantity,
@@ -197,7 +179,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("a".repeat(33)),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -216,7 +198,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("invalidid1234567890123!".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -245,7 +227,7 @@ mod tests {
         let order = result.unwrap();
         assert_eq!(order.cid, Some("clientid1234567890123".to_string()));
         assert_eq!(order.symbol, "BTC_USDT");
-        assert_eq!(order.side, "Buy");
+        assert_eq!(order.side, Side::Buy);
         assert_eq!(order.price, Decimal::from_str("50000.99").unwrap());
         assert_eq!(order.quantity, Decimal::from_str("2.5").unwrap());
         assert_eq!(order.order_type, OrderType::Limit);
@@ -263,7 +245,7 @@ mod tests {
         let result = ClientOrder::new(
             Some("clientid1234567890123".to_string()),
             "BTC_USDT".to_string(),
-            "Buy".to_string(),
+            Side::Buy,
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
             OrderType::Limit,
@@ -276,7 +258,7 @@ mod tests {
         let result = ClientOrder::new(
             None,
             "BTC_USDT".to_string(),
-            "Buy".to_string(),
+            Side::Buy,
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
             OrderType::Limit,
@@ -290,7 +272,7 @@ mod tests {
         let result = ClientOrder::new(
             Some("invalidid1234567890123!".to_string()),
             "BTC_USDT".to_string(),
-            "Buy".to_string(),
+            Side::Buy,
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
             OrderType::Limit,
@@ -307,7 +289,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("shortid".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -328,7 +310,7 @@ mod tests {
         let order1 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "AB".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -341,7 +323,7 @@ mod tests {
         let order2 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "btc_usdt".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -354,7 +336,7 @@ mod tests {
         let order3 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC-USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -372,7 +354,7 @@ mod tests {
         let order1 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTCUSDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -385,7 +367,7 @@ mod tests {
         let order2 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "_BTCUSDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -398,7 +380,7 @@ mod tests {
         let order3 = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC__USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -417,7 +399,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
@@ -437,7 +419,7 @@ mod tests {
         let client_order = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
+            side: Side::Buy,
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,

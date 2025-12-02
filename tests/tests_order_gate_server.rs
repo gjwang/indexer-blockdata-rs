@@ -5,7 +5,7 @@ use axum::{
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::gateway::{create_app, AppState, OrderPublisher};
 
-use fetcher::models::{ClientOrder, OrderType, UserAccountManager};
+use fetcher::models::{ClientOrder, OrderType, Side, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 use rust_decimal::Decimal;
 use std::future::Future;
@@ -46,7 +46,7 @@ async fn test_create_order_api_success() {
     let client_order = ClientOrder {
         cid: Some("clientid1234567890123".to_string()),
         symbol: "BTC_USDT".to_string(),
-        side: "Buy".to_string(),
+        side: Side::Buy,
         price: Decimal::from_str("49999.99").unwrap(),
         quantity: Decimal::from_str("0.5").unwrap(),
         order_type: OrderType::Limit,
