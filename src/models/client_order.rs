@@ -133,7 +133,10 @@ impl ClientOrder {
                 let price_decimal = Decimal::from(*price) / price_divisor;
 
                 // Convert quantity from integer to Decimal
-                let quantity_divisor = Decimal::from(10_u64.pow(symbol_info.quantity_decimal));
+                let quantity_decimals = symbol_manager
+                    .get_asset_decimal(symbol_info.base_asset_id)
+                    .unwrap_or(8);
+                let quantity_divisor = Decimal::from(10_u64.pow(quantity_decimals));
                 let quantity_decimal = Decimal::from(*quantity) / quantity_divisor;
 
                 Ok(ClientOrder {
@@ -236,7 +239,10 @@ impl ClientOrder {
             .map_err(|_| format!("Price overflow: {}", self.price))?;
 
         // Convert quantity to integer representation (already Decimal, no parsing needed)
-        let quantity_multiplier = Decimal::from(10_u64.pow(symbol_info.quantity_decimal));
+        let quantity_decimals = symbol_manager
+            .get_asset_decimal(symbol_info.base_asset_id)
+            .unwrap_or(8);
+        let quantity_multiplier = Decimal::from(10_u64.pow(quantity_decimals));
         let quantity = (self.quantity * quantity_multiplier)
             .round()
             .to_string()
@@ -251,7 +257,7 @@ impl ClientOrder {
             price,
             price_decimal: symbol_info.price_decimal,
             quantity,
-            quantity_decimal: symbol_info.quantity_decimal,
+            quantity_decimal: quantity_decimals,
             order_type: self.order_type,
         })
     }
