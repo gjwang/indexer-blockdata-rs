@@ -9,15 +9,13 @@ use anyhow::Result;
 use nix::unistd::{fork, ForkResult};
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
-
 // Only use Jemalloc on Linux/Mac (Unix), not Windows
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
+use fetcher::models::{Order, OrderType, Side, Trade};
 // Use the shared library module
 use fetcher::order_wal::{LogEntry, Wal};
-
-use fetcher::models::{Order, OrderType, Side, Trade};
 
 // =================================================================
 // MEMORY ALLOCATOR CONFIG
@@ -91,7 +89,7 @@ impl MatchingEngine {
         // Increment match sequence and create trade
         self.match_sequence += 1;
         let trade = Trade {
-            match_id: self.match_sequence,
+            trade_id: self.match_sequence,
             buy_order_id,
             sell_order_id,
             buy_user_id,
@@ -103,7 +101,7 @@ impl MatchingEngine {
         // Log trade to WAL
         self.wal
             .log_match_order(
-                trade.match_id,
+                trade.trade_id,
                 trade.buy_order_id,
                 trade.sell_order_id,
                 trade.price,
@@ -116,7 +114,7 @@ impl MatchingEngine {
 
         println!(
             "Trade Executed: match_id={}, buy={}, sell={}, price={}, qty={}",
-            trade.match_id, buy_order_id, sell_order_id, price, quantity
+            trade.trade_id, buy_order_id, sell_order_id, price, quantity
         );
 
         Some(trade)

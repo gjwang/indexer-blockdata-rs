@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -5,8 +7,6 @@ pub enum Side {
     Buy,
     Sell,
 }
-
-use std::str::FromStr;
 
 impl std::fmt::Display for Side {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,7 +80,7 @@ pub struct Order {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Trade {
-    pub match_id: u64,
+    pub trade_id: u64,
     pub buy_order_id: u64,
     pub sell_order_id: u64,
     pub buy_user_id: u64,

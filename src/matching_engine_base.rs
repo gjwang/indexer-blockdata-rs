@@ -67,7 +67,7 @@ impl OrderBook {
 
                                 self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_seq,
+                                    trade_id: self.match_seq,
                                     buy_order_id: order.order_id,
                                     sell_order_id: best_ask.order_id,
                                     buy_user_id: order.user_id,
@@ -123,7 +123,7 @@ impl OrderBook {
 
                                 self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_seq,
+                                    trade_id: self.match_seq,
                                     buy_order_id: best_bid.order_id,
                                     sell_order_id: order.order_id,
                                     buy_user_id: best_bid.user_id,
@@ -496,7 +496,7 @@ impl MatchingEngine {
             // Log trade to Trade WAL (Output Log)
             self.trade_wal
                 .log_match_order(
-                    trade.match_id,
+                    trade.trade_id,
                     trade.buy_order_id,
                     trade.sell_order_id,
                     trade.price,
