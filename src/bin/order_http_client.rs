@@ -18,47 +18,57 @@ async fn main() {
     let interval_ms = 100;
 
     for i in 0..count {
+        // pick a symbol (round‑robin)
         let raw_symbol = symbols[i as usize % symbols.len()];
-        let raw_side = if i % 2 == 0 { "Buy" } else { "Sell" };
-        let raw_type = "Limit";
-        // Generate deterministic price so that consecutive buy/sell orders match
-        let price_step = ((i / 2) % 100) as f64; // 0..99, repeats every 200 orders
-        let price = format!("{:.2}", 50000.0 + price_step);
 
-        // Use a constant quantity for simplicity (1.0)
+        // deterministic price & quantity (same for both sides)
+        let price_step = ((i / 2) % 100) as f64;
+        let price = format!("{:.2}", 50000.0 + price_step);
         let quantity = "1.0".to_string();
 
-        // Generate a cid. In real app, this might be UUID or similar.
-        // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
-        // "clientorder" is 11 chars. We need 9 more.
-        // i is u64.
-        let cid = format!("clientorder{:010}", i); // 11 + 10 = 21 chars.
-
-        let payload = serde_json::json!({
-            "cid": cid,
+        // ---- BUY order -------------------------------------------------
+        let buy_cid = format!("clientorder{:010}", i * 2);
+        let buy_payload = serde_json::json!({
+            "cid": buy_cid,
             "symbol": raw_symbol,
-            "side": raw_side,
+            "side": "Buy",
             "price": price,
             "quantity": quantity,
-            "order_type": raw_type
+            "order_type": "Limit"
         });
 
-        match client.post(api_url).json(&payload).send().await {
-            Ok(resp) => {
-                if resp.status().is_success() {
-                    let resp_json = resp.json::<serde_json::Value>().await.unwrap_or_default();
-                    println!("Sent order {}: Success {}", i, resp_json);
-                } else {
-                    let status = resp.status();
-                    let text = resp.text().await.unwrap_or_default();
-                    eprintln!("Failed to send order {}: {} - {}", i, status, text);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error sending request: {}", e);
-            }
-        }
+        // send BUY
+        let _ = client
+            .post(api_url)
+            .json(&buy_payload)
+            .send()
+            .await;
+        
+        // Print brief info of the BUY order
+        println!("BUY order {}: symbol={}, price={}, qty={}", buy_cid, raw_symbol, price, quantity);
 
+        // ---- SELL order ------------------------------------------------
+        let sell_cid = format!("clientorder{:010}", i * 2 + 1);
+        let sell_payload = serde_json::json!({
+            "cid": sell_cid,
+            "symbol": raw_symbol,
+            "side": "Sell",
+            "price": price,
+            "quantity": quantity,
+            "order_type": "Limit"
+        });
+
+        // send SELL
+        let _ = client
+            .post(api_url)
+            .json(&sell_payload)
+            .send()
+            .await;
+
+        // Print brief info of the SELL order
+        println!("SELL order {}: symbol={}, price={}, qty={}", sell_cid, raw_symbol, price, quantity);
+
+        // optional throttle
         time::sleep(Duration::from_millis(interval_ms)).await;
     }
 }
