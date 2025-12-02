@@ -169,6 +169,9 @@ async fn main() {
     println!("--------------------------------------------------");
     println!(">>> Matching Engine Server Started");
 
+    let mut total_orders = 0;
+    let mut last_report = std::time::Instant::now();
+
     loop {
         let mut batch = Vec::with_capacity(1000);
 
@@ -243,12 +246,23 @@ async fn main() {
         }
 
         if !place_orders.is_empty() {
+            let count = place_orders.len();
             let results = engine.add_order_batch(place_orders);
             for res in results {
                 if let Err(e) = res {
                     eprintln!("Failed to add order in batch: {}", e);
                 }
             }
+
+            total_orders += count;
+            if last_report.elapsed() >= std::time::Duration::from_secs(5) {
+                let elapsed = last_report.elapsed().as_secs_f64();
+                let ops = total_orders as f64 / elapsed;
+                println!("[PERF] OPS: {:.2}, Last Batch: {}", ops, count);
+                total_orders = 0;
+                last_report = std::time::Instant::now();
+            }
         }
     }
 }
+
