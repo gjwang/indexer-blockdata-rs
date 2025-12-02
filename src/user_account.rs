@@ -22,7 +22,7 @@ impl Balance {
             return Err("Insufficient funds");
         }
         self.avail -= amount;
-        self.version += 1;
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 
@@ -31,8 +31,8 @@ impl Balance {
             return Err("Insufficient funds");
         }
         self.avail -= amount;
-        self.frozen += amount;
-        self.version += 1;
+        self.frozen = self.frozen.saturating_add(amount);
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 
@@ -41,8 +41,8 @@ impl Balance {
             return Err("Insufficient frozen funds");
         }
         self.frozen -= amount;
-        self.avail += amount;
-        self.version += 1;
+        self.avail = self.avail.saturating_add(amount);
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 
@@ -51,7 +51,7 @@ impl Balance {
             return Err("Insufficient frozen funds");
         }
         self.frozen -= amount;
-        self.version += 1;
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 }
