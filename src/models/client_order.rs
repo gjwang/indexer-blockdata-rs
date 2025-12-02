@@ -252,7 +252,7 @@ impl ClientOrder {
         Ok(ClientRawOrder {
             user_id,
             cid: self.cid.clone(),
-            symbol_id: symbol_info.id as u64,
+            symbol_id: symbol_info.symbol_id as u64,
             side: self.side,
             price,
             price_decimal: symbol_info.price_decimal,

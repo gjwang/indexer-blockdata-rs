@@ -3,7 +3,7 @@ use rustc_hash::FxHashMap;
 #[derive(Debug, Clone)]
 pub struct SymbolInfo {
     pub symbol: String,
-    pub id: u32,
+    pub symbol_id: u32,
     pub base_asset_id: u32,
     pub quote_asset_id: u32,
     pub price_decimal: u32,
@@ -11,8 +11,7 @@ pub struct SymbolInfo {
 
 #[derive(Debug, Clone)]
 pub struct AssetInfo {
-    pub id: u32,
-    pub symbol: String,
+    pub asset_id: u32,
     pub decimals: u32,
 }
 
@@ -58,7 +57,7 @@ impl SymbolManager {
             id,
             SymbolInfo {
                 symbol: symbol.to_string(),
-                id,
+                symbol_id: id,
                 base_asset_id,
                 quote_asset_id,
                 price_decimal,
@@ -83,15 +82,9 @@ impl SymbolManager {
         self.symbol_info.get(&id)
     }
 
-    pub fn add_asset(&mut self, id: u32, symbol: &str, decimals: u32) {
-        self.assets.insert(
-            id,
-            AssetInfo {
-                id,
-                symbol: symbol.to_string(),
-                decimals,
-            },
-        );
+    pub fn add_asset(&mut self, asset_id: u32, decimals: u32) {
+        self.assets
+            .insert(asset_id, AssetInfo { asset_id, decimals });
     }
 
     pub fn get_asset_decimal(&self, asset_id: u32) -> Option<u32> {
@@ -103,9 +96,9 @@ impl SymbolManager {
         let mut manager = SymbolManager::new();
         //TODO: refactor: we do NOT need quantity decimal any more,juse use get_asset_decimal
         // Add Assets
-        manager.add_asset(1, "BTC", 8);
-        manager.add_asset(2, "USDT", 8);
-        manager.add_asset(3, "ETH", 8);
+        manager.add_asset(1, 8); // BTC
+        manager.add_asset(2, 8); // USDT
+        manager.add_asset(3, 8); // ETH
 
         // BTC_USDT: Base 1 (BTC), Quote 2 (USDT), Price Decimal 2
         manager.insert_symbol("BTC_USDT", 0, 1, 2, 2);
