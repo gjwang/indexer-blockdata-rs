@@ -661,6 +661,21 @@ impl GlobalLedger {
         Ok(())
     }
 
+    pub fn apply_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        for cmd in cmds {
+            let new_seq = self.last_seq + 1;
+            // TODO: Optimize WAL to support batch append (single flush)
+            self.wal.append(new_seq, cmd)?;
+            Self::apply_transaction(&mut self.accounts, cmd)?;
+
+            if let Some(listener) = &mut self.listener {
+                listener.on_command(cmd)?;
+            }
+            self.last_seq = new_seq;
+        }
+        Ok(())
+    }
+
     fn apply_transaction(
         accounts: &mut FxHashMap<UserId, UserAccount>,
         cmd: &LedgerCommand,
