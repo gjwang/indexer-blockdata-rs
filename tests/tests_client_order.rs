@@ -25,7 +25,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.50").unwrap(),
             quantity: Decimal::from_str("1.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -58,7 +58,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -75,7 +75,7 @@ mod tests {
             side: "Invalid".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -85,24 +85,10 @@ mod tests {
         assert!(err.contains("Invalid side"));
     }
 
-    #[test]
-    fn test_try_to_internal_invalid_order_type() {
-        let sm = setup_symbol_manager();
-        let client_order = ClientOrder {
-            cid: Some("clientid4234567890123".to_string()),
-            symbol: "BTC_USDT".to_string(),
-            side: "Buy".to_string(),
-            price: Decimal::from_str("50000.99").unwrap(),
-            quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Invalid".to_string(),
-        };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("order_type"));
-        assert!(err.contains("Invalid order type"));
-    }
+    // Note: test_try_to_internal_invalid_order_type is no longer applicable
+    // since order_type is now an OrderType enum which cannot be invalid at compile time
+
 
     #[test]
     fn test_try_to_internal_invalid_price() {
@@ -113,7 +99,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("0").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -131,7 +117,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("0").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -165,7 +151,7 @@ mod tests {
             client_order.quantity,
             Decimal::from_str("0.12345678").unwrap()
         );
-        assert_eq!(client_order.order_type, "Market");
+        assert_eq!(client_order.order_type, OrderType::Market);
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);
     }
@@ -214,7 +200,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -233,7 +219,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -262,7 +248,7 @@ mod tests {
         assert_eq!(order.side, "Buy");
         assert_eq!(order.price, Decimal::from_str("50000.99").unwrap());
         assert_eq!(order.quantity, Decimal::from_str("2.5").unwrap());
-        assert_eq!(order.order_type, "Limit");
+        assert_eq!(order.order_type, OrderType::Limit);
     }
 
     #[test]
@@ -280,7 +266,7 @@ mod tests {
             "Buy".to_string(),
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
-            "Limit".to_string(),
+            OrderType::Limit,
         );
         assert!(result.is_ok());
     }
@@ -293,7 +279,7 @@ mod tests {
             "Buy".to_string(),
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
-            "Limit".to_string(),
+            OrderType::Limit,
         );
         assert!(result.is_ok());
         assert_eq!(result.unwrap().cid, None);
@@ -307,7 +293,7 @@ mod tests {
             "Buy".to_string(),
             Decimal::from_str("50000.99").unwrap(),
             Decimal::from_str("2.5").unwrap(),
-            "Limit".to_string(),
+            OrderType::Limit,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -324,7 +310,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order.try_to_internal(&sm, 1001, 1);
@@ -345,7 +331,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
         assert!(res1.is_err());
@@ -358,7 +344,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
         assert!(res2.is_err());
@@ -371,7 +357,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
         assert!(res3.is_err());
@@ -389,7 +375,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
         assert!(res1.is_err());
@@ -402,7 +388,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
         assert!(res2.is_err());
@@ -415,7 +401,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
         assert!(res3.is_err());
@@ -434,7 +420,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
@@ -454,7 +440,7 @@ mod tests {
             side: "Buy".to_string(),
             price: Decimal::from_str("50000.99").unwrap(),
             quantity: Decimal::from_str("2.5").unwrap(),
-            order_type: "Limit".to_string(),
+            order_type: OrderType::Limit,
         };
 
         let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
