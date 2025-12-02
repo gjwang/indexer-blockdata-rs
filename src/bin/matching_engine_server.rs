@@ -191,9 +191,11 @@ async fn main() {
             continue;
         }
 
-        // println!("Processing batch of {} orders", batch.len());
+        println!("Processing batch of {} orders", batch.len());
 
         // 3. Process the batch
+        let mut place_orders = Vec::with_capacity(batch.len());
+
         for m in batch {
             if let Some(payload) = m.payload_view::<str>() {
                 match payload {
@@ -211,23 +213,7 @@ async fn main() {
                                     order_type,
                                 } => {
                                     if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                        // Process order
-                                        match engine.add_order(
-                                            symbol_id,
-                                            order_id,
-                                            side,
-                                            order_type,
-                                            price,
-                                            quantity,
-                                            user_id,
-                                        ) {
-                                            Ok(_oid) => {
-                                                // println!("Order placed: id={}, symbol_id={}, side={:?}, price={}, qty={}", order_id, symbol_id, side, price, quantity);
-                                            }
-                                            Err(e) => {
-                                                eprintln!("Failed to add order: {}", e);
-                                            }
-                                        }
+                                        place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
                                     } else {
                                         eprintln!("Unknown symbol ID: {}", symbol_id);
                                     }
@@ -252,6 +238,15 @@ async fn main() {
                         }
                     }
                     Err(e) => eprintln!("Error reading payload: {}", e),
+                }
+            }
+        }
+
+        if !place_orders.is_empty() {
+            let results = engine.add_order_batch(place_orders);
+            for res in results {
+                if let Err(e) = res {
+                    eprintln!("Failed to add order in batch: {}", e);
                 }
             }
         }
