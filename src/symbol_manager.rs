@@ -65,7 +65,7 @@ impl SymbolManager {
         );
     }
 
-    pub fn get_id(&self, symbol: &str) -> Option<u32> {
+    pub fn get_symbol_id(&self, symbol: &str) -> Option<u32> {
         self.symbol_to_id.get(symbol).copied()
     }
 
@@ -74,7 +74,7 @@ impl SymbolManager {
     }
 
     pub fn get_symbol_info(&self, symbol: &str) -> Option<&SymbolInfo> {
-        let id = self.get_id(symbol)?;
+        let id = self.get_symbol_id(symbol)?;
         self.symbol_info.get(&id)
     }
 
