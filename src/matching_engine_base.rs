@@ -496,6 +496,8 @@ impl MatchingEngine {
             .add_order(order, &mut self.trade_id_gen)
             .map_err(OrderError::Other)?;
 
+        //TODO write batch to WAL, so reduce the window time of write WAL,
+        // reduce corruption risk of WAL
         // 3. Settle trades
         for trade in trades {
             // Log trade to Trade WAL (Output Log)
