@@ -596,6 +596,7 @@ impl MatchingEngine {
         &mut self,
         requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
     ) -> Vec<Result<u64, OrderError>> {
+        let start_total = std::time::Instant::now();
         let mut results = vec![Err(OrderError::Other("Not processed".to_string())); requests.len()];
         let mut valid_indices = Vec::with_capacity(requests.len());
 
@@ -649,8 +650,10 @@ impl MatchingEngine {
             eprintln!("CRITICAL: Failed to flush order WAL: {}", e);
             panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
         }
+        let t_input = start_total.elapsed();
 
         // 3. Process Valid Orders (Shadow Mode)
+        let t_process_start = std::time::Instant::now();
         let mut shadow = ShadowLedger::new(&self.ledger);
 
         for i in valid_indices {
@@ -666,13 +669,27 @@ impl MatchingEngine {
                 Err(e) => results[i] = Err(e),
             }
         }
+        let t_process = t_process_start.elapsed();
 
         // 4. Commit Batch (Persist + Memory)
+        let t_commit_start = std::time::Instant::now();
         if !shadow.pending_commands.is_empty() {
             if let Err(e) = self.ledger.commit_batch(&shadow.pending_commands) {
                 eprintln!("CRITICAL: Failed to commit ledger batch: {}", e);
                 panic!("CRITICAL: Ledger commit failed. System inconsistent.");
             }
+        }
+        let t_commit = t_commit_start.elapsed();
+
+        if requests.len() > 0 {
+            println!(
+                "[PERF] Batch: {} orders. Input: {:?}, Process: {:?}, Commit: {:?}. Total: {:?}",
+                requests.len(),
+                t_input,
+                t_process,
+                t_commit,
+                start_total.elapsed()
+            );
         }
 
         results
