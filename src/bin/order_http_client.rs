@@ -1,6 +1,10 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
+use rand::{rng, Rng};
 use reqwest::Client;
+use tokio::time;
 
 use fetcher::fast_ulid::FastUlidHalfGen;
 
@@ -17,10 +21,10 @@ async fn main() {
 
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
-    let total_count: u64 = 1000000;
+    let total_count: u64 = 1_000_000;
 
-    let concurrency = 100;
-    // let interval_ms = 0;
+    let concurrency = 500;
+    let interval_ms = 0;
 
     let mut handles = Vec::new();
 
@@ -45,13 +49,13 @@ async fn main() {
                 let raw_symbol = symbols[i as usize % symbols.len()];
 
                 // deterministic price & quantity (same for both sides)
-                let price_step = ((i / 2) % 100) as f64;
-                let price = format!("{:.2}", 50000.0 + price_step);
+                let price_step = rng().random_range(1..2) as f64 * 0.5;
+                let price = format!("{:.2}", 1.0 + price_step);
 
                 // ---- SELL order ------------------------------------------------
                 // 1. Send three small SELL orders
                 for _ in 0..3 {
-                    let quantity = ((i + 1) as f64).to_string();
+                    let quantity = rng().random_range(1..100) as f64 * 0.02;
 
                     let sell_cid = {
                         let mut gen = cid_gen.lock().unwrap();
@@ -87,15 +91,15 @@ async fn main() {
                     }
 
                     // Print brief info of the SELL order
-                    // println!(
-                    //     "SELL order {}: symbol={}, price={}, qty={}",
-                    //     sell_cid, raw_symbol, price, quantity
-                    // );
+                    println!(
+                        "SELL order {}: symbol={}, price={}, qty={}",
+                        sell_cid, raw_symbol, price, quantity
+                    );
                 }
 
                 // ---- BUY order -------------------------------------------------
                 // Generate a quantity that can match multiple opposite orders (1.0 .. 5.0)
-                let quantity = "6.0";
+                let quantity = rng().random_range(1..100) as f64 * 0.1;
 
                 let buy_cid = {
                     let mut gen = cid_gen.lock().unwrap();
@@ -131,13 +135,13 @@ async fn main() {
                 }
 
                 // Print brief info of the BUY order
-                // println!(
-                //     "BUY order {}: symbol={}, price={}, qty={}",
-                //     buy_cid, raw_symbol, price, quantity
-                // );
+                println!(
+                    "BUY order {}: symbol={}, price={}, qty={}",
+                    buy_cid, raw_symbol, price, quantity
+                );
 
                 // optional throttle (removed as per request for speed, but keeping structure if needed)
-                // time::sleep(Duration::from_millis(interval_ms)).await;
+                time::sleep(Duration::from_millis(interval_ms)).await;
             }
         });
         handles.push(handle);
@@ -146,7 +150,7 @@ async fn main() {
     for handle in handles {
         let _ = handle.await;
     }
-    
+
     let duration = start_time.elapsed();
     let total_requests = total_count * 4; // 3 sells + 1 buy per iteration
     let req_per_sec = total_requests as f64 / duration.as_secs_f64();

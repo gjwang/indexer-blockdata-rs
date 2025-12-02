@@ -1,13 +1,15 @@
-use fetcher::ledger::{LedgerCommand, LedgerListener};
-use fetcher::matching_engine_base::MatchingEngine;
-use fetcher::models::{OrderRequest, OrderType, Side};
-use fetcher::symbol_manager::SymbolManager;
+use std::fs;
+use std::path::Path;
+
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use std::fs;
-use std::path::Path;
+
+use fetcher::ledger::{LedgerCommand, LedgerListener};
+use fetcher::matching_engine_base::MatchingEngine;
+use fetcher::models::OrderRequest;
+use fetcher::symbol_manager::SymbolManager;
 
 struct RedpandaTradeProducer {
     producer: FutureProducer,
