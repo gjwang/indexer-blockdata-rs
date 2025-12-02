@@ -7,8 +7,10 @@ use fetcher::gateway::{create_app, AppState, OrderPublisher};
 
 use fetcher::models::{ClientOrder, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
+use rust_decimal::Decimal;
 use std::future::Future;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use tower::util::ServiceExt;
 
@@ -45,8 +47,8 @@ async fn test_create_order_api_success() {
         cid: Some("clientid1234567890123".to_string()),
         symbol: "BTC_USDT".to_string(),
         side: "Buy".to_string(),
-        price: "49999.99".to_string(),
-        quantity: "0.5".to_string(),
+        price: Decimal::from_str("49999.99").unwrap(),
+        quantity: Decimal::from_str("0.5").unwrap(),
         order_type: "Limit".to_string(),
     };
 

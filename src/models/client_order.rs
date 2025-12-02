@@ -12,10 +12,10 @@ pub struct ClientOrder {
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
     pub side: String,
-    #[validate(custom(function = "validate_price_string"))]
-    pub price: String, //TODO: Decimal
-    #[validate(custom(function = "validate_quantity_string"))]
-    pub quantity: String, //TODO: Decimal
+    #[validate(custom(function = "validate_price_decimal"))]
+    pub price: Decimal,
+    #[validate(custom(function = "validate_quantity_decimal"))]
+    pub quantity: Decimal,
     #[validate(custom(function = "validate_order_type"))]
     pub order_type: String,
 }
@@ -39,8 +39,8 @@ impl ClientOrder {
         cid: Option<String>,
         symbol: String,
         side: String,
-        price: String,
-        quantity: String,
+        price: Decimal,
+        quantity: Decimal,
         order_type: String,
     ) -> Result<Self, String> {
         let order = ClientOrder {
@@ -111,28 +111,20 @@ impl ClientOrder {
                     .get_symbol_info_by_id(*symbol_id)
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?;
 
-                // Convert price from integer to decimal string
-                let price_divisor = 10_u64.pow(symbol_info.price_decimal) as f64;
-                let price_str = format!(
-                    "{:.prec$}",
-                    *price as f64 / price_divisor,
-                    prec = symbol_info.price_decimal as usize
-                );
+                // Convert price from integer to Decimal
+                let price_divisor = Decimal::from(10_u64.pow(symbol_info.price_decimal));
+                let price_decimal = Decimal::from(*price) / price_divisor;
 
-                // Convert quantity from integer to decimal string
-                let quantity_divisor = 10_u64.pow(symbol_info.quantity_decimal) as f64;
-                let quantity_str = format!(
-                    "{:.prec$}",
-                    *quantity as f64 / quantity_divisor,
-                    prec = symbol_info.quantity_decimal as usize
-                );
+                // Convert quantity from integer to Decimal
+                let quantity_divisor = Decimal::from(10_u64.pow(symbol_info.quantity_decimal));
+                let quantity_decimal = Decimal::from(*quantity) / quantity_divisor;
 
                 Ok(ClientOrder {
                     cid: None, // OrderRequest doesn't store cid yet
                     symbol,
                     side: side.to_string(),
-                    price: price_str,
-                    quantity: quantity_str,
+                    price: price_decimal,
+                    quantity: quantity_decimal,
                     order_type: order_type.to_string(),
                 })
             }
@@ -204,25 +196,23 @@ fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
     }
 }
 
-fn validate_price_string(price: &str) -> Result<(), ValidationError> {
-    match price.parse::<Decimal>() {
-        Ok(p) if p > Decimal::ZERO => Ok(()),
-        _ => {
-            let mut err = ValidationError::new("invalid_price");
-            err.message = Some("Price must be a positive number".into());
-            Err(err)
-        }
+fn validate_price_decimal(price: &Decimal) -> Result<(), ValidationError> {
+    if *price > Decimal::ZERO {
+        Ok(())
+    } else {
+        let mut err = ValidationError::new("invalid_price");
+        err.message = Some("Price must be a positive number".into());
+        Err(err)
     }
 }
 
-fn validate_quantity_string(quantity: &str) -> Result<(), ValidationError> {
-    match quantity.parse::<Decimal>() {
-        Ok(q) if q > Decimal::ZERO => Ok(()),
-        _ => {
-            let mut err = ValidationError::new("invalid_quantity");
-            err.message = Some("Quantity must be a positive number".into());
-            Err(err)
-        }
+fn validate_quantity_decimal(quantity: &Decimal) -> Result<(), ValidationError> {
+    if *quantity > Decimal::ZERO {
+        Ok(())
+    } else {
+        let mut err = ValidationError::new("invalid_quantity");
+        err.message = Some("Quantity must be a positive number".into());
+        Err(err)
     }
 }
 
@@ -250,25 +240,18 @@ impl ClientOrder {
             .map_err(|e| format!("Invalid order type: {}", e))?;
 
 
-        // Parse price and convert to integer representation using Decimal for precision
-        let price_decimal = self
-            .price
-            .parse::<Decimal>()
-            .map_err(|_| format!("Invalid price format: {}", self.price))?;
+
+        // Convert price to integer representation (already Decimal, no parsing needed)
         let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
-        let price = (price_decimal * price_multiplier)
+        let price = (self.price * price_multiplier)
             .round()
             .to_string()
             .parse::<u64>()
             .map_err(|_| format!("Price overflow: {}", self.price))?;
 
-        // Parse quantity and convert to integer representation using Decimal for precision
-        let quantity_decimal = self
-            .quantity
-            .parse::<Decimal>()
-            .map_err(|_| format!("Invalid quantity format: {}", self.quantity))?;
+        // Convert quantity to integer representation (already Decimal, no parsing needed)
         let quantity_multiplier = Decimal::from(10_u64.pow(symbol_info.quantity_decimal));
-        let quantity = (quantity_decimal * quantity_multiplier)
+        let quantity = (self.quantity * quantity_multiplier)
             .round()
             .to_string()
             .parse::<u64>()

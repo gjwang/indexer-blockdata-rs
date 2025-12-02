@@ -5,6 +5,8 @@ mod tests {
     use fetcher::fast_ulid::SnowflakeGenRng;
     use fetcher::models::{ClientOrder, OrderRequest, OrderType, Side};
     use fetcher::symbol_manager::SymbolManager;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
     use std::sync::Mutex;
 
     fn setup_symbol_manager() -> SymbolManager {
@@ -21,8 +23,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.50".to_string(),
-            quantity: "1.5".to_string(),
+            price: Decimal::from_str("50000.50").unwrap(),
+            quantity: Decimal::from_str("1.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -54,8 +56,8 @@ mod tests {
             cid: Some("clientid2234567890123".to_string()),
             symbol: "UNKNOWN_SYMBOL".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -71,8 +73,8 @@ mod tests {
             cid: Some("clientid3234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Invalid".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -90,8 +92,8 @@ mod tests {
             cid: Some("clientid4234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Invalid".to_string(),
         };
 
@@ -109,8 +111,8 @@ mod tests {
             cid: Some("clientid5234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "0".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("0").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -127,8 +129,8 @@ mod tests {
             cid: Some("clientid6234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "0".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("0").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -158,8 +160,8 @@ mod tests {
         let client_order = result.unwrap();
         assert_eq!(client_order.symbol, "BTC_USDT");
         assert_eq!(client_order.side, "Sell");
-        assert_eq!(client_order.price, "3500.75");
-        assert_eq!(client_order.quantity, "0.12345678");
+        assert_eq!(client_order.price, Decimal::from_str("3500.75").unwrap());
+        assert_eq!(client_order.quantity, Decimal::from_str("0.12345678").unwrap());
         assert_eq!(client_order.order_type, "Market");
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);
@@ -207,8 +209,8 @@ mod tests {
             cid: Some("a".repeat(33)),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -226,8 +228,8 @@ mod tests {
             cid: Some("invalidid1234567890123!".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -255,8 +257,8 @@ mod tests {
         assert_eq!(order.cid, Some("clientid1234567890123".to_string()));
         assert_eq!(order.symbol, "BTC_USDT");
         assert_eq!(order.side, "Buy");
-        assert_eq!(order.price, "50000.99");
-        assert_eq!(order.quantity, "2.5");
+        assert_eq!(order.price, Decimal::from_str("50000.99").unwrap());
+        assert_eq!(order.quantity, Decimal::from_str("2.5").unwrap());
         assert_eq!(order.order_type, "Limit");
     }
 
@@ -273,8 +275,8 @@ mod tests {
             Some("clientid1234567890123".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            "50000.99".to_string(),
-            "2.5".to_string(),
+            Decimal::from_str("50000.99").unwrap(),
+            Decimal::from_str("2.5").unwrap(),
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -286,8 +288,8 @@ mod tests {
             None,
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            "50000.99".to_string(),
-            "2.5".to_string(),
+            Decimal::from_str("50000.99").unwrap(),
+            Decimal::from_str("2.5").unwrap(),
             "Limit".to_string(),
         );
         assert!(result.is_ok());
@@ -300,8 +302,8 @@ mod tests {
             Some("invalidid1234567890123!".to_string()),
             "BTC_USDT".to_string(),
             "Buy".to_string(),
-            "50000.99".to_string(),
-            "2.5".to_string(),
+            Decimal::from_str("50000.99").unwrap(),
+            Decimal::from_str("2.5").unwrap(),
             "Limit".to_string(),
         );
         assert!(result.is_err());
@@ -317,8 +319,8 @@ mod tests {
             cid: Some("shortid".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -338,8 +340,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "AB".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
@@ -351,8 +353,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "btc_usdt".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
@@ -364,8 +366,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC-USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
@@ -382,8 +384,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTCUSDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res1 = order1.try_to_internal(&sm, 1, 1);
@@ -395,8 +397,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "_BTCUSDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res2 = order2.try_to_internal(&sm, 1, 1);
@@ -408,8 +410,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC__USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
         let res3 = order3.try_to_internal(&sm, 1, 1);
@@ -427,8 +429,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
@@ -447,8 +449,8 @@ mod tests {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
             side: "Buy".to_string(),
-            price: "50000.99".to_string(),
-            quantity: "2.5".to_string(),
+            price: Decimal::from_str("50000.99").unwrap(),
+            quantity: Decimal::from_str("2.5").unwrap(),
             order_type: "Limit".to_string(),
         };
 
