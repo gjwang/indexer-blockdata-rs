@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::fast_ulid::FastUlidHalfGen;
-use crate::ledger::{GlobalLedger, LedgerCommand, LedgerListener, MatchExecData};
+use crate::ledger::{GlobalLedger, Ledger, LedgerCommand, MatchExecData, ShadowLedger};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
@@ -478,7 +478,11 @@ impl MatchingEngine {
             .map_err(|e| OrderError::Other(e.to_string()))?;
 
         // 2. Process Logic
-        let oid = self.process_order(
+        let oid = Self::process_order_logic(
+            &mut self.ledger,
+            &mut self.order_books,
+            &self.asset_map,
+            &mut self.trade_id_gen,
             symbol_id, order_id, side, order_type, price, quantity, user_id,
         )?;
 
@@ -494,8 +498,11 @@ impl MatchingEngine {
     }
 
     /// Internal Logic: Process Order (No Input WAL write)
-    fn process_order(
-        &mut self,
+    fn process_order_logic(
+        ledger: &mut impl Ledger,
+        order_books: &mut Vec<Option<OrderBook>>,
+        asset_map: &FxHashMap<u32, (u32, u32)>,
+        trade_id_gen: &mut FastUlidHalfGen,
         symbol_id: u32,
         order_id: u64,
         side: Side,
@@ -504,8 +511,7 @@ impl MatchingEngine {
         quantity: u64,
         user_id: u64,
     ) -> Result<u64, OrderError> {
-        let (base_asset, quote_asset) = *self
-            .asset_map
+        let (base_asset, quote_asset) = *asset_map
             .get(&symbol_id)
             .ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
@@ -515,7 +521,7 @@ impl MatchingEngine {
             Side::Sell => (base_asset, quantity),
         };
 
-        self.ledger
+        ledger
             .apply(&LedgerCommand::Lock {
                 user_id,
                 asset: lock_asset,
@@ -523,8 +529,7 @@ impl MatchingEngine {
             })
             .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
-        let book_opt = self
-            .order_books
+        let book_opt = order_books
             .get_mut(symbol_id as usize)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
@@ -547,7 +552,7 @@ impl MatchingEngine {
         };
 
         let trades = book
-            .add_order(order, &mut self.trade_id_gen)
+            .add_order(order, trade_id_gen)
             .map_err(OrderError::Other)?;
 
         let mut match_batch = Vec::with_capacity(trades.len());
@@ -579,7 +584,7 @@ impl MatchingEngine {
         }
 
         if !match_batch.is_empty() {
-            self.ledger
+            ledger
                 .apply(&LedgerCommand::MatchExecBatch(match_batch))
                 .map_err(|e| OrderError::LedgerError(e.to_string()))?;
         }
@@ -645,10 +650,16 @@ impl MatchingEngine {
             panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
         }
 
-        // 3. Process Valid Orders (Memory Update + Ledger WAL Buffer)
+        // 3. Process Valid Orders (Shadow Mode)
+        let mut shadow = ShadowLedger::new(&self.ledger);
+
         for i in valid_indices {
             let (symbol_id, order_id, side, order_type, price, quantity, user_id) = requests[i];
-            match self.process_order(
+            match Self::process_order_logic(
+                &mut shadow,
+                &mut self.order_books,
+                &self.asset_map,
+                &mut self.trade_id_gen,
                 symbol_id, order_id, side, order_type, price, quantity, user_id,
             ) {
                 Ok(oid) => results[i] = Ok(oid),
@@ -656,10 +667,12 @@ impl MatchingEngine {
             }
         }
 
-        // 4. Flush Ledger WAL (Persistence Checkpoint 2)
-        if let Err(e) = self.ledger.flush() {
-            eprintln!("CRITICAL: Failed to flush ledger WAL: {}", e);
-            panic!("CRITICAL: Ledger WAL flush failed. Integrity compromised.");
+        // 4. Commit Batch (Persist + Memory)
+        if !shadow.pending_commands.is_empty() {
+            if let Err(e) = self.ledger.commit_batch(&shadow.pending_commands) {
+                eprintln!("CRITICAL: Failed to commit ledger batch: {}", e);
+                panic!("CRITICAL: Ledger commit failed. System inconsistent.");
+            }
         }
 
         results
