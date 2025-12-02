@@ -496,59 +496,54 @@ impl MatchingEngine {
             .add_order(order, &mut self.trade_id_gen)
             .map_err(OrderError::Other)?;
 
-        //TODO write batch to WAL, so reduce the window time of write WAL,
-        // reduce corruption risk of WAL
-        // 3. Settle trades
-        for trade in trades {
-            // Log trade to Trade WAL (Output Log)
+        // 3. Log trades batch
+        if !trades.is_empty() {
             self.trade_wal
-                .log_trade(
-                    trade.trade_id,
-                    trade.buy_order_id,
-                    trade.sell_order_id,
-                    trade.price,
-                    trade.quantity,
-                )
+                .log_trade_batch(&trades)
                 .map_err(|e| OrderError::Other(e.to_string()))?;
+        }
 
+        let mut ledger_cmds = Vec::with_capacity(trades.len() * 3);
+
+        for trade in &trades {
             let (buyer_spend, buyer_gain) = (trade.price * trade.quantity, trade.quantity);
             let (seller_spend, seller_gain) = (trade.quantity, trade.price * trade.quantity);
 
             // Buyer Settle
-            self.ledger
-                .apply(&LedgerCommand::TradeSettle {
-                    user_id: trade.buy_user_id,
-                    spend_asset: quote_asset,
-                    spend_amount: buyer_spend,
-                    gain_asset: base_asset,
-                    gain_amount: buyer_gain,
-                })
-                .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+            ledger_cmds.push(LedgerCommand::TradeSettle {
+                user_id: trade.buy_user_id,
+                spend_asset: quote_asset,
+                spend_amount: buyer_spend,
+                gain_asset: base_asset,
+                gain_amount: buyer_gain,
+            });
 
             // Seller Settle
-            self.ledger
-                .apply(&LedgerCommand::TradeSettle {
-                    user_id: trade.sell_user_id,
-                    spend_asset: base_asset,
-                    spend_amount: seller_spend,
-                    gain_asset: quote_asset,
-                    gain_amount: seller_gain,
-                })
-                .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+            ledger_cmds.push(LedgerCommand::TradeSettle {
+                user_id: trade.sell_user_id,
+                spend_asset: base_asset,
+                spend_amount: seller_spend,
+                gain_asset: quote_asset,
+                gain_amount: seller_gain,
+            });
 
             // Refund excess frozen for Taker Buyer
             if side == Side::Buy && trade.buy_user_id == user_id {
                 let excess = (price - trade.price) * trade.quantity;
                 if excess > 0 {
-                    self.ledger
-                        .apply(&LedgerCommand::Unlock {
-                            user_id,
-                            asset: quote_asset,
-                            amount: excess,
-                        })
-                        .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+                    ledger_cmds.push(LedgerCommand::Unlock {
+                        user_id,
+                        asset: quote_asset,
+                        amount: excess,
+                    });
                 }
             }
+        }
+
+        if !ledger_cmds.is_empty() {
+            self.ledger
+                .apply(&LedgerCommand::Batch(ledger_cmds))
+                .map_err(|e| OrderError::LedgerError(e.to_string()))?;
         }
 
         Ok(order_id)

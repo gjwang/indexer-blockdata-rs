@@ -108,6 +108,7 @@ pub enum LedgerCommand {
         gain_asset: AssetId,
         gain_amount: u64,
     },
+    Batch(Vec<LedgerCommand>),
 }
 
 // ==========================================
@@ -780,6 +781,11 @@ impl GlobalLedger {
                             frozen: 0,
                         },
                     ));
+                }
+            }
+            LedgerCommand::Batch(cmds) => {
+                for cmd in cmds {
+                    Self::apply_transaction(accounts, cmd)?;
                 }
             }
         }

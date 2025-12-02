@@ -31,8 +31,12 @@ table Trade {
   quantity: uint64;
 }
 
+table TradeBatch {
+  trades: [Trade];
+}
+
 // Union allows us to store Order, Cancel, or Trade
-union EntryType { Order, Cancel, Trade }
+union EntryType { Order, Cancel, Trade, TradeBatch }
 
 table WalFrame {
   seq: uint64;
