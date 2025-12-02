@@ -41,6 +41,7 @@ pub type UserId = u64;
 pub struct Balance {
     pub available: u64,
     pub frozen: u64,
+    pub version: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +67,7 @@ impl UserAccount {
             Balance {
                 available: 0,
                 frozen: 0,
+                version: 0,
             },
         ));
         &mut self.assets.last_mut().unwrap().1
@@ -716,6 +718,7 @@ impl GlobalLedger {
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.available += amount;
+                bal.version += 1;
             }
             LedgerCommand::Withdraw {
                 user_id,
@@ -734,6 +737,7 @@ impl GlobalLedger {
                     );
                 }
                 bal.available -= amount;
+                bal.version += 1;
             }
             LedgerCommand::Lock {
                 user_id,
@@ -753,6 +757,7 @@ impl GlobalLedger {
                 }
                 bal.available -= amount;
                 bal.frozen += amount;
+                bal.version += 1;
             }
             LedgerCommand::Unlock {
                 user_id,
@@ -772,6 +777,7 @@ impl GlobalLedger {
                 }
                 bal.frozen -= amount;
                 bal.available += amount;
+                bal.version += 1;
             }
             LedgerCommand::TradeSettle {
                 user_id,
@@ -796,6 +802,7 @@ impl GlobalLedger {
                         );
                     }
                     user.assets[idx].1.frozen -= spend_amount;
+                    user.assets[idx].1.version += 1;
                 } else {
                     anyhow::bail!(
                         "Asset not found for spend: User {} Asset {}",
@@ -807,12 +814,14 @@ impl GlobalLedger {
                 let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset);
                 if let Some(idx) = gain_idx {
                     user.assets[idx].1.available += gain_amount;
+                    user.assets[idx].1.version += 1;
                 } else {
                     user.assets.push((
                         *gain_asset,
                         Balance {
                             available: *gain_amount,
                             frozen: 0,
+                            version: 1,
                         },
                     ));
                 }
@@ -854,10 +863,12 @@ impl GlobalLedger {
             anyhow::bail!("Insufficient frozen quote for buyer {}", data.buyer_user_id);
         }
         quote_bal.frozen -= buyer_spend;
+        quote_bal.version += 1;
 
         // Credit Base (Available)
         let base_bal = buyer.get_balance_mut(data.base_asset);
         base_bal.available += buyer_gain;
+        base_bal.version += 1;
 
         // Refund Quote (Frozen -> Available)
         if data.buyer_refund > 0 {
@@ -870,6 +881,7 @@ impl GlobalLedger {
             }
             quote_bal.frozen -= data.buyer_refund;
             quote_bal.available += data.buyer_refund;
+            quote_bal.version += 1;
         }
 
         // 2. Seller Settle
@@ -886,10 +898,12 @@ impl GlobalLedger {
             );
         }
         base_bal.frozen -= seller_spend;
+        base_bal.version += 1;
 
         // Credit Quote (Available)
         let quote_bal = seller.get_balance_mut(data.quote_asset);
         quote_bal.available += seller_gain;
+        quote_bal.version += 1;
 
         // Refund Base (Frozen -> Available) - unlikely but supported
         if data.seller_refund > 0 {
@@ -902,6 +916,7 @@ impl GlobalLedger {
             }
             base_bal.frozen -= data.seller_refund;
             base_bal.available += data.seller_refund;
+            base_bal.version += 1;
         }
         Ok(())
     }

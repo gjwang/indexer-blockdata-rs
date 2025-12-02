@@ -44,6 +44,7 @@ pub type UserId = u64;
 pub struct Balance {
     pub available: u64,
     pub frozen: u64,
+    pub version: u64,//TODO: every time update balance, version++, and write to ledger wal, for replay&tracking each balance change
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +70,7 @@ impl UserAccount {
             Balance {
                 available: 0,
                 frozen: 0,
+                version: 0,
             },
         ));
         &mut self.assets.last_mut().unwrap().1
@@ -658,6 +660,7 @@ impl GlobalLedger {
                 .or_insert_with(|| UserAccount::new(*user_id));
             let bal = user.get_balance_mut(*asset);
             bal.available += amount;
+            bal.version += 1;
         }
         Ok(())
     }
