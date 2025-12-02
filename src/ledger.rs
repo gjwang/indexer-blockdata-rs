@@ -798,57 +798,49 @@ impl GlobalLedger {
         let seller_spend = data.quantity;
         let seller_gain = data.price * data.quantity;
 
-        // 1. Buyer Settle
+        // 1. Pre-flight Checks (Read-Only)
+        // Check Buyer
         let buyer = accounts
-            .entry(data.buyer_user_id)
-            .or_insert_with(|| UserAccount::new(data.buyer_user_id));
+            .get(&data.buyer_user_id)
+            .ok_or_else(|| anyhow::anyhow!("Buyer account {} not found", data.buyer_user_id))?;
 
-        // Debit Quote (Frozen)
-        let quote_bal = buyer.get_balance_mut(data.quote_asset);
-        quote_bal.spend_frozen(buyer_spend).map_err(|_| {
-            anyhow::anyhow!("Insufficient frozen quote for buyer {}", data.buyer_user_id)
-        })?;
+        buyer
+            .check_buyer_balance(data.quote_asset, buyer_spend, data.buyer_refund)
+            .map_err(|e| anyhow::anyhow!("Buyer check failed: {}", e))?;
 
-        // Credit Base (Available)
-        let base_bal = buyer.get_balance_mut(data.base_asset);
-        base_bal.deposit(buyer_gain);
-
-        // Refund Quote (Frozen -> Available)
-        if data.buyer_refund > 0 {
-            let quote_bal = buyer.get_balance_mut(data.quote_asset);
-            quote_bal.unlock(data.buyer_refund).map_err(|_| {
-                anyhow::anyhow!(
-                    "Insufficient frozen quote for refund buyer {}",
-                    data.buyer_user_id
-                )
-            })?;
-        }
-
-        // 2. Seller Settle
+        // Check Seller
         let seller = accounts
-            .entry(data.seller_user_id)
-            .or_insert_with(|| UserAccount::new(data.seller_user_id));
+            .get(&data.seller_user_id)
+            .ok_or_else(|| anyhow::anyhow!("Seller account {} not found", data.seller_user_id))?;
 
-        // Debit Base (Frozen)
-        let base_bal = seller.get_balance_mut(data.base_asset);
-        base_bal.spend_frozen(seller_spend).map_err(|_| {
-            anyhow::anyhow!("Insufficient frozen base for seller {}", data.seller_user_id)
-        })?;
+        seller
+            .check_seller_balance(data.base_asset, seller_spend, data.seller_refund)
+            .map_err(|e| anyhow::anyhow!("Seller check failed: {}", e))?;
 
-        // Credit Quote (Available)
-        let quote_bal = seller.get_balance_mut(data.quote_asset);
-        quote_bal.deposit(seller_gain);
+        // 2. Execute Settlement (Guaranteed to succeed logic-wise)
+        // Buyer Settle
+        let buyer = accounts.get_mut(&data.buyer_user_id).unwrap();
+        buyer
+            .settle_as_buyer(
+                data.quote_asset,
+                data.base_asset,
+                buyer_spend,
+                buyer_gain,
+                data.buyer_refund,
+            )
+            .expect("Critical: Buyer settle failed after check passed");
 
-        // Refund Base (Frozen -> Available) - unlikely but supported
-        if data.seller_refund > 0 {
-            let base_bal = seller.get_balance_mut(data.base_asset);
-            base_bal.unlock(data.seller_refund).map_err(|_| {
-                anyhow::anyhow!(
-                    "Insufficient frozen base for refund seller {}",
-                    data.seller_user_id
-                )
-            })?;
-        }
+        // Seller Settle
+        let seller = accounts.get_mut(&data.seller_user_id).unwrap();
+        seller
+            .settle_as_seller(
+                data.base_asset,
+                data.quote_asset,
+                seller_spend,
+                seller_gain,
+                data.seller_refund,
+            )
+            .expect("Critical: Seller settle failed after check passed");
         Ok(())
     }
     pub fn get_accounts(&self) -> &FxHashMap<UserId, UserAccount> {
