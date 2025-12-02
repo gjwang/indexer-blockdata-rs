@@ -8,9 +8,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::fast_ulid::FastUlidHalfGen;
-use crate::ledger::{GlobalLedger, LedgerCommand, LedgerListener, MatchExecData, UserAccount};
+use crate::ledger::{GlobalLedger, LedgerCommand, LedgerListener, MatchExecData};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
+use crate::user_account::UserAccount;
 
 // pub struct TradeWalListener {
 //     pub wal: Wal,
