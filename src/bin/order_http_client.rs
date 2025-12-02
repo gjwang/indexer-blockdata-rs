@@ -1,5 +1,6 @@
-use reqwest::Client;
 use std::time::Duration;
+
+use reqwest::Client;
 use tokio::time;
 
 #[tokio::main]
@@ -8,7 +9,7 @@ async fn main() {
     let api_url = "http://localhost:3001/api/orders";
 
     // Simulate raw input symbols
-    let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"];
+    let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"]; //FIXME:
 
     println!(">>> Starting Order Client");
     println!(">>> Target: {}", api_url);
@@ -20,15 +21,12 @@ async fn main() {
         let raw_symbol = symbols[i as usize % symbols.len()];
         let raw_side = if i % 2 == 0 { "Buy" } else { "Sell" };
         let raw_type = "Limit";
-        // Generate realistic price with decimals (e.g., 50000.50, 50001.75, etc.)
-        let price_base = 50000.0 + (i % 100) as f64;
-        let price_cents = ((i % 100) as f64) / 100.0;
-        let price = format!("{:.2}", price_base + price_cents);
+        // Generate deterministic price so that consecutive buy/sell orders match
+        let price_step = ((i / 2) % 100) as f64; // 0..99, repeats every 200 orders
+        let price = format!("{:.2}", 50000.0 + price_step);
 
-        // Generate realistic quantity with decimals (e.g., 0.5, 1.25, 2.0, etc.)
-        let quantity_base = (1 + (i % 5)) as f64;
-        let quantity_fraction = ((i % 4) as f64) * 0.25;
-        let quantity = format!("{:.8}", quantity_base + quantity_fraction);
+        // Use a constant quantity for simplicity (1.0)
+        let quantity = "1.0".to_string();
 
         // Generate a cid. In real app, this might be UUID or similar.
         // We use a simple counter based ID for demo, but ensure it meets validation (20-32 chars).
