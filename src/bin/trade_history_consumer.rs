@@ -2,6 +2,7 @@ use fetcher::configure;
 use fetcher::models::Trade;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
+use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::Message;
 
 #[tokio::main]
@@ -27,12 +28,17 @@ async fn main() {
         .expect("Consumer creation failed");
 
     consumer.subscribe(&[&topic]).expect("Can't subscribe");
-
     println!("Listening for trades...");
 
     loop {
         match consumer.recv().await {
-            Err(e) => eprintln!("Kafka error: {}", e),
+            Err(e) => match e {
+                KafkaError::MessageConsumption(RDKafkaErrorCode::UnknownTopicOrPartition) => {
+                    eprintln!("Topic '{}' not found yet. Waiting for trades...", topic);
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+                _ => eprintln!("Kafka error: {}", e),
+            },
             Ok(m) => {
                 if let Some(payload) = m.payload_view::<str>() {
                     match payload {
