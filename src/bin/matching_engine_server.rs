@@ -1,13 +1,54 @@
-use fetcher::ledger::LedgerCommand;
+use fetcher::ledger::{LedgerCommand, LedgerListener};
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::fs;
 use std::path::Path;
 
+struct RedpandaTradeProducer {
+    producer: FutureProducer,
+    topic: String,
+}
+
+impl LedgerListener for RedpandaTradeProducer {
+    fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
+        if let LedgerCommand::MatchExecBatch(batch) = cmd {
+            let producer = self.producer.clone();
+            let topic = self.topic.clone();
+            let batch = batch.clone();
+
+            tokio::spawn(async move {
+                for data in batch {
+                    let trade = fetcher::models::Trade {
+                        trade_id: data.trade_id,
+                        buy_order_id: data.buy_order_id,
+                        sell_order_id: data.sell_order_id,
+                        buy_user_id: data.buyer_user_id,
+                        sell_user_id: data.seller_user_id,
+                        price: data.price,
+                        quantity: data.quantity,
+                    };
+
+                    if let Ok(payload) = serde_json::to_string(&trade) {
+                        let _ = producer
+                            .send(
+                                FutureRecord::to(&topic)
+                                    .payload(&payload)
+                                    .key(&trade.trade_id.to_string()),
+                                std::time::Duration::from_secs(0),
+                            )
+                            .await;
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+}
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
@@ -88,6 +129,19 @@ async fn main() {
         )
         .create()
         .expect("Consumer creation failed");
+
+    // === Kafka Producer Setup ===
+    let producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &config.kafka.broker)
+        .set("message.timeout.ms", "5000")
+        .create()
+        .expect("Producer creation failed");
+
+    let trade_producer = RedpandaTradeProducer {
+        producer,
+        topic: "trade.history".to_string(),
+    };
+    engine.ledger.set_listener(Box::new(trade_producer));
 
     consumer
         .subscribe(&[&config.kafka.topic])
