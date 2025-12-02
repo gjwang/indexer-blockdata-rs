@@ -161,7 +161,10 @@ mod tests {
         assert_eq!(client_order.symbol, "BTC_USDT");
         assert_eq!(client_order.side, "Sell");
         assert_eq!(client_order.price, Decimal::from_str("3500.75").unwrap());
-        assert_eq!(client_order.quantity, Decimal::from_str("0.12345678").unwrap());
+        assert_eq!(
+            client_order.quantity,
+            Decimal::from_str("0.12345678").unwrap()
+        );
         assert_eq!(client_order.order_type, "Market");
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);

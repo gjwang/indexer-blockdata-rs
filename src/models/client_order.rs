@@ -239,8 +239,6 @@ impl ClientOrder {
             .parse()
             .map_err(|e| format!("Invalid order type: {}", e))?;
 
-
-
         // Convert price to integer representation (already Decimal, no parsing needed)
         let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
         let price = (self.price * price_multiplier)
