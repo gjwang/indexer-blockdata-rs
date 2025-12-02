@@ -126,7 +126,7 @@ pub struct MatchExecData {
     pub quote_asset: AssetId,
     pub buyer_refund: u64,
     pub seller_refund: u64,
-    pub match_id: u64,
+    pub match_seq: u64,
 }
 
 // ==========================================

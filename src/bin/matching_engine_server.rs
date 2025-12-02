@@ -37,7 +37,7 @@ impl LedgerListener for RedpandaTradeProducer {
                         sell_user_id: data.seller_user_id,
                         price: data.price,
                         quantity: data.quantity,
-                        match_id: data.match_id,
+                        match_seq: data.match_seq,
                     })
                     .collect();
 
