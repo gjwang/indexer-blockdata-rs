@@ -66,6 +66,22 @@ impl ClientOrder {
         Validate::validate(self).map_err(|e| e.to_string())
     }
 
+    /// Validate order including symbol existence in symbol_manager
+    pub fn validate_with_symbol_manager(
+        &self,
+        symbol_manager: &SymbolManager,
+    ) -> Result<(), String> {
+        // First do basic validation
+        self.validate_order()?;
+
+        // Then validate symbol exists
+        if symbol_manager.get_symbol_info(&self.symbol).is_none() {
+            return Err(format!("Unknown symbol: {}", self.symbol));
+        }
+
+        Ok(())
+    }
+
     /// Convert ClientOrder to internal OrderRequest
     pub fn try_to_internal(
         &self,
@@ -73,6 +89,9 @@ impl ClientOrder {
         order_id: u64,
         user_id: u64,
     ) -> Result<OrderRequest, String> {
+        // Validate order including symbol existence
+        self.validate_with_symbol_manager(symbol_manager)?;
+
         let raw_order = self.to_raw_order(symbol_manager, user_id)?;
 
         Ok(OrderRequest::PlaceOrder {
@@ -170,7 +189,8 @@ fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
         return Err(err);
     }
 
-    //TODO: validate symbol exists in symbol_manager
+    // Note: Symbol existence is validated in validate_with_symbol_manager()
+    // which is called from try_to_internal()
     Ok(())
 }
 
