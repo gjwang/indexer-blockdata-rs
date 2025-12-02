@@ -7,7 +7,7 @@ use nix::unistd::{fork, ForkResult};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
-use crate::fast_ulid::SnowflakeGenRng;
+use crate::fast_ulid::FastUlidHalfGen;
 use crate::ledger::{GlobalLedger, LedgerCommand, UserAccount};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
@@ -35,7 +35,7 @@ impl OrderBook {
     pub fn add_order(
         &mut self,
         order: Order,
-        trade_id_gen: &mut SnowflakeGenRng,
+        trade_id_gen: &mut FastUlidHalfGen,
     ) -> Result<Vec<Trade>, String> {
         let order_id = order.order_id;
         let side = order.side;
@@ -244,7 +244,7 @@ pub struct MatchingEngine {
     pub order_wal: Wal,
     pub trade_wal: Wal,
     pub snapshot_dir: std::path::PathBuf,
-    pub trade_id_gen: SnowflakeGenRng,
+    pub trade_id_gen: FastUlidHalfGen,
 }
 
 impl MatchingEngine {
@@ -320,7 +320,7 @@ impl MatchingEngine {
             order_wal,
             trade_wal,
             snapshot_dir: snap_dir.to_path_buf(),
-            trade_id_gen: SnowflakeGenRng::new(1),
+            trade_id_gen: FastUlidHalfGen::new(),
         };
 
         // Replay
