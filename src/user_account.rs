@@ -13,8 +13,8 @@ pub struct Balance {
 
 impl Balance {
     pub fn deposit(&mut self, amount: u64) {
-        self.avail += amount;
-        self.version += 1;
+        self.avail = self.avail.saturating_add(amount);
+        self.version = self.version.wrapping_add(1);
     }
 
     pub fn withdraw(&mut self, amount: u64) -> Result<(), &'static str> {
