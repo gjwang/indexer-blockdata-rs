@@ -6,7 +6,9 @@ centrifugo:
 
 kafka:
   broker: "localhost:9093"
-  topic: "latency-test-topic"
+  topics:
+    orders: "latency-test-topic"
+    trades: "trade.history"
   group_id: "centrifugo-pusher"
   linger_ms: "3"
   fetch_wait_max_ms: "3"

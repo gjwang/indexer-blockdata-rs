@@ -55,7 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kafka_topic = args
         .kafka_topic
         .clone()
-        .unwrap_or(config.kafka.topic.clone());
+        .unwrap_or(config.kafka.topics.orders.clone());
     let base_group_id = args
         .group_id
         .clone()
