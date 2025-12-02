@@ -1,12 +1,13 @@
-use crate::models::{OrderRequest, OrderType, Side};
-use crate::symbol_manager::SymbolManager;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
 
+use crate::models::{OrderRequest, OrderType, Side};
+use crate::symbol_manager::SymbolManager;
+
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientOrder {
-    #[validate(length(min = 20, max = 32), custom(function = "validate_alphanumeric"))]
+    #[validate(custom(function = "validate_cid"))]
     pub cid: Option<String>, // Client order ID
     #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
@@ -153,14 +154,20 @@ impl ClientOrder {
     }
 }
 
-fn validate_alphanumeric(id: &str) -> Result<(), ValidationError> {
-    if id.chars().all(char::is_alphanumeric) {
-        Ok(())
-    } else {
-        let mut err = ValidationError::new("alphanumeric");
-        err.message = Some("Client order ID must be alphanumeric".into());
-        Err(err)
+fn validate_cid(id: &str) -> Result<(), ValidationError> {
+    // Check length
+    if id.len() < 16 || id.len() > 32 {
+        let mut err = ValidationError::new("cid_length");
+        err.message = Some(format!("Client order ID must be between 16 and 32 characters (got {})", id.len()).into());
+        return Err(err);
     }
+    // Check alphanumeric and underscore
+    if !id.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        let mut err = ValidationError::new("cid_alphanumeric");
+        err.message = Some("Client order ID must be alphanumeric (including underscore)".into());
+        return Err(err);
+    }
+    Ok(())
 }
 
 fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {

@@ -3,6 +3,8 @@ use std::time::Duration;
 use reqwest::Client;
 use tokio::time;
 
+use fetcher::fast_ulid::FastUlidHalfGen;
+
 #[tokio::main]
 async fn main() {
     let client = Client::new();
@@ -13,6 +15,8 @@ async fn main() {
 
     println!(">>> Starting Order Client");
     println!(">>> Target: {}", api_url);
+
+    let mut cid_gen = FastUlidHalfGen::new();
 
     let count: u64 = 1000000;
     let interval_ms = 100;
@@ -29,8 +33,9 @@ async fn main() {
         // ---- SELL order ------------------------------------------------
         // 1. Send three small SELL orders
         for i in 0..3 {
-            let quantity = (i as f64).to_string();
-            let sell_cid = format!("clientorder{:010}", i * 2 + 1);
+            let quantity = ((i + 1) as f64).to_string();
+            // let sell_cid = format!("clientorder{:010}", i * 2 + 1);
+            let sell_cid = format!("{:012}", cid_gen.generate());
             let sell_payload = serde_json::json!({
                 "cid": sell_cid,
                 "symbol": raw_symbol,
@@ -40,12 +45,20 @@ async fn main() {
                 "order_type": "Limit"
             });
 
-            // send SELL
-            let _ = client
+            // send SELL and handle response
+            let resp = client
                 .post(api_url)
                 .json(&sell_payload)
                 .send()
-                .await;
+                .await
+                .expect("failed to send SELL request");
+            let status = resp.status();
+            if !status.is_success() {
+                let err_body = resp.text().await.unwrap_or_else(|_| "<failed to read body>".into());
+                eprintln!("SELL request error: {} - {}", status, err_body);
+            } else {
+                println!("SELL request succeeded: {}", status);
+            }
 
             // Print brief info of the SELL order
             println!("SELL order {}: symbol={}, price={}, qty={}", sell_cid, raw_symbol, price, quantity);
@@ -55,7 +68,7 @@ async fn main() {
         // Generate a quantity that can match multiple opposite orders (1.0 .. 5.0)
         let quantity = "6.0";
 
-        let buy_cid = format!("clientorder{:010}", i * 2);
+        let buy_cid = format!("{:012}", cid_gen.generate());
         let buy_payload = serde_json::json!({
             "cid": buy_cid,
             "symbol": raw_symbol,
@@ -65,12 +78,20 @@ async fn main() {
             "order_type": "Limit"
         });
 
-        // send BUY
-        let _ = client
+        // send BUY and handle response
+        let resp = client
             .post(api_url)
             .json(&buy_payload)
             .send()
-            .await;
+            .await
+            .expect("failed to send BUY request");
+        let status = resp.status();
+        if !status.is_success() {
+            let err_body = resp.text().await.unwrap_or_else(|_| "<failed to read body>".into());
+            eprintln!("BUY request error: {} - {}", status, err_body);
+        } else {
+            println!("BUY request succeeded: {}", status);
+        }
 
         // Print brief info of the BUY order
         println!("BUY order {}: symbol={}, price={}, qty={}", buy_cid, raw_symbol, price, quantity);
