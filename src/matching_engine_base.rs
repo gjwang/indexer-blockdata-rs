@@ -8,7 +8,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::fast_ulid::FastUlidHalfGen;
-use crate::ledger::{GlobalLedger, LedgerCommand, UserAccount};
+use crate::ledger::{GlobalLedger, LedgerCommand, MatchExecData, UserAccount};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 
@@ -505,7 +505,7 @@ impl MatchingEngine {
                 .map_err(|e| OrderError::Other(e.to_string()))?;
         }
 
-        let mut ledger_cmds = Vec::with_capacity(trades.len());
+        let mut match_batch = Vec::with_capacity(trades.len());
 
         for trade in &trades {
             let mut buyer_refund = 0;
@@ -517,7 +517,7 @@ impl MatchingEngine {
                 }
             }
 
-            ledger_cmds.push(LedgerCommand::MatchExec {
+            match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,
                 buyer_user_id: trade.buy_user_id,
                 seller_user_id: trade.sell_user_id,
@@ -530,9 +530,9 @@ impl MatchingEngine {
             });
         }
 
-        if !ledger_cmds.is_empty() {
+        if !match_batch.is_empty() {
             self.ledger
-                .apply(&LedgerCommand::Batch(ledger_cmds))
+                .apply(&LedgerCommand::MatchExecBatch(match_batch))
                 .map_err(|e| OrderError::LedgerError(e.to_string()))?;
         }
 
