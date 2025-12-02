@@ -30,7 +30,7 @@ pub enum LogEntry {
         timestamp: u64,
     },
     Trade {
-        match_id: u64,
+        trade_id: u64,
         buy_order_id: u64,
         sell_order_id: u64,
         price: u64,
@@ -131,9 +131,9 @@ impl Wal {
         Ok(())
     }
 
-    pub fn log_match_order(
+    pub fn log_trade(
         &mut self,
-        match_id: u64,
+        trade_id: u64,
         buy_order_id: u64,
         sell_order_id: u64,
         price: u64,
@@ -145,7 +145,7 @@ impl Wal {
         let sell_id = to_fbs_ulid(sell_order_id);
 
         let args = fbs::TradeArgs {
-            match_id,
+            match_id: trade_id,
             buy_order_id: Some(&buy_id),
             sell_order_id: Some(&sell_id),
             price,
@@ -234,7 +234,7 @@ impl WalReader {
                 let sell_order_id = trade.sell_order_id().unwrap().lo();
 
                 Ok(Some(LogEntry::Trade {
-                    match_id: trade.match_id(),
+                    trade_id: trade.match_id(),
                     buy_order_id,
                     sell_order_id,
                     price: trade.price(),

@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
 
+use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::models::{Order, OrderType, Side, Trade};
 // Use the shared library module
 use fetcher::order_wal::{LogEntry, Wal};
@@ -32,14 +33,14 @@ static GLOBAL: Jemalloc = Jemalloc;
 #[derive(Serialize, Deserialize)]
 struct Snapshot {
     pub last_seq: u64,
-    pub match_sequence: u64,
+    // pub match_sequence: u64, // Removed
     pub orders: FxHashMap<u64, Order>,
     pub trade_history: Vec<Trade>,
 }
 
 pub struct MatchingEngine {
     pub orders: FxHashMap<u64, Order>,
-    pub match_sequence: u64,
+    pub trade_id_gen: SnowflakeGenRng,
     pub trade_history: Vec<Trade>,
     pub wal: Wal,
     pub snapshot_dir: PathBuf,
@@ -52,7 +53,7 @@ impl MatchingEngine {
         let wal = Wal::new(wal_path)?;
         Ok(Self {
             orders,
-            match_sequence: 0,
+            trade_id_gen: SnowflakeGenRng::new(1),
             trade_history: Vec::new(),
             wal,
             snapshot_dir: snapshot_dir.to_path_buf(),
@@ -87,9 +88,8 @@ impl MatchingEngine {
         let sell_user_id = self.orders.get(&sell_order_id)?.user_id;
 
         // Increment match sequence and create trade
-        self.match_sequence += 1;
         let trade = Trade {
-            trade_id: self.match_sequence,
+            trade_id: self.trade_id_gen.generate(),
             buy_order_id,
             sell_order_id,
             buy_user_id,
@@ -100,7 +100,7 @@ impl MatchingEngine {
 
         // Log trade to WAL
         self.wal
-            .log_match_order(
+            .log_trade(
                 trade.trade_id,
                 trade.buy_order_id,
                 trade.sell_order_id,
@@ -152,7 +152,7 @@ impl MatchingEngine {
 
                 let snap = Snapshot {
                     last_seq: current_seq,
-                    match_sequence: self.match_sequence,
+                    // match_sequence: self.match_sequence,
                     orders: self.orders.clone(),
                     trade_history: self.trade_history.clone(),
                 };
@@ -267,7 +267,7 @@ fn main() -> Result<()> {
     println!("\n>>> DONE");
     println!("    Total Orders: {}", total);
     println!("    Total Trades: {}", engine.trade_history.len());
-    println!("    Last Match ID: {}", engine.match_sequence);
+    // println!("    Last Match ID: {}", engine.match_sequence);
     println!("    Total Time: {:.2?}", dur);
     println!(
         "    Throughput: {:.0} orders/sec",
