@@ -87,7 +87,7 @@ pub struct Trade {
     pub sell_user_id: u64,
     pub price: u64,
     pub quantity: u64,
-    pub match_id: u64,
+    pub match_seq: u64,
 }
 
 #[derive(Debug, Clone)]

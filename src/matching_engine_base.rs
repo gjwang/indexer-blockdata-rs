@@ -104,7 +104,7 @@ impl OrderBook {
 
                                 self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_seq,
+                                    match_seq: self.match_seq,
                                     trade_id: trade_id_gen.generate(),
                                     buy_order_id: order.order_id,
                                     sell_order_id: best_ask.order_id,
@@ -161,7 +161,7 @@ impl OrderBook {
 
                                 self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_seq,
+                                    match_seq: self.match_seq,
                                     trade_id: trade_id_gen.generate(),
                                     buy_order_id: best_bid.order_id,
                                     sell_order_id: order.order_id,
@@ -570,7 +570,7 @@ impl MatchingEngine {
                 quote_asset,
                 buyer_refund,
                 seller_refund: 0,
-                match_id: trade.match_id,
+                match_seq: trade.match_seq,
             });
         }
 
