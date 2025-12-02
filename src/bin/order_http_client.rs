@@ -1,9 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-
 use reqwest::Client;
-use tokio::time;
 
 use fetcher::fast_ulid::FastUlidHalfGen;
 
@@ -22,10 +19,14 @@ async fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let total_count: u64 = 1000000;
 
-    let concurrency = 500;
-    let interval_ms = 0;
+    let concurrency = 1000;
+    // let interval_ms = 0;
 
     let mut handles = Vec::new();
+
+    //TODO: statistics the total time cost, performance
+
+    let start_time = std::time::Instant::now();
 
     for _ in 0..concurrency {
         let client = client.clone();
@@ -77,7 +78,7 @@ async fn main() {
                                     .unwrap_or_else(|_| "<failed to read body>".into());
                                 eprintln!("SELL request error: {} - {}", status, err_body);
                             } else {
-                                println!("SELL request succeeded: {}", status);
+                                // println!("SELL request succeeded: {}", status);
                             }
                         }
                         Err(e) => {
@@ -86,10 +87,10 @@ async fn main() {
                     }
 
                     // Print brief info of the SELL order
-                    println!(
-                        "SELL order {}: symbol={}, price={}, qty={}",
-                        sell_cid, raw_symbol, price, quantity
-                    );
+                    // println!(
+                    //     "SELL order {}: symbol={}, price={}, qty={}",
+                    //     sell_cid, raw_symbol, price, quantity
+                    // );
                 }
 
                 // ---- BUY order -------------------------------------------------
@@ -121,7 +122,7 @@ async fn main() {
                                 .unwrap_or_else(|_| "<failed to read body>".into());
                             eprintln!("BUY request error: {} - {}", status, err_body);
                         } else {
-                            println!("BUY request succeeded: {}", status);
+                            // println!("BUY request succeeded: {}", status);
                         }
                     }
                     Err(e) => {
@@ -130,13 +131,13 @@ async fn main() {
                 }
 
                 // Print brief info of the BUY order
-                println!(
-                    "BUY order {}: symbol={}, price={}, qty={}",
-                    buy_cid, raw_symbol, price, quantity
-                );
+                // println!(
+                //     "BUY order {}: symbol={}, price={}, qty={}",
+                //     buy_cid, raw_symbol, price, quantity
+                // );
 
                 // optional throttle (removed as per request for speed, but keeping structure if needed)
-                time::sleep(Duration::from_millis(interval_ms)).await;
+                // time::sleep(Duration::from_millis(interval_ms)).await;
             }
         });
         handles.push(handle);
@@ -145,5 +146,13 @@ async fn main() {
     for handle in handles {
         let _ = handle.await;
     }
+    
+    let duration = start_time.elapsed();
+    let total_requests = total_count * 4; // 3 sells + 1 buy per iteration
+    let req_per_sec = total_requests as f64 / duration.as_secs_f64();
+
     println!(">>> All requests completed.");
+    println!(">>> Total Time: {:.2?}", duration);
+    println!(">>> Total Requests: {}", total_requests);
+    println!(">>> Throughput: {:.2} req/sec", req_per_sec);
 }
