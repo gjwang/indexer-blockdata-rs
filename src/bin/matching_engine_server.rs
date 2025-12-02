@@ -43,15 +43,21 @@ impl LedgerListener for RedpandaTradeProducer {
                 // 2. Determine Key (Symbol Pair) to ensure ordering
                 let first = &batch[0];
                 let key = format!("{}_{}", first.base_asset, first.quote_asset);
+                // Debug: log number of trades being sent
+                println!("Sending {} trades to topic '{}' with key '{}'", trades.len(), topic, key);
 
                 // 3. Serialize and Send Batch
                 if let Ok(payload) = serde_json::to_string(&trades) {
-                    let _ = producer
+                    match producer
                         .send(
                             FutureRecord::to(&topic).payload(&payload).key(&key),
                             std::time::Duration::from_secs(0),
                         )
-                        .await;
+                        .await
+                    {
+                        Ok(_) => println!("Trades batch sent successfully to topic '{}'", topic),
+                        Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}' with key '{}': {}", topic, key, e),
+                    };
                 }
             });
         }
@@ -139,7 +145,7 @@ async fn main() {
         .expect("Producer creation failed");
 
     let trade_producer = RedpandaTradeProducer {
-        producer,
+        producer: producer.clone(), // Clone producer for trade_producer
         topic: config.kafka.topics.trades.clone(),
     };
     engine.ledger.set_listener(Box::new(trade_producer));
@@ -184,16 +190,21 @@ async fn main() {
                                         if let Some(symbol_name) =
                                             symbol_manager.get_symbol(symbol_id)
                                         {
+                                            // Process order
                                             match engine.add_order(
-                                                symbol_id, order_id, side, order_type, price,
-                                                quantity, user_id,
+                                                symbol_id,
+                                                order_id,
+                                                side,
+                                                order_type,
+                                                price,
+                                                quantity,
+                                                user_id,
                                             ) {
-                                                Ok(_) => println!(
-                                                    "Order {} Placed: {} {} @ {} ({})",
-                                                    order_id, side, quantity, price, symbol_name
-                                                ),
+                                                Ok(_oid) => {
+                                                    println!("Order placed: id={}, symbol_id={}, side={:?}, price={}, qty={}", order_id, symbol_id, side, price, quantity);
+                                                }
                                                 Err(e) => {
-                                                    eprintln!("Order {} Failed: {}", order_id, e)
+                                                    eprintln!("Failed to add order: {}", e);
                                                 }
                                             }
                                         } else {

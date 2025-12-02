@@ -1,9 +1,10 @@
-use fetcher::configure;
-use fetcher::models::Trade;
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::error::{KafkaError, RDKafkaErrorCode};
 use rdkafka::Message;
+
+use fetcher::configure;
+use fetcher::models::Trade;
 
 #[tokio::main]
 async fn main() {
@@ -19,13 +20,21 @@ async fn main() {
     println!("Group ID: {}", group_id);
     println!("------------------------------");
 
+    // Initialize Consumer
     let consumer: StreamConsumer = ClientConfig::new()
         .set("bootstrap.servers", &broker)
         .set("group.id", &group_id)
         .set("enable.auto.commit", "true")
-        .set("auto.offset.reset", "earliest")
-        .create()
-        .expect("Consumer creation failed");
+        .set("auto.offset.reset", "latest")
+        .set("session.timeout.ms", &config.kafka.session_timeout_ms)
+        .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
+        .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
+        .set(
+            "socket.keepalive.enable",
+            &config.kafka.socket_keepalive_enable,
+        )
+        .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
+        .create().unwrap();
 
     consumer.subscribe(&[&topic]).expect("Can't subscribe");
     println!("Listening for trades...");
