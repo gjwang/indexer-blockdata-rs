@@ -10,8 +10,7 @@ pub struct ClientOrder {
     pub cid: Option<String>, // Client order ID
     #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
-    #[validate(custom(function = "validate_side"))]
-    pub side: String,//todo refacto to Side
+    pub side: Side,
     #[validate(custom(function = "validate_price_decimal"))]
     pub price: Decimal,
     #[validate(custom(function = "validate_quantity_decimal"))]
@@ -37,7 +36,7 @@ impl ClientOrder {
     pub fn new(
         cid: Option<String>,
         symbol: String,
-        side: String,
+        side: Side,
         price: Decimal,
         quantity: Decimal,
         order_type: OrderType,
@@ -121,7 +120,7 @@ impl ClientOrder {
                 Ok(ClientOrder {
                     cid: None, // OrderRequest doesn't store cid yet
                     symbol,
-                    side: side.to_string(),
+                    side: *side,
                     price: price_decimal,
                     quantity: quantity_decimal,
                     order_type: *order_type,
@@ -170,18 +169,9 @@ fn validate_symbol_format(symbol: &str) -> Result<(), ValidationError> {
         err.message = Some("Symbol cannot contain consecutive underscores".into());
         return Err(err);
     }
-    Ok(())
-}
 
-fn validate_side(side: &str) -> Result<(), ValidationError> {
-    match side.parse::<Side>() {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let mut err = ValidationError::new("invalid_side");
-            err.message = Some("Invalid side. Must be 'Buy' or 'Sell'".into());
-            Err(err)
-        }
-    }
+    //TODO: validate symbol exists in symbol_manager
+    Ok(())
 }
 
 fn validate_price_decimal(price: &Decimal) -> Result<(), ValidationError> {
@@ -217,11 +207,6 @@ impl ClientOrder {
             .get_symbol_info(&self.symbol)
             .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
 
-        let side: Side = self
-            .side
-            .parse()
-            .map_err(|e| format!("Invalid side: {}", e))?;
-
         // Convert price to integer representation (already Decimal, no parsing needed)
         let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
         let price = (self.price * price_multiplier)
@@ -242,7 +227,7 @@ impl ClientOrder {
             user_id,
             cid: self.cid.clone(),
             symbol_id: symbol_info.id as u64,
-            side,
+            side: self.side,
             price,
             price_decimal: symbol_info.price_decimal,
             quantity,
