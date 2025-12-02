@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 // 0. Module Import
 // =================================================================
 use crate::md5_utils::{Md5Reader, Md5Writer};
+use crate::user_account::{AssetId, Balance, UserAccount, UserId};
 
 // ==========================================
 // 1. Configuration Constants
@@ -30,50 +31,6 @@ const WAL_RETENTION: usize = 3;
 // Snapshot Configuration
 const SNAPSHOT_RETENTION: usize = 3;
 
-// ==========================================
-// 2. Data Structures
-// ==========================================
-
-pub type AssetId = u32;
-pub type UserId = u64;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-#[repr(C)]
-pub struct Balance {
-    pub avail: u64,
-    pub frozen: u64,
-    pub version: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserAccount {
-    pub user_id: UserId,
-    pub assets: Vec<(AssetId, Balance)>,
-}
-
-impl UserAccount {
-    pub fn new(user_id: UserId) -> Self {
-        Self {
-            user_id,
-            assets: Vec::with_capacity(8),
-        }
-    }
-    #[inline(always)]
-    pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
-        if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
-            return &mut self.assets[index].1;
-        }
-        self.assets.push((
-            asset,
-            Balance {
-                avail: 0,
-                frozen: 0,
-                version: 0,
-            },
-        ));
-        &mut self.assets.last_mut().unwrap().1
-    }
-}
 
 // Snapshot on disk
 #[derive(Serialize, Deserialize)]
@@ -718,8 +675,7 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                bal.avail += amount;
-                bal.version += 1;
+                bal.deposit(*amount);
             }
             LedgerCommand::Withdraw {
                 user_id,
@@ -730,15 +686,13 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                if bal.avail < *amount {
-                    anyhow::bail!(
+                bal.withdraw(*amount).map_err(|_| {
+                    anyhow::anyhow!(
                         "Insufficient funds for withdraw: User {} Asset {}",
                         user_id,
                         asset
-                    );
-                }
-                bal.avail -= amount;
-                bal.version += 1;
+                    )
+                })?;
             }
             LedgerCommand::Lock {
                 user_id,
@@ -749,16 +703,13 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                if bal.avail < *amount {
-                    anyhow::bail!(
+                bal.lock(*amount).map_err(|_| {
+                    anyhow::anyhow!(
                         "Insufficient funds for lock: User {} Asset {}",
                         user_id,
                         asset
-                    );
-                }
-                bal.avail -= amount;
-                bal.frozen += amount;
-                bal.version += 1;
+                    )
+                })?;
             }
             LedgerCommand::Unlock {
                 user_id,
@@ -769,16 +720,13 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                if bal.frozen < *amount {
-                    anyhow::bail!(
+                bal.unlock(*amount).map_err(|_| {
+                    anyhow::anyhow!(
                         "Insufficient frozen funds for unlock: User {} Asset {}",
                         user_id,
                         asset
-                    );
-                }
-                bal.frozen -= amount;
-                bal.avail += amount;
-                bal.version += 1;
+                    )
+                })?;
             }
             LedgerCommand::TradeSettle {
                 user_id,
@@ -795,15 +743,13 @@ impl GlobalLedger {
                 let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset);
 
                 if let Some(idx) = spend_idx {
-                    if user.assets[idx].1.frozen < *spend_amount {
-                        anyhow::bail!(
+                    user.assets[idx].1.spend_frozen(*spend_amount).map_err(|_| {
+                        anyhow::anyhow!(
                             "Insufficient frozen funds for settle: User {} Asset {}",
                             user_id,
                             spend_asset
-                        );
-                    }
-                    user.assets[idx].1.frozen -= spend_amount;
-                    user.assets[idx].1.version += 1;
+                        )
+                    })?;
                 } else {
                     anyhow::bail!(
                         "Asset not found for spend: User {} Asset {}",
@@ -814,8 +760,7 @@ impl GlobalLedger {
 
                 let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset);
                 if let Some(idx) = gain_idx {
-                    user.assets[idx].1.avail += gain_amount;
-                    user.assets[idx].1.version += 1;
+                    user.assets[idx].1.deposit(*gain_amount);
                 } else {
                     user.assets.push((
                         *gain_asset,
@@ -860,29 +805,23 @@ impl GlobalLedger {
 
         // Debit Quote (Frozen)
         let quote_bal = buyer.get_balance_mut(data.quote_asset);
-        if quote_bal.frozen < buyer_spend {
-            anyhow::bail!("Insufficient frozen quote for buyer {}", data.buyer_user_id);
-        }
-        quote_bal.frozen -= buyer_spend;
-        quote_bal.version += 1;
+        quote_bal.spend_frozen(buyer_spend).map_err(|_| {
+            anyhow::anyhow!("Insufficient frozen quote for buyer {}", data.buyer_user_id)
+        })?;
 
         // Credit Base (Available)
         let base_bal = buyer.get_balance_mut(data.base_asset);
-        base_bal.avail += buyer_gain;
-        base_bal.version += 1;
+        base_bal.deposit(buyer_gain);
 
         // Refund Quote (Frozen -> Available)
         if data.buyer_refund > 0 {
             let quote_bal = buyer.get_balance_mut(data.quote_asset);
-            if quote_bal.frozen < data.buyer_refund {
-                anyhow::bail!(
+            quote_bal.unlock(data.buyer_refund).map_err(|_| {
+                anyhow::anyhow!(
                     "Insufficient frozen quote for refund buyer {}",
                     data.buyer_user_id
-                );
-            }
-            quote_bal.frozen -= data.buyer_refund;
-            quote_bal.avail += data.buyer_refund;
-            quote_bal.version += 1;
+                )
+            })?;
         }
 
         // 2. Seller Settle
@@ -892,32 +831,23 @@ impl GlobalLedger {
 
         // Debit Base (Frozen)
         let base_bal = seller.get_balance_mut(data.base_asset);
-        if base_bal.frozen < seller_spend {
-            anyhow::bail!(
-                "Insufficient frozen base for seller {}",
-                data.seller_user_id
-            );
-        }
-        base_bal.frozen -= seller_spend;
-        base_bal.version += 1;
+        base_bal.spend_frozen(seller_spend).map_err(|_| {
+            anyhow::anyhow!("Insufficient frozen base for seller {}", data.seller_user_id)
+        })?;
 
         // Credit Quote (Available)
         let quote_bal = seller.get_balance_mut(data.quote_asset);
-        quote_bal.avail += seller_gain;
-        quote_bal.version += 1;
+        quote_bal.deposit(seller_gain);
 
         // Refund Base (Frozen -> Available) - unlikely but supported
         if data.seller_refund > 0 {
             let base_bal = seller.get_balance_mut(data.base_asset);
-            if base_bal.frozen < data.seller_refund {
-                anyhow::bail!(
+            base_bal.unlock(data.seller_refund).map_err(|_| {
+                anyhow::anyhow!(
                     "Insufficient frozen base for refund seller {}",
                     data.seller_user_id
-                );
-            }
-            base_bal.frozen -= data.seller_refund;
-            base_bal.avail += data.seller_refund;
-            base_bal.version += 1;
+                )
+            })?;
         }
         Ok(())
     }
