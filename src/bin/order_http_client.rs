@@ -19,7 +19,9 @@ async fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let total_count: u64 = 1000000;
     
-    let concurrency = 50;
+    let concurrency = 500;
+    let interval_ms = 0;
+
     let mut handles = Vec::new();
 
     for _ in 0..concurrency {
@@ -76,7 +78,7 @@ async fn main() {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Failed to send SELL request: {}", e);
+                            eprintln!("Failed to send SELL request: {:?}", e);
                         }
                     }
 
@@ -120,7 +122,7 @@ async fn main() {
                         }
                     }
                     Err(e) => {
-                        eprintln!("Failed to send BUY request: {}", e);
+                        eprintln!("Failed to send BUY request: {:?}", e);
                     }
                 }
 
@@ -131,7 +133,7 @@ async fn main() {
                 );
 
                 // optional throttle (removed as per request for speed, but keeping structure if needed)
-                // time::sleep(Duration::from_millis(0)).await;
+                time::sleep(Duration::from_millis(interval_ms)).await;
             }
         });
         handles.push(handle);
