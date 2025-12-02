@@ -1,15 +1,15 @@
-use crate::ledger::{GlobalLedger, LedgerCommand, UserAccount};
-use nix::unistd::{fork, ForkResult};
-use rustc_hash::{FxHashMap, FxHashSet};
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::order_wal::{LogEntry, Wal};
+use nix::unistd::{fork, ForkResult};
+use rustc_hash::{FxHashMap, FxHashSet};
+use serde::{Deserialize, Serialize};
 
+use crate::ledger::{GlobalLedger, LedgerCommand, UserAccount};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
+use crate::order_wal::{LogEntry, Wal};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
@@ -18,7 +18,7 @@ pub struct OrderBook {
     pub asks: BTreeMap<u64, VecDeque<Order>>, // Price -> Orders
     pub active_order_ids: FxHashSet<u64>,
     pub order_index: FxHashMap<u64, (Side, u64)>, // Map order_id -> (Side, Price)
-    pub match_sequence: u64,
+    pub match_seq: u64,
 }
 
 impl OrderBook {
@@ -29,7 +29,7 @@ impl OrderBook {
             asks: BTreeMap::new(),
             active_order_ids: FxHashSet::default(),
             order_index: FxHashMap::default(),
-            match_sequence: 0,
+            match_seq: 0,
         }
     }
 
@@ -65,9 +65,9 @@ impl OrderBook {
                             while let Some(mut best_ask) = orders_at_price.pop_front() {
                                 let trade_quantity = u64::min(order.quantity, best_ask.quantity);
 
-                                self.match_sequence += 1;
+                                self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_sequence,
+                                    match_id: self.match_seq,
                                     buy_order_id: order.order_id,
                                     sell_order_id: best_ask.order_id,
                                     buy_user_id: order.user_id,
@@ -121,9 +121,9 @@ impl OrderBook {
                             while let Some(mut best_bid) = orders_at_price.pop_front() {
                                 let trade_quantity = u64::min(order.quantity, best_bid.quantity);
 
-                                self.match_sequence += 1;
+                                self.match_seq += 1;
                                 trades.push(Trade {
-                                    match_id: self.match_sequence,
+                                    match_id: self.match_seq,
                                     buy_order_id: best_bid.order_id,
                                     sell_order_id: order.order_id,
                                     buy_user_id: best_bid.user_id,
