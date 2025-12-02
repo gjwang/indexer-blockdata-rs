@@ -192,7 +192,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cid"));
-        assert!(err.contains("length"));
+        assert!(err.contains("characters"));
     }
 
     #[test]
@@ -302,7 +302,7 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cid"));
-        assert!(err.contains("length"));
+        assert!(err.contains("characters"));
     }
 
     #[test]
@@ -434,5 +434,32 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("Unknown symbol"));
+    }
+    #[test]
+    fn test_cid_valid_with_underscore() {
+        let result = ClientOrder::new(
+            Some("client_id_1234567890".to_string()),
+            "BTC_USDT".to_string(),
+            Side::Buy,
+            Decimal::from_str("50000.99").unwrap(),
+            Decimal::from_str("2.5").unwrap(),
+            OrderType::Limit,
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_cid_invalid_chars() {
+        let result = ClientOrder::new(
+            Some("client-id-1234567890".to_string()), // Hyphen not allowed
+            "BTC_USDT".to_string(),
+            Side::Buy,
+            Decimal::from_str("50000.99").unwrap(),
+            Decimal::from_str("2.5").unwrap(),
+            OrderType::Limit,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("alphanumeric"));
     }
 }
