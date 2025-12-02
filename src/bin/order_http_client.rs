@@ -46,22 +46,29 @@ async fn main() {
             });
 
             // send SELL and handle response
-            let resp = client
-                .post(api_url)
-                .json(&sell_payload)
-                .send()
-                .await
-                .expect("failed to send SELL request");
-            let status = resp.status();
-            if !status.is_success() {
-                let err_body = resp.text().await.unwrap_or_else(|_| "<failed to read body>".into());
-                eprintln!("SELL request error: {} - {}", status, err_body);
-            } else {
-                println!("SELL request succeeded: {}", status);
+            match client.post(api_url).json(&sell_payload).send().await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if !status.is_success() {
+                        let err_body = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|_| "<failed to read body>".into());
+                        eprintln!("SELL request error: {} - {}", status, err_body);
+                    } else {
+                        println!("SELL request succeeded: {}", status);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to send SELL request: {}", e);
+                }
             }
 
             // Print brief info of the SELL order
-            println!("SELL order {}: symbol={}, price={}, qty={}", sell_cid, raw_symbol, price, quantity);
+            println!(
+                "SELL order {}: symbol={}, price={}, qty={}",
+                sell_cid, raw_symbol, price, quantity
+            );
         }
 
         // ---- BUY order -------------------------------------------------
@@ -79,18 +86,22 @@ async fn main() {
         });
 
         // send BUY and handle response
-        let resp = client
-            .post(api_url)
-            .json(&buy_payload)
-            .send()
-            .await
-            .expect("failed to send BUY request");
-        let status = resp.status();
-        if !status.is_success() {
-            let err_body = resp.text().await.unwrap_or_else(|_| "<failed to read body>".into());
-            eprintln!("BUY request error: {} - {}", status, err_body);
-        } else {
-            println!("BUY request succeeded: {}", status);
+        match client.post(api_url).json(&buy_payload).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                if !status.is_success() {
+                    let err_body = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|_| "<failed to read body>".into());
+                    eprintln!("BUY request error: {} - {}", status, err_body);
+                } else {
+                    println!("BUY request succeeded: {}", status);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to send BUY request: {}", e);
+            }
         }
 
         // Print brief info of the BUY order
