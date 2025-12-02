@@ -281,7 +281,7 @@ fn test_ledger_integration() {
     // Avail: 999,900.
     let bals = engine.ledger.get_user_balances(1).unwrap();
     let btc = bals.iter().find(|(a, _)| *a == 1).unwrap().1;
-    assert_eq!(btc.available, 999_900);
+    assert_eq!(btc.avail, 999_900);
     assert_eq!(btc.frozen, 100);
 
     // User 3: Buy 50 BTC @ 10 USDT
@@ -301,7 +301,7 @@ fn test_ledger_integration() {
     let bals1 = engine.ledger.get_user_balances(1).unwrap();
     let btc1 = bals1.iter().find(|(a, _)| *a == 1).unwrap().1;
     assert_eq!(btc1.frozen, 50);
-    assert_eq!(btc1.available, 999_900);
+    assert_eq!(btc1.avail, 999_900);
 
     let usdt1 = bals1.iter().find(|(a, _)| *a == 2);
     // User 1 didn't have USDT initially? setup_engine gives generic deposits.
@@ -309,7 +309,7 @@ fn test_ledger_integration() {
     // So now they have Asset 2.
     assert!(usdt1.is_some());
     let usdt1 = usdt1.unwrap().1;
-    assert_eq!(usdt1.available, 500);
+    assert_eq!(usdt1.avail, 500);
 
     // Check User 3 (Buyer)
     // Initial Asset 2: 10,000,000.
@@ -319,11 +319,11 @@ fn test_ledger_integration() {
     let bals3 = engine.ledger.get_user_balances(3).unwrap();
     let usdt3 = bals3.iter().find(|(a, _)| *a == 2).unwrap().1;
     assert_eq!(usdt3.frozen, 0); // Fully matched
-    assert_eq!(usdt3.available, 10_000_000 - 500);
+    assert_eq!(usdt3.avail, 10_000_000 - 500);
 
     let btc3 = bals3.iter().find(|(a, _)| *a == 1);
     assert!(btc3.is_some());
-    assert_eq!(btc3.unwrap().1.available, 50);
+    assert_eq!(btc3.unwrap().1.avail, 50);
 
     drop(engine);
     teardown(wal, snap);

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 // 0. Module Import
 // =================================================================
 use crate::md5_utils::{Md5Reader, Md5Writer};
+
 // ==========================================
 // 1. Configuration Constants
 // ==========================================
@@ -39,7 +40,7 @@ pub type UserId = u64;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
 #[repr(C)]
 pub struct Balance {
-    pub available: u64,
+    pub avail: u64,
     pub frozen: u64,
     pub version: u64,
 }
@@ -65,7 +66,7 @@ impl UserAccount {
         self.assets.push((
             asset,
             Balance {
-                available: 0,
+                avail: 0,
                 frozen: 0,
                 version: 0,
             },
@@ -386,7 +387,7 @@ impl RollingWal {
     pub fn replay_iter(
         dir: &Path,
         min_seq: u64,
-    ) -> Result<impl Iterator<Item = Result<(u64, LedgerCommand)>>> {
+    ) -> Result<impl Iterator<Item=Result<(u64, LedgerCommand)>>> {
         let wals = Self::list_wals(dir)?;
         let start_idx = wals
             .partition_point(|(seq, _)| *seq <= min_seq)
@@ -717,7 +718,7 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                bal.available += amount;
+                bal.avail += amount;
                 bal.version += 1;
             }
             LedgerCommand::Withdraw {
@@ -729,14 +730,14 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                if bal.available < *amount {
+                if bal.avail < *amount {
                     anyhow::bail!(
                         "Insufficient funds for withdraw: User {} Asset {}",
                         user_id,
                         asset
                     );
                 }
-                bal.available -= amount;
+                bal.avail -= amount;
                 bal.version += 1;
             }
             LedgerCommand::Lock {
@@ -748,14 +749,14 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                if bal.available < *amount {
+                if bal.avail < *amount {
                     anyhow::bail!(
                         "Insufficient funds for lock: User {} Asset {}",
                         user_id,
                         asset
                     );
                 }
-                bal.available -= amount;
+                bal.avail -= amount;
                 bal.frozen += amount;
                 bal.version += 1;
             }
@@ -776,7 +777,7 @@ impl GlobalLedger {
                     );
                 }
                 bal.frozen -= amount;
-                bal.available += amount;
+                bal.avail += amount;
                 bal.version += 1;
             }
             LedgerCommand::TradeSettle {
@@ -813,13 +814,13 @@ impl GlobalLedger {
 
                 let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset);
                 if let Some(idx) = gain_idx {
-                    user.assets[idx].1.available += gain_amount;
+                    user.assets[idx].1.avail += gain_amount;
                     user.assets[idx].1.version += 1;
                 } else {
                     user.assets.push((
                         *gain_asset,
                         Balance {
-                            available: *gain_amount,
+                            avail: *gain_amount,
                             frozen: 0,
                             version: 1,
                         },
@@ -867,7 +868,7 @@ impl GlobalLedger {
 
         // Credit Base (Available)
         let base_bal = buyer.get_balance_mut(data.base_asset);
-        base_bal.available += buyer_gain;
+        base_bal.avail += buyer_gain;
         base_bal.version += 1;
 
         // Refund Quote (Frozen -> Available)
@@ -880,7 +881,7 @@ impl GlobalLedger {
                 );
             }
             quote_bal.frozen -= data.buyer_refund;
-            quote_bal.available += data.buyer_refund;
+            quote_bal.avail += data.buyer_refund;
             quote_bal.version += 1;
         }
 
@@ -902,7 +903,7 @@ impl GlobalLedger {
 
         // Credit Quote (Available)
         let quote_bal = seller.get_balance_mut(data.quote_asset);
-        quote_bal.available += seller_gain;
+        quote_bal.avail += seller_gain;
         quote_bal.version += 1;
 
         // Refund Base (Frozen -> Available) - unlikely but supported
@@ -915,7 +916,7 @@ impl GlobalLedger {
                 );
             }
             base_bal.frozen -= data.seller_refund;
-            base_bal.available += data.seller_refund;
+            base_bal.avail += data.seller_refund;
             base_bal.version += 1;
         }
         Ok(())

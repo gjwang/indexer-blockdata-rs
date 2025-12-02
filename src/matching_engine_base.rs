@@ -459,7 +459,7 @@ impl MatchingEngine {
         let balance = accounts
             .get(&user_id)
             .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
-            .map(|(_, b)| b.available)
+            .map(|(_, b)| b.avail)
             .unwrap_or(0);
 
         if balance < required_amount {
