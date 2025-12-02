@@ -591,64 +591,72 @@ impl MatchingEngine {
         &mut self,
         requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
     ) -> Vec<Result<u64, OrderError>> {
-        let mut results = Vec::with_capacity(requests.len());
+        let mut results = vec![Err(OrderError::Other("Not processed".to_string())); requests.len()];
+        let mut valid_indices = Vec::with_capacity(requests.len());
 
-        for (symbol_id, order_id, side, order_type, price, quantity, user_id) in requests {
-            // 1. Validation
-            let wal_side = side;
-            let (base_asset, quote_asset) = match self.asset_map.get(&symbol_id) {
+        // 1. Validate and Log to Input WAL
+        for (i, (symbol_id, order_id, side, _order_type, price, quantity, user_id)) in
+            requests.iter().enumerate()
+        {
+            let wal_side = *side;
+            let (base_asset, quote_asset) = match self.asset_map.get(symbol_id) {
                 Some(&pair) => pair,
                 None => {
-                    results.push(Err(OrderError::AssetMapNotFound { symbol_id }));
+                    results[i] = Err(OrderError::AssetMapNotFound { symbol_id: *symbol_id });
                     continue;
                 }
             };
             let (required_asset, required_amount) = match side {
                 Side::Buy => (quote_asset, price * quantity),
-                Side::Sell => (base_asset, quantity),
+                Side::Sell => (base_asset, *quantity),
             };
 
             let accounts = self.ledger.get_accounts();
             let balance = accounts
-                .get(&user_id)
+                .get(user_id)
                 .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
                 .map(|(_, b)| b.avail)
                 .unwrap_or(0);
 
             if balance < required_amount {
-                results.push(Err(OrderError::InsufficientFunds {
-                    user_id,
+                results[i] = Err(OrderError::InsufficientFunds {
+                    user_id: *user_id,
                     asset_id: required_asset,
                     required: required_amount,
                     available: balance,
-                }));
+                });
                 continue;
             }
 
-            // 2. Log to Order WAL (No Flush)
+            // Log to Order WAL (No Flush)
             if let Err(e) = self.order_wal.log_place_order_no_flush(
-                order_id, user_id, symbol_id, wal_side, price, quantity,
+                *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
             ) {
-                results.push(Err(OrderError::Other(e.to_string())));
+                results[i] = Err(OrderError::Other(e.to_string()));
                 continue;
             }
 
-            // 3. Process
-            match self.process_order(
-                symbol_id, order_id, side, order_type, price, quantity, user_id,
-            ) {
-                Ok(oid) => results.push(Ok(oid)),
-                Err(e) => results.push(Err(e)),
-            }
+            valid_indices.push(i);
         }
 
-        // 4. Flush Order WAL
+        // 2. Flush Input WAL (Persistence Checkpoint 1)
         if let Err(e) = self.order_wal.flush() {
             eprintln!("CRITICAL: Failed to flush order WAL: {}", e);
             panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
         }
 
-        // 5. Flush Ledger WAL
+        // 3. Process Valid Orders (Memory Update + Ledger WAL Buffer)
+        for i in valid_indices {
+            let (symbol_id, order_id, side, order_type, price, quantity, user_id) = requests[i];
+            match self.process_order(
+                symbol_id, order_id, side, order_type, price, quantity, user_id,
+            ) {
+                Ok(oid) => results[i] = Ok(oid),
+                Err(e) => results[i] = Err(e),
+            }
+        }
+
+        // 4. Flush Ledger WAL (Persistence Checkpoint 2)
         if let Err(e) = self.ledger.flush() {
             eprintln!("CRITICAL: Failed to flush ledger WAL: {}", e);
             panic!("CRITICAL: Ledger WAL flush failed. Integrity compromised.");
