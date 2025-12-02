@@ -96,6 +96,7 @@ impl MatchingEngine {
             sell_user_id,
             price,
             quantity,
+            match_id: 0,
         };
 
         // Log trade to WAL

@@ -37,6 +37,7 @@ impl LedgerListener for RedpandaTradeProducer {
                         sell_user_id: data.seller_user_id,
                         price: data.price,
                         quantity: data.quantity,
+                        match_id: data.match_id,
                     })
                     .collect();
 
@@ -64,6 +65,7 @@ impl LedgerListener for RedpandaTradeProducer {
         Ok(())
     }
 }
+
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
