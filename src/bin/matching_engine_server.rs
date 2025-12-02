@@ -58,7 +58,10 @@ impl LedgerListener for RedpandaTradeProducer {
                         )
                         .await
                     {
-                        Ok(_) => println!("Trades batch sent successfully to topic '{}'", topic),
+                        Ok(_) => {
+                            //TODO reduce print by counting
+                            // println!("Trades batch sent successfully to topic '{}'", topic)
+                        }
                         Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}' with key '{}': {}", topic, key, e),
                     };
                 }
@@ -172,26 +175,41 @@ async fn main() {
     let mut total_orders = 0;
     let mut last_report = std::time::Instant::now();
 
+    let batch_poll_count = 1000;
+
     loop {
-        let mut batch = Vec::with_capacity(1000);
+        let mut batch = Vec::with_capacity(batch_poll_count);
+
+        let poll_start = std::time::Instant::now();
 
         // 1. Block for at least one message
         match consumer.recv().await {
             Ok(m) => batch.push(m),
             Err(e) => eprintln!("Kafka error: {}", e),
         }
+        let wait_time = poll_start.elapsed();
 
         // 2. Drain whatever else is already in the local buffer (up to 999 more)
-        for _ in 0..999 {
+        for _ in 0..batch_poll_count - 1 {
             match tokio::time::timeout(std::time::Duration::from_millis(0), consumer.recv()).await {
                 Ok(Ok(m)) => batch.push(m), // Message received
                 Ok(Err(e)) => eprintln!("Kafka error: {}", e), // Kafka error
                 Err(_) => break, // Timeout (Buffer empty), stop batching
             }
         }
+        let total_poll_time = poll_start.elapsed();
 
         if batch.is_empty() {
             continue;
+        }
+
+        if batch.len() > 0 {
+            println!(
+                "[PERF] Poll: {} msgs. Wait: {:?}, Drain: {:?}",
+                batch.len(),
+                wait_time,
+                total_poll_time - wait_time
+            );
         }
 
         println!("Processing batch of {} orders", batch.len());
