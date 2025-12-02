@@ -96,7 +96,9 @@ async fn main() {
     // Let's just give a lot of funds to user 1000-1100
     println!("=== Depositing Funds ===");
     let amount = 100_000_000_u64;
-    let decimal = 8; //TODO get the asset decimal from symbol_manager
+     //TODO get the asset decimal from symbol_manager
+     //if symbol_manager not have the interface to get the asset decimal, we should add it
+    let decimal = 8;
     let amount_raw = amount * 10_u64.pow(decimal);
     for uid in 0..5000 {
         engine
