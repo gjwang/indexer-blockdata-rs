@@ -793,10 +793,11 @@ impl GlobalLedger {
         accounts: &mut FxHashMap<UserId, UserAccount>,
         data: &MatchExecData,
     ) -> Result<()> {
-        let buyer_spend = data.price * data.quantity;
-        let buyer_gain = data.quantity;
-        let seller_spend = data.quantity;
-        let seller_gain = data.price * data.quantity;
+        let quote_amount = data
+            .price
+            .checked_mul(data.quantity)
+            .ok_or_else(|| anyhow::anyhow!("Quote amount overflow"))?;
+        let base_amount = data.quantity;
 
         // 1. Pre-flight Checks (Read-Only)
         // Check Buyer
@@ -805,7 +806,7 @@ impl GlobalLedger {
             .ok_or_else(|| anyhow::anyhow!("Buyer account {} not found", data.buyer_user_id))?;
 
         buyer
-            .check_buyer_balance(data.quote_asset, buyer_spend, data.buyer_refund)
+            .check_buyer_balance(data.quote_asset, quote_amount, data.buyer_refund)
             .map_err(|e| anyhow::anyhow!("Buyer check failed: {}", e))?;
 
         // Check Seller
@@ -814,7 +815,7 @@ impl GlobalLedger {
             .ok_or_else(|| anyhow::anyhow!("Seller account {} not found", data.seller_user_id))?;
 
         seller
-            .check_seller_balance(data.base_asset, seller_spend, data.seller_refund)
+            .check_seller_balance(data.base_asset, base_amount, data.seller_refund)
             .map_err(|e| anyhow::anyhow!("Seller check failed: {}", e))?;
 
         // 2. Execute Settlement (Guaranteed to succeed logic-wise)
@@ -824,8 +825,8 @@ impl GlobalLedger {
             .settle_as_buyer(
                 data.quote_asset,
                 data.base_asset,
-                buyer_spend,
-                buyer_gain,
+                quote_amount,
+                base_amount,
                 data.buyer_refund,
             )
             .expect("Critical: Buyer settle failed after check passed");
@@ -836,8 +837,8 @@ impl GlobalLedger {
             .settle_as_seller(
                 data.base_asset,
                 data.quote_asset,
-                seller_spend,
-                seller_gain,
+                base_amount,
+                quote_amount,
                 data.seller_refund,
             )
             .expect("Critical: Seller settle failed after check passed");
