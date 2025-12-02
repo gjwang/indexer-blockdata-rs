@@ -1,13 +1,16 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
+
 use reqwest::Client;
+use tokio::time;
 
 use fetcher::fast_ulid::FastUlidHalfGen;
 
 #[tokio::main]
 async fn main() {
     let client = Client::new();
-    let api_url = "http://localhost:3001/api/orders";
+    let api_url = "http://127.0.0.1:3001/api/orders";
 
     // Simulate raw input symbols
     let symbols: Vec<&str> = vec!["BTC_USDT", "ETH_USDT"]; //FIXME:
@@ -18,7 +21,7 @@ async fn main() {
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
     let total_count: u64 = 1000000;
-    
+
     let concurrency = 500;
     let interval_ms = 0;
 
@@ -48,7 +51,7 @@ async fn main() {
                 // 1. Send three small SELL orders
                 for _ in 0..3 {
                     let quantity = ((i + 1) as f64).to_string();
-                    
+
                     let sell_cid = {
                         let mut gen = cid_gen.lock().unwrap();
                         format!("{:012}", gen.generate())
