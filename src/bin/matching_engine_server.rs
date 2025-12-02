@@ -94,13 +94,17 @@ async fn main() {
 
     // Deposit Funds for generic users (1000-1100 range used by gateway)
     // Let's just give a lot of funds to user 1000-1100
-    for uid in 1000..1100 {
+    println!("=== Depositing Funds ===");
+    let amount = 100_000_000_u64;
+    let decimal = 8; //TODO get the asset decimal from symbol_manager
+    let amount_raw = amount * 10_u64.pow(decimal);
+    for uid in 0..5000 {
         engine
             .ledger
             .apply(&LedgerCommand::Deposit {
                 user_id: uid,
                 asset: 1,
-                amount: 1_000_000_000,
+                amount: amount_raw,
             })
             .unwrap(); // BTC
         engine
@@ -108,7 +112,7 @@ async fn main() {
             .apply(&LedgerCommand::Deposit {
                 user_id: uid,
                 asset: 2,
-                amount: 1_000_000_000,
+                amount: amount_raw,
             })
             .unwrap(); // USDT
         engine
@@ -116,7 +120,7 @@ async fn main() {
             .apply(&LedgerCommand::Deposit {
                 user_id: uid,
                 asset: 3,
-                amount: 1_000_000_000,
+                amount: amount_raw,
             })
             .unwrap(); // ETH
     }
