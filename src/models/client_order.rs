@@ -11,13 +11,12 @@ pub struct ClientOrder {
     #[validate(length(min = 3, max = 24), custom(function = "validate_symbol_format"))]
     pub symbol: String,
     #[validate(custom(function = "validate_side"))]
-    pub side: String,
+    pub side: String,//todo refacto to Side
     #[validate(custom(function = "validate_price_decimal"))]
     pub price: Decimal,
     #[validate(custom(function = "validate_quantity_decimal"))]
     pub quantity: Decimal,
-    #[validate(custom(function = "validate_order_type"))]
-    pub order_type: String,
+    pub order_type: OrderType,
 }
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
@@ -41,7 +40,7 @@ impl ClientOrder {
         side: String,
         price: Decimal,
         quantity: Decimal,
-        order_type: String,
+        order_type: OrderType,
     ) -> Result<Self, String> {
         let order = ClientOrder {
             cid,
@@ -125,7 +124,7 @@ impl ClientOrder {
                     side: side.to_string(),
                     price: price_decimal,
                     quantity: quantity_decimal,
-                    order_type: order_type.to_string(),
+                    order_type: *order_type,
                 })
             }
             _ => Err("Only PlaceOrder can be converted to ClientOrder".to_string()),
@@ -185,17 +184,6 @@ fn validate_side(side: &str) -> Result<(), ValidationError> {
     }
 }
 
-fn validate_order_type(order_type: &str) -> Result<(), ValidationError> {
-    match order_type.parse::<OrderType>() {
-        Ok(_) => Ok(()),
-        Err(_) => {
-            let mut err = ValidationError::new("invalid_order_type");
-            err.message = Some("Invalid order type. Must be 'Limit' or 'Market'".into());
-            Err(err)
-        }
-    }
-}
-
 fn validate_price_decimal(price: &Decimal) -> Result<(), ValidationError> {
     if *price > Decimal::ZERO {
         Ok(())
@@ -234,11 +222,6 @@ impl ClientOrder {
             .parse()
             .map_err(|e| format!("Invalid side: {}", e))?;
 
-        let order_type: OrderType = self
-            .order_type
-            .parse()
-            .map_err(|e| format!("Invalid order type: {}", e))?;
-
         // Convert price to integer representation (already Decimal, no parsing needed)
         let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
         let price = (self.price * price_multiplier)
@@ -264,7 +247,7 @@ impl ClientOrder {
             price_decimal: symbol_info.price_decimal,
             quantity,
             quantity_decimal: symbol_info.quantity_decimal,
-            order_type,
+            order_type: self.order_type,
         })
     }
 }
