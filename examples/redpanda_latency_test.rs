@@ -51,7 +51,7 @@ async fn main() -> Result<()> {
     let config = configure::load_config().expect("Failed to load config");
 
     let broker = config.kafka.broker;
-    let topic = config.kafka.topic;
+    let topic = config.kafka.topics.orders;
     let group_id = format!(
         "{}-{}",
         config.kafka.group_id,

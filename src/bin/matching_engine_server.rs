@@ -148,16 +148,16 @@ async fn main() {
 
     let trade_producer = RedpandaTradeProducer {
         producer,
-        topic: "trade.history".to_string(),
+        topic: config.kafka.topics.trades.clone(),
     };
     engine.ledger.set_listener(Box::new(trade_producer));
 
     consumer
-        .subscribe(&[&config.kafka.topic])
+        .subscribe(&[&config.kafka.topics.orders])
         .expect("Can't subscribe");
 
     println!(">>> Matching Engine Server Started");
-    println!(">>> Listening on Topic: {}", config.kafka.topic);
+    println!(">>> Listening on Topic: {}", config.kafka.topics.orders);
 
     loop {
         match consumer.recv().await {

@@ -53,7 +53,7 @@ async fn main() {
         symbol_manager,
         producer: Arc::new(KafkaPublisher(producer)),
         snowflake_gen,
-        kafka_topic: config.kafka.topic,
+        kafka_topic: config.kafka.topics.orders,
         user_manager: UserAccountManager::new(),
     });
 

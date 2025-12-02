@@ -3,9 +3,15 @@ use config::{Config, ConfigError, File};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
+pub struct KafkaTopics {
+    pub orders: String,
+    pub trades: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct KafkaConfig {
     pub broker: String,
-    pub topic: String,
+    pub topics: KafkaTopics,
     pub group_id: String,
     // Kafka Tuning
     pub linger_ms: String,
