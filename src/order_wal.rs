@@ -145,7 +145,7 @@ impl Wal {
         let sell_id = to_fbs_ulid(sell_order_id);
 
         let args = fbs::TradeArgs {
-            match_id: trade_id,
+            trade_id: trade_id,
             buy_order_id: Some(&buy_id),
             sell_order_id: Some(&sell_id),
             price,
@@ -234,7 +234,7 @@ impl WalReader {
                 let sell_order_id = trade.sell_order_id().unwrap().lo();
 
                 Ok(Some(LogEntry::Trade {
-                    trade_id: trade.match_id(),
+                    trade_id: trade.trade_id(),
                     buy_order_id,
                     sell_order_id,
                     price: trade.price(),

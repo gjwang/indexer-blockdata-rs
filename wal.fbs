@@ -24,7 +24,7 @@ table Cancel {
 }
 
 table Trade {
-  match_id: uint64;
+  trade_id: uint64;
   buy_order_id: UlidStruct;
   sell_order_id: UlidStruct;
   price: uint64;
