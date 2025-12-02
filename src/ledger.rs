@@ -116,6 +116,8 @@ pub enum LedgerCommand {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchExecData {
     pub trade_id: u64,
+    pub buy_order_id: u64,
+    pub sell_order_id: u64,
     pub buyer_user_id: UserId,
     pub seller_user_id: UserId,
     pub price: u64,
@@ -489,11 +491,16 @@ impl Iterator for WalIterator {
 // 6. Global Ledger
 // ==========================================
 
+pub trait LedgerListener: Send + Sync {
+    fn on_command(&mut self, cmd: &LedgerCommand) -> Result<()>;
+}
+
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
     wal: RollingWal,
     pub last_seq: u64,
     snapshot_dir: PathBuf,
+    listener: Option<Box<dyn LedgerListener>>,
 }
 
 impl GlobalLedger {
@@ -544,6 +551,7 @@ impl GlobalLedger {
             wal,
             last_seq: recovered_seq,
             snapshot_dir: snapshot_dir.to_path_buf(),
+            listener: None,
         })
     }
 
@@ -566,6 +574,7 @@ impl GlobalLedger {
             wal,
             last_seq,
             snapshot_dir: snapshot_dir.to_path_buf(),
+            listener: None,
         })
     }
 
@@ -674,10 +683,19 @@ impl GlobalLedger {
         self.accounts.get(&user_id).map(|u| u.assets.clone())
     }
 
+    pub fn set_listener(&mut self, listener: Box<dyn LedgerListener>) {
+        self.listener = Some(listener);
+    }
+
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
         let new_seq = self.last_seq + 1;
         self.wal.append(new_seq, cmd)?;
         Self::apply_transaction(&mut self.accounts, cmd)?;
+
+        if let Some(listener) = &mut self.listener {
+            listener.on_command(cmd)?;
+        }
+
         self.last_seq = new_seq;
         Ok(())
     }
