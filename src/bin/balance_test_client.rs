@@ -3,18 +3,21 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new();
-    let gateway_url = "http://localhost:8082";
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let gateway_url = "http://localhost:8083";
 
-    println!("=== Simplified Deposit/Withdraw Test Client ===\n");
+    println!("=== Transfer Server Test Client ===\n");
+    println!("Note: Requests will take ~5s to simulate settlement\n");
     println!("All transfers are internal: funding_account <-> trading_account");
     println!("Time window: 60 seconds");
     println!("Using ULID for unique request_id\n");
 
-    // Test 1: Deposit to user's trading account
-    println!("📥 Test 1: Deposit (funding_account → user 1001)");
+    // Test 1: Transfer In to user's trading account
+    println!("📥 Test 1: Transfer In (funding_account → user 1001)");
     let request_id = ulid::Ulid::new().to_string();
-    let deposit_payload = json!({
+    let transfer_in_payload = json!({
         "request_id": request_id,
         "user_id": 1001,
         "asset_id": 1,  // BTC
@@ -22,8 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let response = client
-        .post(format!("{}/api/v1/deposit", gateway_url))
-        .json(&deposit_payload)
+        .post(format!("{}/api/v1/transfer_in", gateway_url))
+        .json(&transfer_in_payload)
         .send()
         .await?;
 
@@ -32,10 +35,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 2: Another deposit to different user
-    println!("📥 Test 2: Deposit (funding_account → user 1002)");
+    // Test 2: Another transfer in to different user
+    println!("📥 Test 2: Transfer In (funding_account → user 1002)");
     let request_id = ulid::Ulid::new().to_string();
-    let deposit_payload2 = json!({
+    let transfer_in_payload2 = json!({
         "request_id": request_id,
         "user_id": 1002,
         "asset_id": 2,  // USDT
@@ -43,8 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let response = client
-        .post(format!("{}/api/v1/deposit", gateway_url))
-        .json(&deposit_payload2)
+        .post(format!("{}/api/v1/transfer_in", gateway_url))
+        .json(&transfer_in_payload2)
         .send()
         .await?;
 
@@ -53,10 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 3: Withdrawal from user's trading account
-    println!("📤 Test 3: Withdrawal (user 1001 → funding_account)");
+    // Test 3: Transfer Out from user's trading account
+    println!("📤 Test 3: Transfer Out (user 1001 → funding_account)");
     let request_id = ulid::Ulid::new().to_string();
-    let withdraw_payload = json!({
+    let transfer_out_payload = json!({
         "request_id": request_id,
         "user_id": 1001,
         "asset_id": 1,  // BTC
@@ -64,8 +67,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     let response = client
-        .post(format!("{}/api/v1/withdraw", gateway_url))
-        .json(&withdraw_payload)
+        .post(format!("{}/api/v1/transfer_out", gateway_url))
+        .json(&transfer_out_payload)
         .send()
         .await?;
 
@@ -74,8 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 4: Duplicate deposit (idempotency test) - reuse same request_id
-    println!("📥 Test 4: Duplicate Deposit (Idempotency Test)");
+    // Test 4: Duplicate transfer in (idempotency test) - reuse same request_id
+    println!("📥 Test 4: Duplicate Transfer In (Idempotency Test)");
     let duplicate_request_id = ulid::Ulid::new().to_string();
     let dup_payload = json!({
         "request_id": duplicate_request_id,
@@ -86,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Send first time
     let response = client
-        .post(format!("{}/api/v1/deposit", gateway_url))
+        .post(format!("{}/api/v1/transfer_in", gateway_url))
         .json(&dup_payload)
         .send()
         .await?;
@@ -96,7 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Send duplicate
     let response = client
-        .post(format!("{}/api/v1/deposit", gateway_url))
+        .post(format!("{}/api/v1/transfer_in", gateway_url))
         .json(&dup_payload)  // Same request_id
         .send()
         .await?;
@@ -106,8 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 5: Multiple rapid deposits (stress test) - each with unique ULID
-    println!("📥 Test 5: Rapid Deposits (Stress Test - Unique ULIDs)");
+    // Test 5: Multiple rapid transfer ins (stress test) - each with unique ULID
+    println!("📥 Test 5: Rapid Transfer Ins (Stress Test - Unique ULIDs)");
     for i in 0..5 {
         let request_id = ulid::Ulid::new().to_string();
         let payload = json!({
@@ -118,12 +121,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
 
         let response = client
-            .post(format!("{}/api/v1/deposit", gateway_url))
+            .post(format!("{}/api/v1/transfer_in", gateway_url))
             .json(&payload)
             .send()
             .await?;
 
-        println!("  Deposit {} ({}): {}", i, request_id, response.status());
+        println!("  Transfer In {} ({}): {}", i, request_id, response.status());
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
     println!();
