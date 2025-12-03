@@ -205,14 +205,15 @@ impl LedgerListener for RedpandaTradeProducer {
             let topic = self.topic.clone();
             let count = all_trades.len();
             
-            // Use the runtime handle to block on async code
-            self.runtime_handle.block_on(async move {
+            // Use the runtime handle to SPAWN the task (Fire-and-Forget)
+            // This returns immediately and doesn't block the matcher thread
+            self.runtime_handle.spawn(async move {
                 match producer.send(
                     FutureRecord::to(&topic).payload(&payload).key(key),
-                    std::time::Duration::from_secs(5),
+                    std::time::Duration::from_secs(0), // No wait for queue full
                 ).await {
                     Ok(_) => {
-                        println!("[Trade Publisher] Published {} trades to {}", count, topic);
+                        // println!("[Trade Publisher] Published {} trades to {}", count, topic);
                     }
                     Err((e, _)) => {
                         eprintln!("[Trade Publisher] Failed to send trades: {}", e);
