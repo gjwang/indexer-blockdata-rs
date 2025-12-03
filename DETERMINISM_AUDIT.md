@@ -5,25 +5,20 @@ The current codebase contains several sources of non-determinism that would prev
 
 ## Critical Issues
 
-### 1. Trade ID Generation (FATAL)
+### 1. Trade ID Generation (FIXED)
 *   **Location**: `src/fast_ulid.rs`, `src/matching_engine_base.rs`
 *   **Issue**: `FastUlidHalfGen::generate()` uses `SystemTime::now()` to generate Trade IDs.
-*   **Impact**: Different replicas will generate different Trade IDs for the same match. This breaks output consensus.
-*   **Fix**: Replace with a deterministic generator based on `(KafkaOffset, SequenceIndex)` or `KafkaTimestamp`.
+*   **Status**: **FIXED**. Implemented `generate_from_ts` and propagated Kafka timestamp.
 
-### 2. Order Timestamping (MAJOR)
+### 2. Order Timestamping (FIXED)
 *   **Location**: `src/matching_engine_base.rs` (Line 526)
 *   **Issue**: New `Order` objects are assigned `SystemTime::now()`.
-*   **Impact**:
-    *   **Matching Logic**: Safe (FIFO based on `VecDeque` insertion order).
-    *   **State Consensus**: Broken. The in-memory state (Order Book) will contain different timestamps across replicas, causing state hash mismatches.
-*   **Fix**: Pass the Kafka Message Timestamp through `OrderEvent` and use it for the Order timestamp.
+*   **Status**: **FIXED**. `Order` struct now uses the external Kafka timestamp.
 
-### 3. Random Number Generation (MINOR)
+### 3. Random Number Generation (FIXED)
 *   **Location**: `src/fast_ulid.rs`
 *   **Issue**: `rng.random()` is used for the random part of ULIDs.
-*   **Impact**: Non-deterministic IDs.
-*   **Fix**: Use a deterministic seed or remove randomness in favor of sequence numbers.
+*   **Status**: **FIXED**. `generate_from_ts` uses a deterministic sequence counter that resets on timestamp change.
 
 ## Safe Areas
 *   **HashMap Iteration**: `GlobalLedger` and `MatchingEngine` appear to use `HashMap`s safely (lookup-based or set-update based). Batch processing preserves order via `Vec`.
