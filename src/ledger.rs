@@ -773,6 +773,8 @@ impl Ledger for GlobalLedger {
 impl GlobalLedger {
 
     pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+
+        
         // Phase 1: Validate all commands using shadow ledger (no side effects)
         let mut shadow = ShadowLedger::new(self);
         for cmd in cmds {
@@ -780,20 +782,26 @@ impl GlobalLedger {
         }
 
         // Phase 2: Write to WAL (all commands validated, so this should succeed)
+        let start_persist = std::time::Instant::now();
         for cmd in cmds {
             let new_seq = self.last_seq + 1;
             self.wal.append_no_flush(new_seq, cmd)?;
             self.last_seq = new_seq;
         }
         self.wal.flush()?;
+        let persist_duration = start_persist.elapsed();
 
         // Phase 3: Apply to real accounts (guaranteed to succeed since validated)
+        let start_apply = std::time::Instant::now();
         for cmd in cmds {
             Self::apply_transaction(&mut self.accounts, cmd)?;
             if let Some(listener) = &mut self.listener {
                 listener.on_command(cmd)?;
             }
         }
+        let apply_duration = start_apply.elapsed();
+
+        println!("[PERF] Commit Batch: Persist: {:?}, Apply: {:?}", persist_duration, apply_duration);
         Ok(())
     }
 
