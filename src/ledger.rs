@@ -568,6 +568,12 @@ impl<'a> Ledger for ShadowLedger<'a> {
 
 pub trait LedgerListener: Send + Sync {
     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<()>;
+    fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        for cmd in cmds {
+            self.on_command(cmd)?;
+        }
+        Ok(())
+    }
 }
 
 pub struct GlobalLedger {
@@ -810,22 +816,20 @@ impl GlobalLedger {
         // Phase 3: Apply to real accounts (Merge delta state)
         // Instead of re-calculating, we just swap in the new account states.
         let start_apply = std::time::Instant::now();
-        
         // 3a. Update Memory
         for (user_id, account) in delta {
             self.accounts.insert(user_id, account);
         }
-
-        // 3b. Notify Listeners (if any)
-        if let Some(listener) = &mut self.listener {
-            for cmd in cmds {
-                listener.on_command(cmd)?;
-            }
-        }
-        
         let apply_duration = start_apply.elapsed();
 
-        println!("[PERF] Commit Batch: Validate: {:?}, Persist: {:?}, Apply: {:?}", validate_duration, persist_duration, apply_duration);
+        let start_notify = std::time::Instant::now();
+        // 3b. Notify Listeners (if any)
+        if let Some(listener) = &mut self.listener {
+            listener.on_batch(cmds)?;
+        }
+        let notify_duration = start_notify.elapsed();
+
+        println!("[PERF] Commit Batch: Validate: {:?}, Persist: {:?}, Apply: {:?}, Notify: {:?}", validate_duration, persist_duration, apply_duration, notify_duration);
         Ok(())
     }
 
