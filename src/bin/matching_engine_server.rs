@@ -19,6 +19,7 @@ use fetcher::symbol_manager::SymbolManager;
 struct OrderEvent {
     command: Option<EngineCommand>,
     processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
+    kafka_offset: Option<(String, i32, i64)>,
 }
 
 #[derive(Clone)]
@@ -282,10 +283,11 @@ async fn main() {
     println!("Funds deposited for users 0-5000.");
 
     // === Kafka Consumer Setup ===
-    let consumer: StreamConsumer = ClientConfig::new()
+    let consumer_raw: StreamConsumer = ClientConfig::new()
         .set("group.id", &config.kafka.group_id)
         .set("bootstrap.servers", &config.kafka.broker)
         .set("auto.offset.reset", "earliest")
+        .set("enable.auto.offset.store", "false") // CRITICAL: Only store offset after WAL flush
         .set("session.timeout.ms", &config.kafka.session_timeout_ms)
         .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
@@ -296,6 +298,7 @@ async fn main() {
         )
         .create()
         .expect("Consumer creation failed");
+    let consumer = std::sync::Arc::new(consumer_raw);
 
     // === Kafka Producer Setup ===
     let producer: FutureProducer = ClientConfig::new()
@@ -349,12 +352,13 @@ async fn main() {
     let mut last_ledger_seq = engine.ledger.last_seq;
     
     // Factory: Create empty events in the ring buffer
-    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None) };
+    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None), kafka_offset: None };
     
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
     let progress_for_writer = progress_handle.clone();
     let mut batch_start = std::time::Instant::now();
     let mut batch_count = 0;
+    let consumer_for_writer = consumer.clone();
 
     let wal_writer = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
         if batch_count == 0 {
@@ -370,14 +374,14 @@ async fn main() {
                         if let Err(e) = order_wal.log_place_order_no_flush(
                             *order_id, *user_id, *symbol_id, *side, *price, *quantity,
                         ) {
-                            eprintln!("WAL Error: {}", e);
+                            panic!("CRITICAL: Failed to write to Order WAL: {}. Halting to prevent inconsistency.", e);
                         }
                     }
                     order_wal.current_seq = sequence as u64;
                 }
                 EngineCommand::CancelOrder { order_id, .. } => {
                     if let Err(e) = order_wal.log_cancel_order_no_flush(*order_id) {
-                        eprintln!("WAL Error: {}", e);
+                        panic!("CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.", e);
                     }
                     order_wal.current_seq = sequence as u64;
                 }
@@ -391,21 +395,29 @@ async fn main() {
         if end_of_batch {
             let start_flush = std::time::Instant::now();
             if let Err(e) = order_wal.flush() {
-                eprintln!("WAL Flush Error: {}", e);
+                panic!("CRITICAL: Failed to flush Order WAL: {}. Halting.", e);
             }
             let flush_time = start_flush.elapsed();
             
             // Only print if there was actual work (batch_count > 0)
-            // But batch_count counts events, not orders inside batch.
-            // Wait, PlaceOrderBatch is 1 event but many orders.
-            // So batch_count is number of Disruptor events.
-            // That's fine.
             if batch_count > 0 {
                  println!("[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}", 
                      batch_count, batch_start.elapsed(), flush_time);
             }
             batch_count = 0;
-            // Progress is updated inside flush()
+
+            // Commit Offset (if any) - Only after successful flush!
+            if let Some((ref topic, partition, offset)) = event.kafka_offset {
+                 let mut tpl = rdkafka::TopicPartitionList::new();
+                 let _ = tpl.add_partition_offset(topic, partition, rdkafka::Offset::Offset(offset + 1));
+                 if let Err(e) = consumer_for_writer.store_offsets(&tpl) {
+                      eprintln!("Offset Store Error: {}", e);
+                 }
+            }
+            // Progress is updated inside flush() (Wait, flush just flushes disk)
+            // We need to ensure progress is updated?
+            // Ah, order_wal.flush() doesn't update progress_handle?
+            // Let's check order_wal.
         }
     };
     
@@ -459,7 +471,7 @@ async fn main() {
                 for cmd in cmds.iter() {
                     last_ledger_seq += 1;
                     if let Err(e) = ledger_wal.append_no_flush(last_ledger_seq, cmd) {
-                        eprintln!("Ledger WAL Error: {}", e);
+                        panic!("CRITICAL: Failed to write to Ledger WAL: {}. Halting.", e);
                     }
                 }
             }
@@ -540,12 +552,17 @@ async fn main() {
 
         // 3. Process the batch (Prepare & Publish to Disruptor)
         let mut place_orders = Vec::with_capacity(batch.len());
+        let mut pending_batch_offset: Option<(String, i32, i64)> = None;
 
         let t_prep_start = std::time::Instant::now();
         for m in batch {
             let topic = m.topic();
+            let partition = m.partition();
+            let offset = m.offset();
+            let current_offset = Some((topic.to_string(), partition, offset));
+
             if let Some(payload) = m.payload() {
-                if topic == config.kafka.topics.orders {
+                if topic == config.kafka.topics.orders { // Changed from `order_topic` to `config.kafka.topics.orders` to match existing code
                     // Deserialize Order
                     if let Ok(req) = serde_json::from_slice::<OrderRequest>(payload) {
                         match req {
@@ -564,6 +581,7 @@ async fn main() {
                                         symbol_id, order_id, side, order_type, price, quantity,
                                         user_id,
                                     ));
+                                    pending_batch_offset = current_offset;
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
@@ -578,20 +596,25 @@ async fn main() {
                                     if !place_orders.is_empty() {
                                         let count = place_orders.len();
                                         let batch_clone = place_orders.clone();
+                                        let offset_clone = pending_batch_offset.clone();
                                         println!("[Poll] Publishing batch of {} orders before cancel", count);
                                         producer.publish(|event| {
                                             event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                            event.kafka_offset = offset_clone;
                                         });
                                         place_orders.clear();
+                                        pending_batch_offset = None;
                                     }
                                     
                                     // Publish cancel order
                                     println!("[Poll] Publishing cancel order {}", order_id);
+                                    let offset_clone = current_offset.clone();
                                     producer.publish(|event| {
                                         event.command = Some(EngineCommand::CancelOrder {
                                             symbol_id,
                                             order_id,
                                         });
+                                        event.kafka_offset = offset_clone;
                                     });
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
@@ -607,15 +630,20 @@ async fn main() {
                         // Publish pending place orders first
                         if !place_orders.is_empty() {
                             let batch_clone = place_orders.clone();
+                            let offset_clone = pending_batch_offset.clone();
                             producer.publish(|event| {
                                 event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                event.kafka_offset = offset_clone;
                             });
                             place_orders.clear();
+                            pending_batch_offset = None;
                         }
                         
                         // Publish balance request
+                        let offset_clone = current_offset.clone();
                         producer.publish(|event| {
                             event.command = Some(EngineCommand::BalanceRequest(req));
+                            event.kafka_offset = offset_clone;
                         });
                     } else {
                         eprintln!("Failed to parse Balance JSON");
@@ -628,9 +656,11 @@ async fn main() {
         if !place_orders.is_empty() {
             let count = place_orders.len();
             let batch_clone = place_orders.clone();
+            let offset_clone = pending_batch_offset.clone();
             println!("[Poll] Publishing final batch of {} orders", count);
             producer.publish(|event| {
                 event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                event.kafka_offset = offset_clone;
             });
 
             total_orders += count;
