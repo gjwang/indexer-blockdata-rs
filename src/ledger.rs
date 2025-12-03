@@ -2061,4 +2061,74 @@ mod tests {
         // We expect 2 initial deposits + 3 batch commands = 5 commands total
         assert_eq!(ledger.last_seq, 5);
     }
+
+    #[test]
+    fn test_shadow_ledger_delta_merge_trading() {
+        let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
+
+        // 1. Setup initial state
+        // Buyer (User 1): 1000 USDT (Asset 200)
+        setup_user_with_balance(&mut ledger, 1, 200, 1000);
+        // Seller (User 2): 10 BTC (Asset 100)
+        setup_user_with_balance(&mut ledger, 2, 100, 10);
+        ledger.flush().unwrap();
+
+        // 2. Pre-lock funds (simulating order placement)
+        ledger.apply(&LedgerCommand::Lock {
+            user_id: 1,
+            asset: 200,
+            amount: 1000,
+        }).unwrap();
+
+        ledger.apply(&LedgerCommand::Lock {
+            user_id: 2,
+            asset: 100,
+            amount: 10,
+        }).unwrap();
+
+        // 3. Create MatchExec command (Trade: 5 BTC @ 100 USDT = 500 USDT)
+        let match_data = MatchExecData {
+            trade_id: 1,
+            buy_order_id: 101,
+            sell_order_id: 102,
+            buyer_user_id: 1,
+            seller_user_id: 2,
+            price: 100,
+            quantity: 5,
+            base_asset: 100,  // BTC
+            quote_asset: 200, // USDT
+            buyer_refund: 0,
+            seller_refund: 0,
+            match_seq: 1,
+        };
+
+        let cmds = vec![LedgerCommand::MatchExec(match_data)];
+
+        // 4. Commit batch (triggers ShadowLedger delta merge)
+        ledger.commit_batch(&cmds).unwrap();
+
+        // 5. Verify Final State
+
+        // Buyer (User 1):
+        // USDT: 1000 locked - 500 spent = 500 frozen
+        // BTC: 0 + 5 gained = 5 avail
+        let u1 = ledger.get_user_balances(1).unwrap();
+        let b1_usdt = u1.iter().find(|(a, _)| *a == 200).unwrap().1;
+        let b1_btc = u1.iter().find(|(a, _)| *a == 100).unwrap().1;
+        
+        assert_eq!(b1_usdt.frozen, 500, "Buyer USDT frozen incorrect");
+        assert_eq!(b1_usdt.avail, 0, "Buyer USDT avail incorrect"); // All 1000 was locked
+        assert_eq!(b1_btc.avail, 5, "Buyer BTC avail incorrect");
+
+        // Seller (User 2):
+        // BTC: 10 locked - 5 spent = 5 frozen
+        // USDT: 0 + 500 gained = 500 avail
+        let u2 = ledger.get_user_balances(2).unwrap();
+        let b2_btc = u2.iter().find(|(a, _)| *a == 100).unwrap().1;
+        let b2_usdt = u2.iter().find(|(a, _)| *a == 200).unwrap().1;
+
+        assert_eq!(b2_btc.frozen, 5, "Seller BTC frozen incorrect");
+        assert_eq!(b2_btc.avail, 0, "Seller BTC avail incorrect"); // All 10 was locked
+        assert_eq!(b2_usdt.avail, 500, "Seller USDT avail incorrect");
+    }
 }
