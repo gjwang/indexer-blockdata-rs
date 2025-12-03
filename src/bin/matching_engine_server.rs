@@ -424,6 +424,7 @@ async fn main() {
     let output_processor = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
         if let Some(cmds) = event.processing_result.lock().unwrap().take() {
             if !cmds.is_empty() {
+                let start = std::time::Instant::now();
                 // 1. Write to Ledger WAL
                 for cmd in &cmds {
                     last_ledger_seq += 1;
@@ -437,6 +438,8 @@ async fn main() {
                 if let Err(e) = trade_producer.on_batch(&cmds) {
                      eprintln!("Trade Publish Error: {}", e);
                 }
+                
+                println!("[PERF] Output: {} cmds. Time: {:?}", cmds.len(), start.elapsed());
             }
         }
     };
