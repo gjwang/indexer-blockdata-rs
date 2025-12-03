@@ -583,7 +583,7 @@ pub trait LedgerListener: Send + Sync {
 
 pub struct GlobalLedger {
     accounts: FxHashMap<UserId, UserAccount>,
-    wal: RollingWal,
+    wal: Option<RollingWal>,
     pub last_seq: u64,
     snapshot_dir: PathBuf,
     listener: Option<Box<dyn LedgerListener>>,
@@ -634,7 +634,7 @@ impl GlobalLedger {
 
         Ok(Self {
             accounts,
-            wal,
+            wal: Some(wal),
             last_seq: recovered_seq,
             snapshot_dir: snapshot_dir.to_path_buf(),
             listener: None,
@@ -657,7 +657,7 @@ impl GlobalLedger {
 
         Ok(Self {
             accounts,
-            wal,
+            wal: Some(wal),
             last_seq,
             snapshot_dir: snapshot_dir.to_path_buf(),
             listener: None,
@@ -799,40 +799,43 @@ impl Ledger for GlobalLedger {
 }
 
 impl GlobalLedger {
+    pub fn take_wal(&mut self) -> Option<RollingWal> {
+        self.wal.take()
+    }
+
+    pub fn apply_delta_to_memory(&mut self, delta: FxHashMap<UserId, UserAccount>) {
+        for (user_id, account) in delta {
+            self.accounts.insert(user_id, account);
+        }
+    }
+
+    pub fn append_to_wal(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        if let Some(wal) = &mut self.wal {
+            for cmd in cmds {
+                let new_seq = self.last_seq + 1;
+                wal.append_no_flush(new_seq, cmd)?;
+                self.last_seq = new_seq;
+            }
+            // wal.flush()?; // OPTIMIZATION: Skip flush, rely on Order WAL for durability
+        }
+        Ok(())
+    }
+
     pub fn commit_delta(
         &mut self,
         cmds: &[LedgerCommand],
         delta: FxHashMap<UserId, UserAccount>,
     ) -> Result<()> {
-        // Phase 2: Write to WAL (all commands validated, so this should succeed)
-        let start_persist = std::time::Instant::now();
-        for cmd in cmds {
-            let new_seq = self.last_seq + 1;
-            self.wal.append_no_flush(new_seq, cmd)?;
-            self.last_seq = new_seq;
-        }
-        // self.wal.flush()?; // OPTIMIZATION: Skip flush, rely on Order WAL for durability
-        let persist_duration = start_persist.elapsed();
+        self.append_to_wal(cmds)?;
+        self.apply_delta_to_memory(delta);
 
-        // Phase 3: Apply to real accounts (Merge delta state)
-        // Instead of re-calculating, we just swap in the new account states.
-        let start_apply = std::time::Instant::now();
-        // 3a. Update Memory
-        for (user_id, account) in delta {
-            self.accounts.insert(user_id, account);
-        }
-        let apply_duration = start_apply.elapsed();
-
-        let start_notify = std::time::Instant::now();
-        // 3b. Notify Listeners (if any)
+        // Notify Listeners (if any)
         if let Some(listener) = &mut self.listener {
             listener.on_batch(cmds)?;
         }
-        let notify_duration = start_notify.elapsed();
-
-        // println!("[PERF] Commit Delta: Persist: {:?}, Apply: {:?}, Notify: {:?}", persist_duration, apply_duration, notify_duration);
         Ok(())
     }
+
 
     pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
         // Phase 1: Validate all commands using shadow ledger (no side effects)
@@ -854,7 +857,9 @@ impl GlobalLedger {
 
     pub fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
         let new_seq = self.last_seq + 1;
-        self.wal.append(new_seq, cmd)?;
+        if let Some(wal) = &mut self.wal {
+            wal.append(new_seq, cmd)?;
+        }
         Self::apply_transaction(&mut self.accounts, cmd)?;
 
         if let Some(listener) = &mut self.listener {
@@ -866,7 +871,11 @@ impl GlobalLedger {
     }
 
     pub fn flush(&mut self) -> Result<()> {
-        self.wal.flush()
+        if let Some(wal) = &mut self.wal {
+            wal.flush()
+        } else {
+            Ok(())
+        }
     }
 
     pub fn apply_transaction(
