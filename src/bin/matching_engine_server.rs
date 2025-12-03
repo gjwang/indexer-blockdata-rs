@@ -338,7 +338,10 @@ async fn main() {
                 EngineCommand::PlaceOrderBatch(batch) => {
                     engine.add_order_batch(batch);
                 }
-                EngineCommand::CancelOrder { symbol_id, order_id } => {
+                EngineCommand::CancelOrder {
+                    symbol_id,
+                    order_id,
+                } => {
                     let _ = engine.cancel_order(symbol_id, order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
@@ -430,8 +433,14 @@ async fn main() {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
                                     // Flush pending place orders
                                     if !place_orders.is_empty() {
-                                        if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
-                                        tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone())).await.unwrap();
+                                        if let Err(e) = order_wal.flush() {
+                                            eprintln!("WAL Flush Error: {}", e);
+                                        }
+                                        tx.send(EngineCommand::PlaceOrderBatch(
+                                            place_orders.clone(),
+                                        ))
+                                        .await
+                                        .unwrap();
                                         place_orders.clear();
                                     }
                                     // Log Cancel
@@ -439,7 +448,12 @@ async fn main() {
                                         eprintln!("WAL Error: {}", e);
                                     }
                                     // Send Cancel
-                                    tx.send(EngineCommand::CancelOrder { symbol_id, order_id }).await.unwrap();
+                                    tx.send(EngineCommand::CancelOrder {
+                                        symbol_id,
+                                        order_id,
+                                    })
+                                    .await
+                                    .unwrap();
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
@@ -453,8 +467,12 @@ async fn main() {
                     if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
                         // Flush pending place orders
                         if !place_orders.is_empty() {
-                            if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
-                            tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone())).await.unwrap();
+                            if let Err(e) = order_wal.flush() {
+                                eprintln!("WAL Flush Error: {}", e);
+                            }
+                            tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone()))
+                                .await
+                                .unwrap();
                             place_orders.clear();
                         }
                         tx.send(EngineCommand::BalanceRequest(req)).await.unwrap();
@@ -467,9 +485,13 @@ async fn main() {
 
         // End of batch: Flush remaining place orders
         if !place_orders.is_empty() {
-            if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
+            if let Err(e) = order_wal.flush() {
+                eprintln!("WAL Flush Error: {}", e);
+            }
             let count = place_orders.len();
-            tx.send(EngineCommand::PlaceOrderBatch(place_orders)).await.unwrap();
+            tx.send(EngineCommand::PlaceOrderBatch(place_orders))
+                .await
+                .unwrap();
 
             total_orders += count;
             if last_report.elapsed() >= std::time::Duration::from_secs(5) {

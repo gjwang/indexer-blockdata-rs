@@ -466,8 +466,7 @@ impl MatchingEngine {
         // 3. Flush WALs
         // 3. Flush WALs
         if let Some(wal) = &mut self.order_wal {
-            wal.flush()
-                .map_err(|e| OrderError::Other(e.to_string()))?;
+            wal.flush().map_err(|e| OrderError::Other(e.to_string()))?;
         }
         self.ledger
             .flush()
@@ -638,7 +637,8 @@ impl MatchingEngine {
                 panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
             }
         }
-        */let t_input = start_total.elapsed();
+        */
+        let t_input = start_total.elapsed();
 
         // 3. Process Valid Orders (Shadow Mode)
         let t_process_start = std::time::Instant::now();
@@ -678,7 +678,7 @@ impl MatchingEngine {
 
         if requests.len() > 0 {
             println!(
-                "[PERF] Batch: {} orders. Input: {:?}, Process: {:?}, Commit: {:?}. Total: {:?}",
+                "[PERF] Match: {} orders. Input: {:?}, Process: {:?}, Commit: {:?}. Total: {:?}",
                 requests.len(),
                 t_input,
                 t_process,
