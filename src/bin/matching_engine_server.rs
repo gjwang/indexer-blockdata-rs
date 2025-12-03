@@ -353,7 +353,15 @@ async fn main() {
     
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
     let progress_for_writer = progress_handle.clone();
+    let mut batch_start = std::time::Instant::now();
+    let mut batch_count = 0;
+
     let wal_writer = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
+        if batch_count == 0 {
+            batch_start = std::time::Instant::now();
+        }
+        batch_count += 1;
+
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
@@ -381,9 +389,22 @@ async fn main() {
         
         // Flush WAL at end of batch and update progress
         if end_of_batch {
+            let start_flush = std::time::Instant::now();
             if let Err(e) = order_wal.flush() {
                 eprintln!("WAL Flush Error: {}", e);
             }
+            let flush_time = start_flush.elapsed();
+            
+            // Only print if there was actual work (batch_count > 0)
+            // But batch_count counts events, not orders inside batch.
+            // Wait, PlaceOrderBatch is 1 event but many orders.
+            // So batch_count is number of Disruptor events.
+            // That's fine.
+            if batch_count > 0 {
+                 println!("[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}", 
+                     batch_count, batch_start.elapsed(), flush_time);
+            }
+            batch_count = 0;
             // Progress is updated inside flush()
         }
     };
