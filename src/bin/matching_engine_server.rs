@@ -1,5 +1,7 @@
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
@@ -8,11 +10,9 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use fetcher::ledger::{LedgerCommand, LedgerListener};
 use fetcher::matching_engine_base::MatchingEngine;
+use fetcher::models::BalanceRequest;
 use fetcher::models::OrderRequest;
 use fetcher::symbol_manager::SymbolManager;
-use fetcher::models::BalanceRequest;
-use std::collections::{HashMap, VecDeque};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Time window for accepting requests (60 seconds)
 const TIME_WINDOW_MS: u64 = 60_000;
@@ -68,7 +68,7 @@ impl BalanceProcessor {
         match req {
             BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
                 println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
-                
+
                 // Direct call, no lock needed!
                 match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
@@ -107,6 +107,8 @@ struct RedpandaTradeProducer {
 impl LedgerListener for RedpandaTradeProducer {
     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
         if let LedgerCommand::MatchExecBatch(batch) = cmd {
+            // println!("LedgerListener on_command: MatchExecBatch");
+
             let producer = self.producer.clone();
             let topic = self.topic.clone();
             let batch = batch.clone();
@@ -135,7 +137,7 @@ impl LedgerListener for RedpandaTradeProducer {
                 let first = &batch[0];
                 let key = format!("{}_{}", first.base_asset, first.quote_asset);
                 // Debug: log number of trades being sent
-                println!("Sending {} trades to topic '{}' with key '{}'", trades.len(), topic, key);
+                // println!("Sending {} trades to topic '{}' with key '{}'", trades.len(), topic, key);
 
                 // 3. Serialize and Send Batch
                 if let Ok(payload) = serde_json::to_string(&trades) {
@@ -274,7 +276,7 @@ async fn main() {
         //Do we need to duplicate write order wal?
         //My Q: if something bad happen, 
         // How do we base on ledger and redpanda, no order_wal
-        
+
 
         let mut batch = Vec::with_capacity(batch_poll_count);
 
