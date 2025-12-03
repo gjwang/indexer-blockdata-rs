@@ -7,9 +7,9 @@ use axum::{
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fetcher::models::{BalanceRequest, DepositSource, WithdrawDestination};
+use fetcher::models::BalanceRequest;
 
 #[derive(Clone)]
 struct AppState {
@@ -23,10 +23,6 @@ struct DepositRequestPayload {
     user_id: u64,
     asset_id: u32,
     amount: u64,
-    chain: String,
-    external_tx_id: String,
-    confirmations: u32,
-    required_confirmations: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -35,8 +31,6 @@ struct WithdrawRequestPayload {
     user_id: u64,
     asset_id: u32,
     amount: u64,
-    chain: String,
-    address: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -46,24 +40,27 @@ struct ApiResponse {
     request_id: Option<String>,
 }
 
+/// Get current timestamp in milliseconds
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
 async fn deposit(
     Extension(state): Extension<AppState>,
     Json(payload): Json<DepositRequestPayload>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
     println!("📥 Deposit request received: {:?}", payload);
 
-    // Create BalanceRequest
+    // Create BalanceRequest with current timestamp
     let balance_req = BalanceRequest::Deposit {
         request_id: payload.request_id.clone(),
         user_id: payload.user_id,
         asset_id: payload.asset_id,
         amount: payload.amount,
-        source: DepositSource::Blockchain {
-            chain: payload.chain,
-            required_confirmations: payload.required_confirmations,
-        },
-        external_tx_id: payload.external_tx_id,
-        confirmations: payload.confirmations,
+        timestamp: current_time_ms(),
     };
 
     // Serialize and publish to Kafka
@@ -93,7 +90,10 @@ async fn deposit(
 
     Ok(Json(ApiResponse {
         success: true,
-        message: "Deposit request submitted".to_string(),
+        message: format!(
+            "Deposit request submitted: {} units of asset {} will be transferred to user {}",
+            payload.amount, payload.asset_id, payload.user_id
+        ),
         request_id: Some(payload.request_id),
     }))
 }
@@ -108,17 +108,13 @@ async fn withdraw(
     // TODO: Add 2FA validation
     // TODO: Check withdrawal limits
 
-    // Create BalanceRequest
+    // Create BalanceRequest with current timestamp
     let balance_req = BalanceRequest::Withdraw {
         request_id: payload.request_id.clone(),
         user_id: payload.user_id,
         asset_id: payload.asset_id,
         amount: payload.amount,
-        destination: WithdrawDestination::Blockchain {
-            chain: payload.chain,
-            address: payload.address,
-        },
-        external_address: payload.request_id.clone(), // Placeholder
+        timestamp: current_time_ms(),
     };
 
     // Serialize and publish to Kafka
@@ -148,7 +144,10 @@ async fn withdraw(
 
     Ok(Json(ApiResponse {
         success: true,
-        message: "Withdrawal request submitted and funds locked".to_string(),
+        message: format!(
+            "Withdrawal request submitted: {} units of asset {} will be transferred from user {} to funding account",
+            payload.amount, payload.asset_id, payload.user_id
+        ),
         request_id: Some(payload.request_id),
     }))
 }
@@ -196,15 +195,20 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
     println!("--------------------------------------------------");
-    println!("Deposit/Withdraw Gateway Started");
+    println!("Deposit/Withdraw Gateway Started (Simplified)");
     println!("  Listening on:      {}", addr);
     println!("  Kafka Broker:      {}", config.kafka.broker);
     println!("  Balance Topic:     {}", balance_topic);
+    println!("  Time Window:       60 seconds");
     println!("--------------------------------------------------");
     println!("Endpoints:");
-    println!("  POST /api/v1/deposit");
-    println!("  POST /api/v1/withdraw");
-    println!("  GET  /health");
+    println!("  POST /api/v1/deposit   - Transfer from funding_account to user");
+    println!("  POST /api/v1/withdraw  - Transfer from user to funding_account");
+    println!("  GET  /health           - Health check");
+    println!("--------------------------------------------------");
+    println!("Note: All transfers are internal (funding_account <-> trading_account)");
+    println!("      Requests older than 60s will be rejected");
+    println!("      Duplicate requests within 60s will be ignored");
     println!("--------------------------------------------------");
 
     axum::serve(listener, app).await.unwrap();
