@@ -13,8 +13,16 @@ use fetcher::models::BalanceRequest;
 /// All external funds flow through this account
 const FUNDING_ACCOUNT_ID: u64 = 0;
 
-/// Time window for request deduplication (60 seconds)
+/// Time window for accepting requests (60 seconds)
+/// Requests older than this are REJECTED
 const TIME_WINDOW_MS: u64 = 60_000;
+
+/// Time window for tracking request IDs (5 minutes)
+/// Must be MUCH LARGER than TIME_WINDOW_MS to prevent replay attacks
+/// We keep tracking request IDs for 5 minutes even though we only accept
+/// requests within 60 seconds. This ensures that if someone tries to replay
+/// an old request, we'll still detect it as a duplicate.
+const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS*5; // 5 minutes
 
 struct BalanceProcessor {
     ledger: GlobalLedger,
@@ -42,16 +50,23 @@ impl BalanceProcessor {
             .as_millis() as u64
     }
 
-    /// Clean up old requests outside the time window
+    /// Clean up old requests outside the TRACKING window
+    /// Note: TRACKING_WINDOW_MS (5 min) >> TIME_WINDOW_MS (60 sec)
+    /// This prevents replay attacks even after the acceptance window closes
     fn cleanup_old_requests(&mut self) {
         let current_time = self.current_time_ms();
         
         while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
-            if current_time - timestamp > TIME_WINDOW_MS {
+            // Only cleanup requests older than TRACKING_WINDOW_MS (5 minutes)
+            // NOT TIME_WINDOW_MS (60 seconds)
+            if current_time - timestamp > TRACKING_WINDOW_MS {
                 // Remove from tracking
                 self.recent_requests.remove(&request_id);
                 self.request_queue.pop_front();
-                println!("   🧹 Cleaned up old request: {}", request_id);
+                println!("   🧹 Cleaned up old request: {} (age: {}s)", 
+                    request_id, 
+                    (current_time - timestamp) / 1000
+                );
             } else {
                 // Queue is ordered, so we can stop
                 break;
@@ -245,7 +260,8 @@ async fn main() {
     println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
     println!("  Funding Account:   {}", FUNDING_ACCOUNT_ID);
-    println!("  Time Window:       60 seconds");
+    println!("  Acceptance Window: {} seconds (requests older than this are rejected)", TIME_WINDOW_MS / 1000);
+    println!("  Tracking Window:   {} seconds (prevents replay attacks)", TRACKING_WINDOW_MS / 1000);
     println!("--------------------------------------------------\n");
 
     let mut total_processed = 0;
