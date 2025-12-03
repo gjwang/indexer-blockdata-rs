@@ -75,8 +75,23 @@ impl FastUlidHalfGen {
             self.last_val = ts_part | rand_part;
         } else {
             // Same millisecond or regression: increment
-            // This might overflow into the timestamp bits if we exhaust 16 bits (65536 IDs/ms),
-            // which effectively moves us to the "next" millisecond in ID space.
+            self.last_val = self.last_val.wrapping_add(1);
+        }
+        self.last_val
+    }
+
+    /// Deterministic generation from external timestamp.
+    /// Used for State Machine Replication (SMR).
+    /// Resets sequence to 0 on new timestamp.
+    pub fn generate_from_ts(&mut self, timestamp_ms: u64) -> u64 {
+        // 48 bits timestamp, shifted to high bits
+        let ts_part = timestamp_ms << 16;
+
+        if ts_part > self.last_val {
+            // New millisecond: reset sequence to 0 (Deterministic)
+            self.last_val = ts_part;
+        } else {
+            // Same millisecond: increment
             self.last_val = self.last_val.wrapping_add(1);
         }
         self.last_val

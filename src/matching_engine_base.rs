@@ -41,6 +41,7 @@ impl OrderBook {
         &mut self,
         order: Order,
         trade_id_gen: &mut FastUlidHalfGen,
+        timestamp: u64,
     ) -> Result<Vec<Trade>, String> {
         let order_id = order.order_id;
         let side = order.side;
@@ -76,7 +77,7 @@ impl OrderBook {
                                 self.match_seq += 1;
                                 trades.push(Trade {
                                     match_seq: self.match_seq,
-                                    trade_id: trade_id_gen.generate(),
+                                    trade_id: trade_id_gen.generate_from_ts(timestamp),
                                     buy_order_id: order.order_id,
                                     sell_order_id: best_ask.order_id,
                                     buy_user_id: order.user_id,
@@ -133,7 +134,7 @@ impl OrderBook {
                                 self.match_seq += 1;
                                 trades.push(Trade {
                                     match_seq: self.match_seq,
-                                    trade_id: trade_id_gen.generate(),
+                                    trade_id: trade_id_gen.generate_from_ts(timestamp),
                                     buy_order_id: best_bid.order_id,
                                     sell_order_id: order.order_id,
                                     buy_user_id: best_bid.user_id,
@@ -404,6 +405,7 @@ impl MatchingEngine {
         price: u64,
         quantity: u64,
         user_id: u64,
+        timestamp: u64,
     ) -> Result<u64, OrderError> {
         let wal_side = side;
 
@@ -461,6 +463,7 @@ impl MatchingEngine {
             price,
             quantity,
             user_id,
+            timestamp,
         )?;
 
         // 3. Flush WALs
@@ -488,6 +491,7 @@ impl MatchingEngine {
         price: u64,
         quantity: u64,
         user_id: u64,
+        timestamp: u64,
     ) -> Result<u64, OrderError> {
         let (base_asset, quote_asset) = *asset_map
             .get(&symbol_id)
@@ -523,14 +527,11 @@ impl MatchingEngine {
             order_type,
             price,
             quantity,
-            timestamp: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            timestamp,
         };
 
         let trades = book
-            .add_order(order, trade_id_gen)
+            .add_order(order, trade_id_gen, timestamp)
             .map_err(OrderError::Other)?;
 
         let mut match_batch = Vec::with_capacity(trades.len());
@@ -572,14 +573,14 @@ impl MatchingEngine {
 
     pub fn add_order_batch(
         &mut self,
-        requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
+        requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64, u64)>,
     ) -> (Vec<Result<u64, OrderError>>, Vec<LedgerCommand>) {
         let start_total = std::time::Instant::now();
         let mut results = vec![Err(OrderError::Other("Not processed".to_string())); requests.len()];
         let mut valid_indices = Vec::with_capacity(requests.len());
 
         // 1. Validate and Log to Input WAL
-        for (i, (symbol_id, order_id, side, _order_type, price, quantity, user_id)) in
+        for (i, (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp)) in
             requests.iter().enumerate()
         {
             let wal_side = *side;
@@ -634,7 +635,7 @@ impl MatchingEngine {
         let mut shadow = ShadowLedger::new(&self.ledger);
 
         for i in valid_indices {
-            let (symbol_id, order_id, side, order_type, price, quantity, user_id) = requests[i];
+            let (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) = requests[i];
             match Self::process_order_logic(
                 &mut shadow,
                 &mut self.order_books,
@@ -647,6 +648,7 @@ impl MatchingEngine {
                 price,
                 quantity,
                 user_id,
+                timestamp,
             ) {
                 Ok(oid) => results[i] = Ok(oid),
                 Err(e) => results[i] = Err(e),
