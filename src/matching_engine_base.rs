@@ -573,7 +573,7 @@ impl MatchingEngine {
     pub fn add_order_batch(
         &mut self,
         requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64)>,
-    ) -> Vec<Result<u64, OrderError>> {
+    ) -> (Vec<Result<u64, OrderError>>, Vec<LedgerCommand>) {
         let start_total = std::time::Instant::now();
         let mut results = vec![Err(OrderError::Other("Not processed".to_string())); requests.len()];
         let mut valid_indices = Vec::with_capacity(requests.len());
@@ -627,17 +627,6 @@ impl MatchingEngine {
             valid_indices.push(i);
         }
 
-        // 2. Flush Input WAL (Persistence Checkpoint 1)
-        // OPTIMIZATION: Rely on OS page cache and Kafka replay for durability.
-        // Skipping explicit flush to reduce latency.
-        /*
-        if let Some(wal) = &mut self.order_wal {
-            if let Err(e) = wal.flush() {
-                eprintln!("CRITICAL: Failed to flush order WAL: {}", e);
-                panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
-            }
-        }
-        */
         let t_input = start_total.elapsed();
 
         // 3. Process Valid Orders (Shadow Mode)
@@ -665,20 +654,21 @@ impl MatchingEngine {
         }
         let t_process = t_process_start.elapsed();
 
-        // 4. Commit Batch (Persist + Memory)
+        // 4. Commit Batch (Memory Only) - Return commands for persistence
         let t_commit_start = std::time::Instant::now();
+        let mut output_cmds = Vec::new();
+        
         if !shadow.pending_commands.is_empty() {
             let (delta, cmds) = shadow.into_delta();
-            if let Err(e) = self.ledger.commit_delta(&cmds, delta) {
-                eprintln!("CRITICAL: Failed to commit ledger batch: {}", e);
-                panic!("CRITICAL: Ledger commit failed. System inconsistent.");
-            }
+            // Apply to memory immediately so next batch sees correct state
+            self.ledger.apply_delta_to_memory(delta);
+            output_cmds = cmds;
         }
         let t_commit = t_commit_start.elapsed();
 
         if requests.len() > 0 {
             println!(
-                "[PERF] Match: {} orders. Input: {:?}, Process: {:?}, Commit: {:?}. Total: {:?}",
+                "[PERF] Match: {} orders. Input: {:?}, Process: {:?}, Commit(Mem): {:?}. Total: {:?}",
                 requests.len(),
                 t_input,
                 t_process,
@@ -687,7 +677,7 @@ impl MatchingEngine {
             );
         }
 
-        results
+        (results, output_cmds)
     }
 
     /// Public API: Cancel Order (Writes to WAL, then processes)

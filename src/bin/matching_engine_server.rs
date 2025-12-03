@@ -16,9 +16,9 @@ use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 
 /// Event structure for the Disruptor ring buffer
-#[derive(Clone)]
 struct OrderEvent {
     command: Option<EngineCommand>,
+    processing_result: std::sync::Mutex<Option<Vec<LedgerCommand>>>,
 }
 
 #[derive(Clone)]
@@ -304,12 +304,12 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-    let trade_producer = RedpandaTradeProducer::new(
+    // Trade producer will be used in Output Processor
+    let mut trade_producer = RedpandaTradeProducer::new(
         producer.clone(),
         config.kafka.topics.trades.clone(),
         tokio::runtime::Handle::current(),
     );
-    engine.ledger.set_listener(Box::new(trade_producer));
 
     let balance_topic = config
         .kafka
@@ -340,22 +340,23 @@ async fn main() {
     let batch_poll_count = 1000;
 
     // === True Pipeline Architecture with Disruptor ===
-    // Extract WAL before moving engine
-    let mut order_wal = engine.take_order_wal().expect("Failed to take WAL");
+    // Extract OrderWal from Engine to give to WAL Writer thread
+    let mut order_wal = engine.take_order_wal().expect("OrderWAL not found");
     let progress_handle = order_wal.get_progress_handle();
+
+    // Extract Ledger WAL for Output Processor (Consumer 3)
+    let mut ledger_wal = engine.ledger.take_wal().expect("Ledger WAL not found");
+    let mut last_ledger_seq = engine.ledger.last_seq;
     
     // Factory: Create empty events in the ring buffer
-    let factory = || OrderEvent { command: None };
+    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None) };
     
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
-    // === True Pipeline Architecture ===
-    // Consumer 1: WAL Writer (writes to WAL, updates progress)
     let progress_for_writer = progress_handle.clone();
     let wal_writer = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    // println!("[WAL Writer] Processing batch of {} orders at seq={}", batch.len(), sequence);
                     // Write to WAL (no flush yet)
                     for (symbol_id, order_id, side, _order_type, price, quantity, user_id) in batch {
                         if let Err(e) = order_wal.log_place_order_no_flush(
@@ -367,7 +368,6 @@ async fn main() {
                     order_wal.current_seq = sequence as u64;
                 }
                 EngineCommand::CancelOrder { order_id, .. } => {
-                    // println!("[WAL Writer] Processing cancel order {} at seq={}", order_id, sequence);
                     if let Err(e) = order_wal.log_cancel_order_no_flush(*order_id) {
                         eprintln!("WAL Error: {}", e);
                     }
@@ -381,7 +381,6 @@ async fn main() {
         
         // Flush WAL at end of batch and update progress
         if end_of_batch {
-            // println!("[WAL Writer] Flushing WAL at seq={}", sequence);
             if let Err(e) = order_wal.flush() {
                 eprintln!("WAL Flush Error: {}", e);
             }
@@ -389,7 +388,7 @@ async fn main() {
         }
     };
     
-    // Consumer 2: Matcher (waits for progress, then matches)
+    // === Consumer 2: Matcher (waits for progress, matches, updates memory) ===
     let progress_for_matcher = progress_handle.clone();
     let matcher = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
         // Wait until this sequence is persisted in WAL
@@ -405,8 +404,9 @@ async fn main() {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    // println!("[Matcher] Matching batch of {} orders at seq={}", batch.len(), sequence);
-                    engine.add_order_batch(batch.clone());
+                    let (_, cmds) = engine.add_order_batch(batch.clone());
+                    // Pass commands to Output Processor via Event
+                    *event.processing_result.lock().unwrap() = Some(cmds);
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
@@ -419,15 +419,42 @@ async fn main() {
             }
         }
     };
+
+    // === Consumer 3: Output Processor (Writes Ledger WAL, Publishes Trades) ===
+    let output_processor = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        if let Some(cmds) = event.processing_result.lock().unwrap().take() {
+            if !cmds.is_empty() {
+                // 1. Write to Ledger WAL
+                for cmd in &cmds {
+                    last_ledger_seq += 1;
+                    if let Err(e) = ledger_wal.append_no_flush(last_ledger_seq, cmd) {
+                        eprintln!("Ledger WAL Error: {}", e);
+                    }
+                }
+                // No flush needed (optimization)
+                
+                // 2. Publish Trades
+                if let Err(e) = trade_producer.on_batch(&cmds) {
+                     eprintln!("Trade Publish Error: {}", e);
+                }
+            }
+        }
+    };
     
-    // Build disruptor with TWO PARALLEL consumers
-    // They run independently, but Matcher gates itself on progress_id
+    // Build disruptor with 3-Stage Pipeline
+    // 1. WAL Writer & Matcher run in parallel (Matcher gates on Writer manually)
+    // 2. Output Processor runs AFTER Matcher
     let mut producer = build_single_producer(8192, factory, BusySpin)
         .handle_events_with(wal_writer)
-        .handle_events_with(matcher) 
+        .handle_events_with(matcher)
+        .and_then()
+        .handle_events_with(output_processor)
         .build();
     
-    println!(">>> Disruptor initialized with TRUE PIPELINE (Parallel WAL Writer & Matcher)");
+    println!(">>> Disruptor initialized with 3-STAGE PIPELINE:");
+    println!(">>> 1. WAL Writer (Parallel)");
+    println!(">>> 2. Matcher (Parallel, gated on Writer)");
+    println!(">>> 3. Output Processor (Sequential after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
