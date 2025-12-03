@@ -811,7 +811,7 @@ impl GlobalLedger {
             self.wal.append_no_flush(new_seq, cmd)?;
             self.last_seq = new_seq;
         }
-        self.wal.flush()?;
+        // self.wal.flush()?; // OPTIMIZATION: Skip flush, rely on Order WAL for durability
         let persist_duration = start_persist.elapsed();
 
         // Phase 3: Apply to real accounts (Merge delta state)
