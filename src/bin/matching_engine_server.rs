@@ -18,7 +18,7 @@ use fetcher::symbol_manager::SymbolManager;
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
     command: Option<EngineCommand>,
-    processing_result: std::sync::Mutex<Option<Vec<LedgerCommand>>>,
+    processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
 }
 
 #[derive(Clone)]
@@ -406,7 +406,7 @@ async fn main() {
                 EngineCommand::PlaceOrderBatch(batch) => {
                     let (_, cmds) = engine.add_order_batch(batch.clone());
                     // Pass commands to Output Processor via Event
-                    *event.processing_result.lock().unwrap() = Some(cmds);
+                    *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
@@ -420,44 +420,55 @@ async fn main() {
         }
     };
 
-    // === Consumer 3: Output Processor (Writes Ledger WAL, Publishes Trades) ===
-    let output_processor = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        if let Some(cmds) = event.processing_result.lock().unwrap().take() {
+    // === Consumer 3a: Ledger Writer (Writes to Ledger WAL) ===
+    let ledger_writer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        let cmds_arc = {
+            event.processing_result.lock().unwrap().as_ref().cloned()
+        };
+        if let Some(cmds) = cmds_arc {
             if !cmds.is_empty() {
-                let start = std::time::Instant::now();
-                // 1. Write to Ledger WAL
-                for cmd in &cmds {
+                // Write to Ledger WAL
+                for cmd in cmds.iter() {
                     last_ledger_seq += 1;
                     if let Err(e) = ledger_wal.append_no_flush(last_ledger_seq, cmd) {
                         eprintln!("Ledger WAL Error: {}", e);
                     }
                 }
-                // No flush needed (optimization)
-                
-                // 2. Publish Trades
+            }
+        }
+    };
+
+    // === Consumer 3b: Trade Publisher (Publishes Trades to Kafka) ===
+    let trade_publisher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        let cmds_arc = {
+            event.processing_result.lock().unwrap().as_ref().cloned()
+        };
+        if let Some(cmds) = cmds_arc {
+            if !cmds.is_empty() {
+                let start = std::time::Instant::now();
                 if let Err(e) = trade_producer.on_batch(&cmds) {
                      eprintln!("Trade Publish Error: {}", e);
                 }
-                
-                println!("[PERF] Output: {} cmds. Time: {:?}", cmds.len(), start.elapsed());
+                println!("[PERF] Output(Trade): {} cmds. Time: {:?}", cmds.len(), start.elapsed());
             }
         }
     };
     
-    // Build disruptor with 3-Stage Pipeline
-    // 1. WAL Writer & Matcher run in parallel (Matcher gates on Writer manually)
-    // 2. Output Processor runs AFTER Matcher
+    // Build disruptor with 3-Stage Pipeline (Stage 3 is Parallel)
+    // 1. WAL Writer & Matcher run in parallel
+    // 2. Ledger Writer & Trade Publisher run in parallel AFTER Matcher
     let mut producer = build_single_producer(8192, factory, BusySpin)
         .handle_events_with(wal_writer)
         .handle_events_with(matcher)
         .and_then()
-        .handle_events_with(output_processor)
+        .handle_events_with(ledger_writer)
+        .handle_events_with(trade_publisher)
         .build();
     
-    println!(">>> Disruptor initialized with 3-STAGE PIPELINE:");
+    println!(">>> Disruptor initialized with 3-STAGE PIPELINE (Parallel Output):");
     println!(">>> 1. WAL Writer (Parallel)");
     println!(">>> 2. Matcher (Parallel, gated on Writer)");
-    println!(">>> 3. Output Processor (Sequential after Matcher)");
+    println!(">>> 3. Ledger Writer & Trade Publisher (Parallel after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
