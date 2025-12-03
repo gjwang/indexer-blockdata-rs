@@ -22,7 +22,7 @@ const TIME_WINDOW_MS: u64 = 60_000;
 /// We keep tracking request IDs for 5 minutes even though we only accept
 /// requests within 60 seconds. This ensures that if someone tries to replay
 /// an old request, we'll still detect it as a duplicate.
-const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS*5; // 5 minutes
+const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5; // 5x acceptance window
 
 struct BalanceProcessor {
     ledger: GlobalLedger,
