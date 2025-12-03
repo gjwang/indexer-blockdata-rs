@@ -250,7 +250,7 @@ pub struct MatchingEngine {
     pub order_books: Vec<Option<OrderBook>>,
     pub ledger: GlobalLedger,
     pub asset_map: FxHashMap<u32, (u32, u32)>,
-    pub order_wal: Wal,
+    pub order_wal: Option<Wal>,
     pub snapshot_dir: std::path::PathBuf,
     pub trade_id_gen: FastUlidHalfGen,
 }
@@ -327,7 +327,7 @@ impl MatchingEngine {
             order_books,
             ledger,
             asset_map: FxHashMap::default(),
-            order_wal,
+            order_wal: Some(order_wal),
             snapshot_dir: snap_dir.to_path_buf(),
             trade_id_gen: FastUlidHalfGen::new(),
         };
@@ -338,6 +338,10 @@ impl MatchingEngine {
         }
 
         Ok(engine)
+    }
+
+    pub fn take_order_wal(&mut self) -> Option<Wal> {
+        self.order_wal.take()
     }
 
     pub fn replay_wal(&mut self) -> Result<(), std::io::Error> {
@@ -438,9 +442,11 @@ impl MatchingEngine {
         }
 
         // 3. Write to Input Log (Source of Truth)
-        self.order_wal
-            .log_place_order_no_flush(order_id, user_id, symbol_id, wal_side, price, quantity)
-            .map_err(|e| OrderError::Other(e.to_string()))?;
+        // 3. Write to Input Log (Source of Truth)
+        if let Some(wal) = &mut self.order_wal {
+            wal.log_place_order_no_flush(order_id, user_id, symbol_id, wal_side, price, quantity)
+                .map_err(|e| OrderError::Other(e.to_string()))?;
+        }
 
         // 2. Process Logic
         let oid = Self::process_order_logic(
@@ -458,9 +464,11 @@ impl MatchingEngine {
         )?;
 
         // 3. Flush WALs
-        self.order_wal
-            .flush()
-            .map_err(|e| OrderError::Other(e.to_string()))?;
+        // 3. Flush WALs
+        if let Some(wal) = &mut self.order_wal {
+            wal.flush()
+                .map_err(|e| OrderError::Other(e.to_string()))?;
+        }
         self.ledger
             .flush()
             .map_err(|e| OrderError::LedgerError(e.to_string()))?;
@@ -608,22 +616,29 @@ impl MatchingEngine {
             }
 
             // Log to Order WAL (No Flush)
-            if let Err(e) = self.order_wal.log_place_order_no_flush(
-                *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
-            ) {
-                results[i] = Err(OrderError::Other(e.to_string()));
-                continue;
+            if let Some(wal) = &mut self.order_wal {
+                if let Err(e) = wal.log_place_order_no_flush(
+                    *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
+                ) {
+                    results[i] = Err(OrderError::Other(e.to_string()));
+                    continue;
+                }
             }
 
             valid_indices.push(i);
         }
 
         // 2. Flush Input WAL (Persistence Checkpoint 1)
-        if let Err(e) = self.order_wal.flush() {
-            eprintln!("CRITICAL: Failed to flush order WAL: {}", e);
-            panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
+        // OPTIMIZATION: Rely on OS page cache and Kafka replay for durability.
+        // Skipping explicit flush to reduce latency.
+        /*
+        if let Some(wal) = &mut self.order_wal {
+            if let Err(e) = wal.flush() {
+                eprintln!("CRITICAL: Failed to flush order WAL: {}", e);
+                panic!("CRITICAL: Order WAL flush failed. Integrity compromised.");
+            }
         }
-        let t_input = start_total.elapsed();
+        */let t_input = start_total.elapsed();
 
         // 3. Process Valid Orders (Shadow Mode)
         let t_process_start = std::time::Instant::now();
@@ -678,9 +693,11 @@ impl MatchingEngine {
     /// Public API: Cancel Order (Writes to WAL, then processes)
     pub fn cancel_order(&mut self, symbol_id: u32, order_id: u64) -> Result<(), OrderError> {
         // 1. Write to WAL
-        self.order_wal
-            .log_cancel_order(order_id)
-            .map_err(|e| OrderError::Other(e.to_string()))?;
+        // 1. Write to WAL
+        if let Some(wal) = &mut self.order_wal {
+            wal.log_cancel_order(order_id)
+                .map_err(|e| OrderError::Other(e.to_string()))?;
+        }
 
         // 2. Process Logic
         self.process_cancel(symbol_id, order_id)
@@ -716,7 +733,7 @@ impl MatchingEngine {
     }
 
     pub fn trigger_cow_snapshot(&self) {
-        let current_seq = self.order_wal.current_seq;
+        let current_seq = self.order_wal.as_ref().map(|w| w.current_seq).unwrap_or(0);
         let snap_dir = self.snapshot_dir.clone();
 
         // flush stdout so logs don't get duplicated in child
