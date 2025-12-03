@@ -60,30 +60,53 @@ impl BalanceProcessor {
     }
 
     fn process_balance_request(&mut self, req: BalanceRequest) -> Result<(), anyhow::Error> {
+        // ============================================================
+        // SECURITY BOUNDARY: All validation happens HERE
+        // The gateway is UNTRUSTED - it could be compromised or have
+        // clock skew. We validate timestamp and check duplicates here.
+        // ============================================================
+        
         let current_time = self.current_time_ms();
         let request_id = req.request_id().to_string();
 
-        // 1. Check time window
+        println!("\n🔍 Validating request: {}", request_id);
+        println!("   Request timestamp: {}", req.timestamp());
+        println!("   Current time:      {}", current_time);
+
+        // 1. CRITICAL: Validate timestamp window (prevent replay attacks)
         if !req.is_within_time_window(current_time) {
-            let age_sec = (current_time - req.timestamp()) / 1000;
+            let age_sec = if current_time > req.timestamp() {
+                (current_time - req.timestamp()) / 1000
+            } else {
+                0 // Future timestamp
+            };
+            
             println!(
-                "❌ Request outside time window: {} (age: {}s, max: 60s)",
+                "❌ REJECTED: Request outside time window: {} (age: {}s, max: 60s)",
                 request_id, age_sec
             );
+            
+            if current_time < req.timestamp() {
+                println!("   ⚠️  WARNING: Request timestamp is in the future! Possible clock skew or attack.");
+            }
+            
             return Ok(());
         }
+        println!("   ✓ Timestamp valid (within 60s window)");
 
-        // 2. Check for duplicate (idempotency)
+        // 2. CRITICAL: Check for duplicate request_id (prevent double-spend)
         if let Some(&prev_timestamp) = self.recent_requests.get(&request_id) {
             let age_sec = (current_time - prev_timestamp) / 1000;
             println!(
-                "⚠️  Duplicate request detected: {} (seen {}s ago)",
+                "❌ REJECTED: Duplicate request detected: {} (first seen {}s ago)",
                 request_id, age_sec
             );
+            println!("   ⚠️  This request_id was already processed. Ignoring to prevent double-spend.");
             return Ok(());
         }
+        println!("   ✓ Request ID is unique (not seen before)");
 
-        // 3. Process the request
+        // 3. Process the request (validation passed)
         match req {
             BalanceRequest::Deposit {
                 request_id,
