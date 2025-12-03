@@ -20,11 +20,12 @@ struct OrderEvent {
     command: Option<EngineCommand>,
     processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
     kafka_offset: Option<(String, i32, i64)>,
+    timestamp: u64,
 }
 
 #[derive(Clone)]
 enum EngineCommand {
-    PlaceOrderBatch(Vec<(u32, u64, Side, OrderType, u64, u64, u64)>),
+    PlaceOrderBatch(Vec<(u32, u64, Side, OrderType, u64, u64, u64, u64)>),
     CancelOrder { symbol_id: u32, order_id: u64 },
     BalanceRequest(BalanceRequest),
 }
@@ -352,7 +353,7 @@ async fn main() {
     let mut last_ledger_seq = engine.ledger.last_seq;
     
     // Factory: Create empty events in the ring buffer
-    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None), kafka_offset: None };
+    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None), kafka_offset: None, timestamp: 0 };
     
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
     let progress_for_writer = progress_handle.clone();
@@ -369,12 +370,12 @@ async fn main() {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    // Write to WAL (no flush yet)
-                    for (symbol_id, order_id, side, _order_type, price, quantity, user_id) in batch {
+                    for (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp) in batch {
+                        let wal_side = *side;
                         if let Err(e) = order_wal.log_place_order_no_flush(
-                            *order_id, *user_id, *symbol_id, *side, *price, *quantity,
+                            *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
                         ) {
-                            panic!("CRITICAL: Failed to write to Order WAL: {}. Halting to prevent inconsistency.", e);
+                            panic!("CRITICAL: Failed to write to Order WAL: {}. Halting.", e);
                         }
                     }
                     order_wal.current_seq = sequence as u64;
@@ -559,6 +560,7 @@ async fn main() {
             let topic = m.topic();
             let partition = m.partition();
             let offset = m.offset();
+            let timestamp = m.timestamp().to_millis().unwrap_or(0) as u64;
             let current_offset = Some((topic.to_string(), partition, offset));
 
             if let Some(payload) = m.payload() {
@@ -579,7 +581,7 @@ async fn main() {
                                     // Accumulate orders for batch processing
                                     place_orders.push((
                                         symbol_id, order_id, side, order_type, price, quantity,
-                                        user_id,
+                                        user_id, timestamp,
                                     ));
                                     pending_batch_offset = current_offset;
                                 } else {
@@ -601,6 +603,7 @@ async fn main() {
                                         producer.publish(|event| {
                                             event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
                                             event.kafka_offset = offset_clone;
+                                            event.timestamp = timestamp; // Use latest timestamp for batch event metadata
                                         });
                                         place_orders.clear();
                                         pending_batch_offset = None;
@@ -615,6 +618,7 @@ async fn main() {
                                             order_id,
                                         });
                                         event.kafka_offset = offset_clone;
+                                        event.timestamp = timestamp;
                                     });
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
@@ -634,6 +638,7 @@ async fn main() {
                             producer.publish(|event| {
                                 event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
                                 event.kafka_offset = offset_clone;
+                                event.timestamp = timestamp;
                             });
                             place_orders.clear();
                             pending_batch_offset = None;
@@ -644,6 +649,7 @@ async fn main() {
                         producer.publish(|event| {
                             event.command = Some(EngineCommand::BalanceRequest(req));
                             event.kafka_offset = offset_clone;
+                            event.timestamp = timestamp;
                         });
                     } else {
                         eprintln!("Failed to parse Balance JSON");
@@ -658,9 +664,14 @@ async fn main() {
             let batch_clone = place_orders.clone();
             let offset_clone = pending_batch_offset.clone();
             println!("[Poll] Publishing final batch of {} orders", count);
+            // Use last seen timestamp for final batch? Or 0?
+            // We don't have 'timestamp' here easily unless we tracked it.
+            // But place_orders has timestamps inside.
+            // The event.timestamp is less important for batch.
             producer.publish(|event| {
                 event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
                 event.kafka_offset = offset_clone;
+                event.timestamp = 0; // Placeholder
             });
 
             total_orders += count;
