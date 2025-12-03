@@ -347,14 +347,14 @@ async fn main() {
     let factory = || OrderEvent { command: None };
     
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
-    // === SIMPLIFIED: Single Consumer doing BOTH WAL write AND matching ===
-    // The two-consumer approach had issues, so combining them for now
-    let processor = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
-        // STEP 1: Write to WAL
+    // === True Pipeline Architecture ===
+    // Consumer 1: WAL Writer (writes to WAL, updates progress)
+    let progress_for_writer = progress_handle.clone();
+    let wal_writer = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    println!("[WAL+Match] Processing batch of {} orders at seq={}", batch.len(), sequence);
+                    // println!("[WAL Writer] Processing batch of {} orders at seq={}", batch.len(), sequence);
                     // Write to WAL (no flush yet)
                     for (symbol_id, order_id, side, _order_type, price, quantity, user_id) in batch {
                         if let Err(e) = order_wal.log_place_order_no_flush(
@@ -366,40 +366,51 @@ async fn main() {
                     order_wal.current_seq = sequence as u64;
                 }
                 EngineCommand::CancelOrder { order_id, .. } => {
-                    println!("[WAL+Match] Processing cancel order {} at seq={}", order_id, sequence);
+                    // println!("[WAL Writer] Processing cancel order {} at seq={}", order_id, sequence);
                     if let Err(e) = order_wal.log_cancel_order_no_flush(*order_id) {
                         eprintln!("WAL Error: {}", e);
                     }
                     order_wal.current_seq = sequence as u64;
                 }
                 EngineCommand::BalanceRequest(_) => {
-                    println!("[WAL+Match] Processing balance request at seq={}", sequence);
                     order_wal.current_seq = sequence as u64;
                 }
             }
         }
         
-        // STEP 2: Flush WAL at end of batch
+        // Flush WAL at end of batch and update progress
         if end_of_batch {
-            println!("[WAL+Match] Flushing WAL at seq={}", sequence);
+            // println!("[WAL Writer] Flushing WAL at seq={}", sequence);
             if let Err(e) = order_wal.flush() {
                 eprintln!("WAL Flush Error: {}", e);
             }
+            // Progress is updated inside flush()
+        }
+    };
+    
+    // Consumer 2: Matcher (waits for progress, then matches)
+    let progress_for_matcher = progress_handle.clone();
+    let matcher = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
+        // Wait until this sequence is persisted in WAL
+        loop {
+            let progress = progress_for_matcher.load(std::sync::atomic::Ordering::Acquire);
+            if (sequence as u64) <= progress {
+                break; // Safe to process
+            }
+            std::hint::spin_loop();
         }
         
-        // STEP 3: Match orders (WAL is now flushed)
+        // Now safe to process - WAL is guaranteed to be flushed
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    println!("[WAL+Match] Matching batch of {} orders at seq={}", batch.len(), sequence);
+                    // println!("[Matcher] Matching batch of {} orders at seq={}", batch.len(), sequence);
                     engine.add_order_batch(batch.clone());
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
-                    println!("[WAL+Match] Canceling order {} at seq={}", order_id, sequence);
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
-                    println!("[WAL+Match] Processing balance request at seq={}", sequence);
                     if let Err(e) = balance_processor.process_balance_request(&mut engine, req.clone()) {
                         eprintln!("Balance processing error: {}", e);
                     }
@@ -408,12 +419,14 @@ async fn main() {
         }
     };
     
-    // Build disruptor with single consumer
+    // Build disruptor with TWO PARALLEL consumers
+    // They run independently, but Matcher gates itself on progress_id
     let mut producer = build_single_producer(8192, factory, BusySpin)
-        .handle_events_with(processor)
+        .handle_events_with(wal_writer)
+        .handle_events_with(matcher) 
         .build();
     
-    println!(">>> Disruptor initialized with combined WAL+Match consumer");
+    println!(">>> Disruptor initialized with TRUE PIPELINE (Parallel WAL Writer & Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
