@@ -106,22 +106,19 @@ struct RedpandaTradeProducer {
 
 impl LedgerListener for RedpandaTradeProducer {
     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
-        if let LedgerCommand::MatchExecBatch(batch) = cmd {
-            // println!("LedgerListener on_command: MatchExecBatch");
+        // Delegate to on_batch for consistency, or keep as is?
+        // Let's wrap it in a slice and call on_batch to reuse logic
+        self.on_batch(std::slice::from_ref(cmd))
+    }
 
-            let producer = self.producer.clone();
-            let topic = self.topic.clone();
-            let batch = batch.clone();
+    fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
+        let mut trades_by_symbol: HashMap<String, Vec<fetcher::models::Trade>> = HashMap::new();
 
-            tokio::spawn(async move {
-                if batch.is_empty() {
-                    return;
-                }
-
-                // 1. Convert to Trade Models
-                let trades: Vec<fetcher::models::Trade> = batch
-                    .iter()
-                    .map(|data| fetcher::models::Trade {
+        for cmd in cmds {
+            match cmd {
+                LedgerCommand::MatchExec(data) => {
+                    let key = format!("{}_{}", data.base_asset, data.quote_asset);
+                    trades_by_symbol.entry(key).or_default().push(fetcher::models::Trade {
                         trade_id: data.trade_id,
                         buy_order_id: data.buy_order_id,
                         sell_order_id: data.sell_order_id,
@@ -130,16 +127,73 @@ impl LedgerListener for RedpandaTradeProducer {
                         price: data.price,
                         quantity: data.quantity,
                         match_seq: data.match_seq,
-                    })
-                    .collect();
+                    });
+                }
+                LedgerCommand::MatchExecBatch(batch) => {
+                    for data in batch {
+                        let key = format!("{}_{}", data.base_asset, data.quote_asset);
+                        trades_by_symbol.entry(key).or_default().push(fetcher::models::Trade {
+                            trade_id: data.trade_id,
+                            buy_order_id: data.buy_order_id,
+                            sell_order_id: data.sell_order_id,
+                            buy_user_id: data.buyer_user_id,
+                            sell_user_id: data.seller_user_id,
+                            price: data.price,
+                            quantity: data.quantity,
+                            match_seq: data.match_seq,
+                        });
+                    }
+                }
+                LedgerCommand::Batch(inner_cmds) => {
+                    // Recursively handle nested batches
+                    // We can't call on_batch recursively easily because we are building a local map.
+                    // So we just iterate and process.
+                    // Note: This only supports one level of nesting efficiently here, 
+                    // or we need a helper function. 
+                    // For now, let's just handle one level of Batch.
+                    for inner in inner_cmds {
+                         if let LedgerCommand::MatchExec(data) = inner {
+                            let key = format!("{}_{}", data.base_asset, data.quote_asset);
+                            trades_by_symbol.entry(key).or_default().push(fetcher::models::Trade {
+                                trade_id: data.trade_id,
+                                buy_order_id: data.buy_order_id,
+                                sell_order_id: data.sell_order_id,
+                                buy_user_id: data.buyer_user_id,
+                                sell_user_id: data.seller_user_id,
+                                price: data.price,
+                                quantity: data.quantity,
+                                match_seq: data.match_seq,
+                            });
+                         } else if let LedgerCommand::MatchExecBatch(batch) = inner {
+                            for data in batch {
+                                let key = format!("{}_{}", data.base_asset, data.quote_asset);
+                                trades_by_symbol.entry(key).or_default().push(fetcher::models::Trade {
+                                    trade_id: data.trade_id,
+                                    buy_order_id: data.buy_order_id,
+                                    sell_order_id: data.sell_order_id,
+                                    buy_user_id: data.buyer_user_id,
+                                    sell_user_id: data.seller_user_id,
+                                    price: data.price,
+                                    quantity: data.quantity,
+                                    match_seq: data.match_seq,
+                                });
+                            }
+                         }
+                    }
+                }
+                _ => {}
+            }
+        }
 
-                // 2. Determine Key (Symbol Pair) to ensure ordering
-                let first = &batch[0];
-                let key = format!("{}_{}", first.base_asset, first.quote_asset);
-                // Debug: log number of trades being sent
-                // println!("Sending {} trades to topic '{}' with key '{}'", trades.len(), topic, key);
+        if trades_by_symbol.is_empty() {
+            return Ok(());
+        }
 
-                // 3. Serialize and Send Batch
+        let producer = self.producer.clone();
+        let topic = self.topic.clone();
+
+        tokio::spawn(async move {
+            for (key, trades) in trades_by_symbol {
                 if let Ok(payload) = serde_json::to_string(&trades) {
                     match producer
                         .send(
@@ -149,14 +203,13 @@ impl LedgerListener for RedpandaTradeProducer {
                         .await
                     {
                         Ok(_) => {
-                            //TODO reduce print by counting
-                            // println!("Trades batch sent successfully to topic '{}'", topic)
+                            // println!("Trades batch sent successfully to topic '{}' key '{}'", topic, key)
                         }
                         Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}' with key '{}': {}", topic, key, e),
                     };
                 }
-            });
-        }
+            }
+        });
         Ok(())
     }
 }
