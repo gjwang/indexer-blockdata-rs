@@ -21,7 +21,7 @@ impl OrderPublisher for MockPublisher {
         &self,
         _topic: String,
         _key: String,
-        _payload: String,
+        _payload: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         Box::pin(async { Ok(()) })
     }

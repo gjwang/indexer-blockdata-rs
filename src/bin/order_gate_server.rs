@@ -16,7 +16,7 @@ impl OrderPublisher for KafkaPublisher {
         &self,
         topic: String,
         key: String,
-        payload: String,
+        payload: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let producer = self.0.clone();
         Box::pin(async move {
