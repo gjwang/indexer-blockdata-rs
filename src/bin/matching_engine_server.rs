@@ -413,12 +413,19 @@ async fn main() {
     let progress_for_matcher = progress_handle.clone();
     let matcher = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
         // Wait until this sequence is persisted in WAL
+        let mut spins = 0;
         loop {
             let progress = progress_for_matcher.load(std::sync::atomic::Ordering::Acquire);
             if (sequence as u64) <= progress {
                 break; // Safe to process
             }
-            std::hint::spin_loop();
+            
+            if spins < 10000 {
+                std::hint::spin_loop();
+                spins += 1;
+            } else {
+                std::thread::yield_now();
+            }
         }
         
         // Now safe to process - WAL is guaranteed to be flushed
