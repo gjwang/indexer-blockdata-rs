@@ -492,8 +492,8 @@ impl<'a> ShadowLedger<'a> {
 
     /// Consumes the ShadowLedger and returns the modified accounts.
     /// This releases the borrow on the real_ledger.
-    pub fn into_delta(self) -> FxHashMap<UserId, UserAccount> {
-        self.delta_accounts
+    pub fn into_delta(self) -> (FxHashMap<UserId, UserAccount>, Vec<LedgerCommand>) {
+        (self.delta_accounts, self.pending_commands)
     }
 }
 
@@ -789,18 +789,7 @@ impl Ledger for GlobalLedger {
 
 impl GlobalLedger {
 
-    pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
-        // Phase 1: Validate all commands using shadow ledger (no side effects)
-        // This ensures atomicity: if any command fails here, we abort before writing to WAL.
-        let start_validate = std::time::Instant::now();
-        let mut shadow = ShadowLedger::new(self);
-        for cmd in cmds {
-            shadow.apply(cmd)?;
-        }
-        // Optimization: Capture the calculated state changes
-        let delta = shadow.into_delta();
-        let validate_duration = start_validate.elapsed();
-
+    pub fn commit_delta(&mut self, cmds: &[LedgerCommand], delta: FxHashMap<UserId, UserAccount>) -> Result<()> {
         // Phase 2: Write to WAL (all commands validated, so this should succeed)
         let start_persist = std::time::Instant::now();
         for cmd in cmds {
@@ -827,7 +816,25 @@ impl GlobalLedger {
         }
         let notify_duration = start_notify.elapsed();
 
-        println!("[PERF] Commit Batch: Validate: {:?}, Persist: {:?}, Apply: {:?}, Notify: {:?}", validate_duration, persist_duration, apply_duration, notify_duration);
+        // println!("[PERF] Commit Delta: Persist: {:?}, Apply: {:?}, Notify: {:?}", persist_duration, apply_duration, notify_duration);
+        Ok(())
+    }
+
+    pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
+        // Phase 1: Validate all commands using shadow ledger (no side effects)
+        // This ensures atomicity: if any command fails here, we abort before writing to WAL.
+        let start_validate = std::time::Instant::now();
+        let mut shadow = ShadowLedger::new(self);
+        for cmd in cmds {
+            shadow.apply(cmd)?;
+        }
+        // Optimization: Capture the calculated state changes
+        let (delta, _) = shadow.into_delta();
+        let validate_duration = start_validate.elapsed();
+
+        self.commit_delta(cmds, delta)?;
+
+        println!("[PERF] Commit Batch: Validate: {:?}", validate_duration);
         Ok(())
     }
 
