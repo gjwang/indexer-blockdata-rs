@@ -33,7 +33,10 @@ impl BalanceProcessor {
     }
 
     fn current_time_ms(&self) -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
     }
 
     fn cleanup_old_requests(&mut self) {
@@ -48,7 +51,11 @@ impl BalanceProcessor {
         }
     }
 
-    fn process_balance_request(&mut self, engine: &mut MatchingEngine, req: BalanceRequest) -> Result<(), anyhow::Error> {
+    fn process_balance_request(
+        &mut self,
+        engine: &mut MatchingEngine,
+        req: BalanceRequest,
+    ) -> Result<(), anyhow::Error> {
         let current_time = self.current_time_ms();
         let request_id = req.request_id().to_string();
 
@@ -66,8 +73,17 @@ impl BalanceProcessor {
 
         // 3. Process
         match req {
-            BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
-                println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
+            BalanceRequest::TransferIn {
+                user_id,
+                asset_id,
+                amount,
+                timestamp,
+                ..
+            } => {
+                println!(
+                    "📥 Transfer In: {} asset {} -> user {}",
+                    amount, asset_id, user_id
+                );
 
                 // Direct call, no lock needed!
                 match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
@@ -81,8 +97,17 @@ impl BalanceProcessor {
                     }
                 }
             }
-            BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
-                println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
+            BalanceRequest::TransferOut {
+                user_id,
+                asset_id,
+                amount,
+                timestamp,
+                ..
+            } => {
+                println!(
+                    "📤 Transfer Out: {} asset {} <- user {}",
+                    amount, asset_id, user_id
+                );
                 // Direct call, no lock needed!
                 match engine.transfer_out_from_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
@@ -146,20 +171,23 @@ impl LedgerListener for RedpandaTradeProducer {
     }
 
     fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
-        let mut all_trades = Vec::new();
 
-        for cmd in cmds {
-            Self::collect_trades(cmd, &mut all_trades);
-        }
 
-        if all_trades.is_empty() {
-            return Ok(());
-        }
-
+        // Clone commands to move them to the background task
+        let cmds = cmds.to_vec();
         let producer = self.producer.clone();
         let topic = self.topic.clone();
 
         tokio::spawn(async move {
+            let mut all_trades = Vec::new();
+            for cmd in &cmds {
+                Self::collect_trades(cmd, &mut all_trades);
+            }
+
+            if all_trades.is_empty() {
+                return;
+            }
+
             if let Ok(payload) = serde_json::to_vec(&all_trades) {
                 let key = "batch";
                 match producer
@@ -172,7 +200,9 @@ impl LedgerListener for RedpandaTradeProducer {
                     Ok(_) => {
                         // println!("Trades batch sent successfully to topic '{}'", topic)
                     }
-                    Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}': {}", topic, e),
+                    Err((e, _)) => {
+                        eprintln!("Failed to send trades batch to topic '{}': {}", topic, e)
+                    }
                 };
             }
         });
@@ -266,7 +296,12 @@ async fn main() {
     };
     engine.ledger.set_listener(Box::new(trade_producer));
 
-    let balance_topic = config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
+    let balance_topic = config
+        .kafka
+        .topics
+        .balance_ops
+        .clone()
+        .unwrap_or("balance.operations".to_string());
     let mut balance_processor = BalanceProcessor::new();
 
     consumer
@@ -291,11 +326,10 @@ async fn main() {
 
     loop {
         //TODO: review architecture of this loop
-        //we already order store in the redpanda, 
+        //we already order store in the redpanda,
         //Do we need to duplicate write order wal?
-        //My Q: if something bad happen, 
+        //My Q: if something bad happen,
         // How do we base on ledger and redpanda, no order_wal
-
 
         let mut batch = Vec::with_capacity(batch_poll_count);
 
@@ -311,7 +345,7 @@ async fn main() {
         // 2. Drain whatever else is already in the local buffer (up to 999 more)
         for _ in 0..batch_poll_count - 1 {
             match tokio::time::timeout(std::time::Duration::from_millis(0), consumer.recv()).await {
-                Ok(Ok(m)) => batch.push(m), // Message received
+                Ok(Ok(m)) => batch.push(m),                    // Message received
                 Ok(Err(e)) => eprintln!("Kafka error: {}", e), // Kafka error
                 Err(_) => break, // Timeout (Buffer empty), stop batching
             }
@@ -330,7 +364,6 @@ async fn main() {
                 total_poll_time - wait_time
             );
         }
-
 
         println!("Processing batch of {} orders", batch.len());
 
@@ -356,7 +389,10 @@ async fn main() {
                                 order_type,
                             } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                    place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
+                                    place_orders.push((
+                                        symbol_id, order_id, side, order_type, price, quantity,
+                                        user_id,
+                                    ));
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
@@ -382,7 +418,8 @@ async fn main() {
                 } else if topic == balance_topic {
                     // Deserialize Balance Request
                     if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
-                        if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
+                        if let Err(e) = balance_processor.process_balance_request(&mut engine, req)
+                        {
                             eprintln!("Balance processing error: {}", e);
                         }
                     } else {
@@ -416,8 +453,12 @@ async fn main() {
         }
 
         if batch_len > 0 {
-            println!("[PERF] Loop Active: {:?}. Prep: {:?}, Engine: {:?}", poll_start.elapsed() - wait_time, t_prep, t_engine);
+            println!(
+                "[PERF] Loop Active: {:?}. Prep: {:?}, Engine: {:?}",
+                poll_start.elapsed() - wait_time,
+                t_prep,
+                t_engine
+            );
         }
     }
 }
-
