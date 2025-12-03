@@ -34,7 +34,7 @@ impl SimulatedFundingAccount {
         let balance = self.balances.get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
         
-        balance.lock(amount).map_err(|e| format!("Lock failed: {}", e))
+        balance.frozen(amount).map_err(|e| format!("Lock failed: {}", e))
     }
 
     /// Finalize Transfer In: Remove from locked (funds moved to Trading Engine)
