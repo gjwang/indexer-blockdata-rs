@@ -10,9 +10,14 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData};
 use fetcher::matching_engine_base::MatchingEngine;
-use fetcher::models::BalanceRequest;
-use fetcher::models::OrderRequest;
+use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
+
+enum EngineCommand {
+    PlaceOrderBatch(Vec<(u32, u64, Side, OrderType, u64, u64, u64)>),
+    CancelOrder { symbol_id: u32, order_id: u64 },
+    BalanceRequest(BalanceRequest),
+}
 
 /// Time window for accepting requests (60 seconds)
 const TIME_WINDOW_MS: u64 = 60_000;
@@ -265,7 +270,6 @@ async fn main() {
     println!("Funds deposited for users 0-5000.");
 
     // === Kafka Consumer Setup ===
-    // === Kafka Consumer Setup ===
     let consumer: StreamConsumer = ClientConfig::new()
         .set("group.id", &config.kafka.group_id)
         .set("bootstrap.servers", &config.kafka.broker)
@@ -304,7 +308,7 @@ async fn main() {
 
     consumer
         .subscribe(&[&config.kafka.topics.orders, &balance_topic])
-        .expect("Can't subscribe");
+        .expect("Subscription failed");
 
     println!("--------------------------------------------------");
     println!("Boot Parameters:");
@@ -315,20 +319,38 @@ async fn main() {
     println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
     println!("--------------------------------------------------");
-    println!(">>> Matching Engine Server Started");
+    println!(">>> Matching Engine Server Started (Pipelined)");
 
     let mut total_orders = 0;
     let mut last_report = std::time::Instant::now();
 
     let batch_poll_count = 1000;
 
-    loop {
-        //TODO: review architecture of this loop
-        //we already order store in the redpanda,
-        //Do we need to duplicate write order wal?
-        //My Q: if something bad happen,
-        // How do we base on ledger and redpanda, no order_wal
+    // === Pipelining Setup ===
+    let mut order_wal = engine.take_order_wal().expect("Failed to take WAL");
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<EngineCommand>(100);
 
+    // Spawn Matching Thread (Thread B)
+    tokio::spawn(async move {
+        println!(">>> Match Thread Started");
+        while let Some(cmd) = rx.recv().await {
+            match cmd {
+                EngineCommand::PlaceOrderBatch(batch) => {
+                    engine.add_order_batch(batch);
+                }
+                EngineCommand::CancelOrder { symbol_id, order_id } => {
+                    let _ = engine.cancel_order(symbol_id, order_id);
+                }
+                EngineCommand::BalanceRequest(req) => {
+                    if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
+                        eprintln!("Balance processing error: {}", e);
+                    }
+                }
+            }
+        }
+    });
+
+    loop {
         let mut batch = Vec::with_capacity(batch_poll_count);
 
         let poll_start = std::time::Instant::now();
@@ -363,10 +385,9 @@ async fn main() {
             );
         }
 
-        println!("Processing batch of {} orders", batch.len());
+        // println!("Processing batch of {} orders", batch.len());
 
-        // 3. Process the batch
-        let batch_len = batch.len();
+        // 3. Process the batch (Prepare & Send to Pipeline)
         let mut place_orders = Vec::with_capacity(batch.len());
 
         let t_prep_start = std::time::Instant::now();
@@ -387,6 +408,12 @@ async fn main() {
                                 order_type,
                             } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                    // Log to WAL
+                                    if let Err(e) = order_wal.log_place_order_no_flush(
+                                        order_id, user_id, symbol_id, side, price, quantity,
+                                    ) {
+                                        eprintln!("WAL Error: {}", e);
+                                    }
                                     place_orders.push((
                                         symbol_id, order_id, side, order_type, price, quantity,
                                         user_id,
@@ -401,10 +428,18 @@ async fn main() {
                                 ..
                             } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                    match engine.cancel_order(symbol_id, order_id) {
-                                        Ok(_) => println!("Order {} Cancelled", order_id),
-                                        Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                    // Flush pending place orders
+                                    if !place_orders.is_empty() {
+                                        if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
+                                        tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone())).await.unwrap();
+                                        place_orders.clear();
                                     }
+                                    // Log Cancel
+                                    if let Err(e) = order_wal.log_cancel_order(order_id) {
+                                        eprintln!("WAL Error: {}", e);
+                                    }
+                                    // Send Cancel
+                                    tx.send(EngineCommand::CancelOrder { symbol_id, order_id }).await.unwrap();
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
@@ -416,29 +451,25 @@ async fn main() {
                 } else if topic == balance_topic {
                     // Deserialize Balance Request
                     if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
-                        if let Err(e) = balance_processor.process_balance_request(&mut engine, req)
-                        {
-                            eprintln!("Balance processing error: {}", e);
+                        // Flush pending place orders
+                        if !place_orders.is_empty() {
+                            if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
+                            tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone())).await.unwrap();
+                            place_orders.clear();
                         }
+                        tx.send(EngineCommand::BalanceRequest(req)).await.unwrap();
                     } else {
                         eprintln!("Failed to parse Balance JSON");
                     }
                 }
             }
         }
-        let t_prep = t_prep_start.elapsed();
-        let mut t_engine = std::time::Duration::from_secs(0);
 
+        // End of batch: Flush remaining place orders
         if !place_orders.is_empty() {
+            if let Err(e) = order_wal.flush() { eprintln!("WAL Flush Error: {}", e); }
             let count = place_orders.len();
-            let t_engine_start = std::time::Instant::now();
-            let results = engine.add_order_batch(place_orders);
-            t_engine = t_engine_start.elapsed();
-            for res in results {
-                if let Err(e) = res {
-                    eprintln!("Failed to add order in batch: {}", e);
-                }
-            }
+            tx.send(EngineCommand::PlaceOrderBatch(place_orders)).await.unwrap();
 
             total_orders += count;
             if last_report.elapsed() >= std::time::Duration::from_secs(5) {
@@ -450,13 +481,16 @@ async fn main() {
             }
         }
 
+        let t_prep = t_prep_start.elapsed();
+
+        /*
         if batch_len > 0 {
             println!(
-                "[PERF] Loop Active: {:?}. Prep: {:?}, Engine: {:?}",
+                "[PERF] Loop Active: {:?}. Prep: {:?}, Engine: (Pipelined)",
                 poll_start.elapsed() - wait_time,
-                t_prep,
-                t_engine
+                t_prep
             );
         }
+        */
     }
 }
