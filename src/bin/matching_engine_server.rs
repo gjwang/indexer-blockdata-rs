@@ -8,11 +8,20 @@ use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
+use disruptor::*;
+
 use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData};
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 
+/// Event structure for the Disruptor ring buffer
+#[derive(Clone)]
+struct OrderEvent {
+    command: Option<EngineCommand>,
+}
+
+#[derive(Clone)]
 enum EngineCommand {
     PlaceOrderBatch(Vec<(u32, u64, Side, OrderType, u64, u64, u64)>),
     CancelOrder { symbol_id: u32, order_id: u64 },
@@ -132,22 +141,27 @@ impl BalanceProcessor {
 struct RedpandaTradeProducer {
     producer: FutureProducer,
     topic: String,
+    runtime_handle: tokio::runtime::Handle,
 }
 
 impl RedpandaTradeProducer {
-    fn collect_trades(cmd: &LedgerCommand, buffer: &mut Vec<fetcher::models::Trade>) {
+    fn new(producer: FutureProducer, topic: String, runtime_handle: tokio::runtime::Handle) -> Self {
+        Self { producer, topic, runtime_handle }
+    }
+
+    fn collect_trades(cmd: &LedgerCommand, trades: &mut Vec<fetcher::models::Trade>) {
         match cmd {
             LedgerCommand::MatchExec(data) => {
-                buffer.push(Self::to_trade(data));
+                trades.push(Self::to_trade(data));
             }
             LedgerCommand::MatchExecBatch(batch) => {
                 for data in batch {
-                    buffer.push(Self::to_trade(data));
+                    trades.push(Self::to_trade(data));
                 }
             }
             LedgerCommand::Batch(cmds) => {
                 for c in cmds {
-                    Self::collect_trades(c, buffer);
+                    Self::collect_trades(c, trades);
                 }
             }
             _ => {}
@@ -169,46 +183,43 @@ impl RedpandaTradeProducer {
 }
 
 impl LedgerListener for RedpandaTradeProducer {
-    fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
-        // Delegate to on_batch for consistency, or keep as is?
-        // Let's wrap it in a slice and call on_batch to reuse logic
-        self.on_batch(std::slice::from_ref(cmd))
+    fn on_command(&mut self, _cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
+        Ok(())
     }
 
     fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
-        // Clone commands to move them to the background task
-        let cmds = cmds.to_vec();
-        let producer = self.producer.clone();
-        let topic = self.topic.clone();
+        // Collect all trades from the batch
+        let mut all_trades = Vec::new();
+        for cmd in cmds {
+            Self::collect_trades(cmd, &mut all_trades);
+        }
 
-        tokio::spawn(async move {
-            let mut all_trades = Vec::new();
-            for cmd in &cmds {
-                Self::collect_trades(cmd, &mut all_trades);
-            }
+        if all_trades.is_empty() {
+            return Ok(());
+        }
 
-            if all_trades.is_empty() {
-                return;
-            }
-
-            if let Ok(payload) = serde_json::to_vec(&all_trades) {
-                let key = "batch";
-                match producer
-                    .send(
-                        FutureRecord::to(&topic).payload(&payload).key(key),
-                        std::time::Duration::from_secs(0),
-                    )
-                    .await
-                {
+        // Send trades to Kafka using the runtime handle
+        if let Ok(payload) = serde_json::to_vec(&all_trades) {
+            let key = "batch";
+            let producer = self.producer.clone();
+            let topic = self.topic.clone();
+            let count = all_trades.len();
+            
+            // Use the runtime handle to block on async code
+            self.runtime_handle.block_on(async move {
+                match producer.send(
+                    FutureRecord::to(&topic).payload(&payload).key(key),
+                    std::time::Duration::from_secs(5),
+                ).await {
                     Ok(_) => {
-                        // println!("Trades batch sent successfully to topic '{}'", topic)
+                        println!("[Trade Publisher] Published {} trades to {}", count, topic);
                     }
                     Err((e, _)) => {
-                        eprintln!("Failed to send trades batch to topic '{}': {}", topic, e)
+                        eprintln!("[Trade Publisher] Failed to send trades: {}", e);
                     }
-                };
-            }
-        });
+                }
+            });
+        }
         Ok(())
     }
 }
@@ -292,10 +303,11 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-    let trade_producer = RedpandaTradeProducer {
-        producer: producer.clone(), // Clone producer for trade_producer
-        topic: config.kafka.topics.trades.clone(),
-    };
+    let trade_producer = RedpandaTradeProducer::new(
+        producer.clone(),
+        config.kafka.topics.trades.clone(),
+        tokio::runtime::Handle::current(),
+    );
     engine.ledger.set_listener(Box::new(trade_producer));
 
     let balance_topic = config
@@ -326,32 +338,85 @@ async fn main() {
 
     let batch_poll_count = 1000;
 
-    // === Pipelining Setup ===
+    // === True Pipeline Architecture with Disruptor ===
+    // Extract WAL before moving engine
     let mut order_wal = engine.take_order_wal().expect("Failed to take WAL");
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<EngineCommand>(100);
-
-    // Spawn Matching Thread (Thread B)
-    tokio::spawn(async move {
-        println!(">>> Match Thread Started");
-        while let Some(cmd) = rx.recv().await {
+    let progress_handle = order_wal.get_progress_handle();
+    
+    // Factory: Create empty events in the ring buffer
+    let factory = || OrderEvent { command: None };
+    
+    // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
+    // === SIMPLIFIED: Single Consumer doing BOTH WAL write AND matching ===
+    // The two-consumer approach had issues, so combining them for now
+    let processor = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
+        // STEP 1: Write to WAL
+        if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    engine.add_order_batch(batch);
+                    println!("[WAL+Match] Processing batch of {} orders at seq={}", batch.len(), sequence);
+                    // Write to WAL (no flush yet)
+                    for (symbol_id, order_id, side, _order_type, price, quantity, user_id) in batch {
+                        if let Err(e) = order_wal.log_place_order_no_flush(
+                            *order_id, *user_id, *symbol_id, *side, *price, *quantity,
+                        ) {
+                            eprintln!("WAL Error: {}", e);
+                        }
+                    }
+                    order_wal.current_seq = sequence as u64;
                 }
-                EngineCommand::CancelOrder {
-                    symbol_id,
-                    order_id,
-                } => {
-                    let _ = engine.cancel_order(symbol_id, order_id);
+                EngineCommand::CancelOrder { order_id, .. } => {
+                    println!("[WAL+Match] Processing cancel order {} at seq={}", order_id, sequence);
+                    if let Err(e) = order_wal.log_cancel_order_no_flush(*order_id) {
+                        eprintln!("WAL Error: {}", e);
+                    }
+                    order_wal.current_seq = sequence as u64;
+                }
+                EngineCommand::BalanceRequest(_) => {
+                    println!("[WAL+Match] Processing balance request at seq={}", sequence);
+                    order_wal.current_seq = sequence as u64;
+                }
+            }
+        }
+        
+        // STEP 2: Flush WAL at end of batch
+        if end_of_batch {
+            println!("[WAL+Match] Flushing WAL at seq={}", sequence);
+            if let Err(e) = order_wal.flush() {
+                eprintln!("WAL Flush Error: {}", e);
+            }
+        }
+        
+        // STEP 3: Match orders (WAL is now flushed)
+        if let Some(ref cmd) = event.command {
+            match cmd {
+                EngineCommand::PlaceOrderBatch(batch) => {
+                    println!("[WAL+Match] Matching batch of {} orders at seq={}", batch.len(), sequence);
+                    engine.add_order_batch(batch.clone());
+                }
+                EngineCommand::CancelOrder { symbol_id, order_id } => {
+                    println!("[WAL+Match] Canceling order {} at seq={}", order_id, sequence);
+                    let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
-                    if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
+                    println!("[WAL+Match] Processing balance request at seq={}", sequence);
+                    if let Err(e) = balance_processor.process_balance_request(&mut engine, req.clone()) {
                         eprintln!("Balance processing error: {}", e);
                     }
                 }
             }
         }
-    });
+    };
+    
+    // Build disruptor with single consumer
+    let mut producer = build_single_producer(8192, factory, BusySpin)
+        .handle_events_with(processor)
+        .build();
+    
+    println!(">>> Disruptor initialized with combined WAL+Match consumer");
+    println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
+
+    // Main Poll Thread (publishes to disruptor)
 
     loop {
         let mut batch = Vec::with_capacity(batch_poll_count);
@@ -390,7 +455,7 @@ async fn main() {
 
         // println!("Processing batch of {} orders", batch.len());
 
-        // 3. Process the batch (Prepare & Send to Pipeline)
+        // 3. Process the batch (Prepare & Publish to Disruptor)
         let mut place_orders = Vec::with_capacity(batch.len());
 
         let t_prep_start = std::time::Instant::now();
@@ -411,12 +476,7 @@ async fn main() {
                                 order_type,
                             } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                    // Log to WAL
-                                    if let Err(e) = order_wal.log_place_order_no_flush(
-                                        order_id, user_id, symbol_id, side, price, quantity,
-                                    ) {
-                                        eprintln!("WAL Error: {}", e);
-                                    }
+                                    // Accumulate orders for batch processing
                                     place_orders.push((
                                         symbol_id, order_id, side, order_type, price, quantity,
                                         user_id,
@@ -431,29 +491,25 @@ async fn main() {
                                 ..
                             } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                    // Flush pending place orders
+                                    // Publish pending place orders first
                                     if !place_orders.is_empty() {
-                                        if let Err(e) = order_wal.flush() {
-                                            eprintln!("WAL Flush Error: {}", e);
-                                        }
-                                        tx.send(EngineCommand::PlaceOrderBatch(
-                                            place_orders.clone(),
-                                        ))
-                                        .await
-                                        .unwrap();
+                                        let count = place_orders.len();
+                                        let batch_clone = place_orders.clone();
+                                        println!("[Poll] Publishing batch of {} orders before cancel", count);
+                                        producer.publish(|event| {
+                                            event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                        });
                                         place_orders.clear();
                                     }
-                                    // Log Cancel
-                                    if let Err(e) = order_wal.log_cancel_order(order_id) {
-                                        eprintln!("WAL Error: {}", e);
-                                    }
-                                    // Send Cancel
-                                    tx.send(EngineCommand::CancelOrder {
-                                        symbol_id,
-                                        order_id,
-                                    })
-                                    .await
-                                    .unwrap();
+                                    
+                                    // Publish cancel order
+                                    println!("[Poll] Publishing cancel order {}", order_id);
+                                    producer.publish(|event| {
+                                        event.command = Some(EngineCommand::CancelOrder {
+                                            symbol_id,
+                                            order_id,
+                                        });
+                                    });
                                 } else {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
@@ -465,17 +521,19 @@ async fn main() {
                 } else if topic == balance_topic {
                     // Deserialize Balance Request
                     if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
-                        // Flush pending place orders
+                        // Publish pending place orders first
                         if !place_orders.is_empty() {
-                            if let Err(e) = order_wal.flush() {
-                                eprintln!("WAL Flush Error: {}", e);
-                            }
-                            tx.send(EngineCommand::PlaceOrderBatch(place_orders.clone()))
-                                .await
-                                .unwrap();
+                            let batch_clone = place_orders.clone();
+                            producer.publish(|event| {
+                                event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                            });
                             place_orders.clear();
                         }
-                        tx.send(EngineCommand::BalanceRequest(req)).await.unwrap();
+                        
+                        // Publish balance request
+                        producer.publish(|event| {
+                            event.command = Some(EngineCommand::BalanceRequest(req));
+                        });
                     } else {
                         eprintln!("Failed to parse Balance JSON");
                     }
@@ -483,15 +541,14 @@ async fn main() {
             }
         }
 
-        // End of batch: Flush remaining place orders
+        // End of batch: Publish remaining place orders
         if !place_orders.is_empty() {
-            if let Err(e) = order_wal.flush() {
-                eprintln!("WAL Flush Error: {}", e);
-            }
             let count = place_orders.len();
-            tx.send(EngineCommand::PlaceOrderBatch(place_orders))
-                .await
-                .unwrap();
+            let batch_clone = place_orders.clone();
+            println!("[Poll] Publishing final batch of {} orders", count);
+            producer.publish(|event| {
+                event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+            });
 
             total_orders += count;
             if last_report.elapsed() >= std::time::Duration::from_secs(5) {
