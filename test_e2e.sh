@@ -4,11 +4,11 @@
 
 set -e
 
-echo "=== Building all binaries ==="
-cargo build --release --bin matching_engine_server
-cargo build --release --bin trade_history_consumer
-cargo build --release --bin order_http_client
-cargo build --release --bin order_gate_server
+echo "=== Building all binaries (DEBUG) ==="
+cargo build --bin matching_engine_server
+cargo build --bin trade_history_consumer
+cargo build --bin order_http_client
+cargo build --bin order_gate_server
 
 echo ""
 echo "=== Killing any existing processes ==="
@@ -20,21 +20,21 @@ sleep 2
 
 echo ""
 echo "=== Starting Matching Engine Server ==="
-./target/release/matching_engine_server > /tmp/matching_engine.log 2>&1 &
+./target/debug/matching_engine_server > /tmp/matching_engine.log 2>&1 &
 ME_PID=$!
 echo "Matching Engine PID: $ME_PID"
 sleep 5
 
 echo ""
 echo "=== Starting Trade History Consumer ==="
-./target/release/trade_history_consumer > /tmp/trade_consumer.log 2>&1 &
+./target/debug/trade_history_consumer > /tmp/trade_consumer.log 2>&1 &
 TC_PID=$!
 echo "Trade Consumer PID: $TC_PID"
 sleep 2
 
 echo ""
 echo "=== Starting Order Gateway ==="
-./target/release/order_gate_server > /tmp/order_gate.log 2>&1 &
+./target/debug/order_gate_server > /tmp/order_gate.log 2>&1 &
 OG_PID=$!
 echo "Order Gateway PID: $OG_PID"
 sleep 5
@@ -42,7 +42,7 @@ sleep 5
 echo ""
 echo "=== Sending Test Orders ==="
 # Run client for 10 seconds then kill it (using perl for cross-platform timeout)
-perl -e 'alarm 10; exec @ARGV' "./target/release/order_http_client" > /tmp/order_client.log 2>&1 || true
+perl -e 'alarm 10; exec @ARGV' "./target/debug/order_http_client" > /tmp/order_client.log 2>&1 || true
 sleep 3
 
 echo ""
