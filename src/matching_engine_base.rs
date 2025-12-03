@@ -746,4 +746,40 @@ impl MatchingEngine {
             }
         }
     }
+
+    /// Deposit funds to a user's trading account
+    /// Called by balance_processor after validating funding account
+    /// This is the ONLY way to add funds to trading accounts
+    pub fn deposit_to_trading_account(
+        &mut self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<(), String> {
+        self.ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id,
+                asset: asset_id,
+                amount,
+            })
+            .map_err(|e| format!("Failed to deposit to trading account: {}", e))
+    }
+
+    /// Withdraw funds from a user's trading account
+    /// Called by balance_processor to return funds to funding account
+    /// This is the ONLY way to remove funds from trading accounts
+    pub fn withdraw_from_trading_account(
+        &mut self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<(), String> {
+        self.ledger
+            .apply(&LedgerCommand::Withdraw {
+                user_id,
+                asset: asset_id,
+                amount,
+            })
+            .map_err(|e| format!("Failed to withdraw from trading account: {}", e))
+    }
 }
