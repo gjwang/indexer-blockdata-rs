@@ -468,6 +468,13 @@ pub trait Ledger {
     fn apply(&mut self, cmd: &LedgerCommand) -> Result<()>;
 }
 
+/// A temporary, in-memory ledger that buffers changes before they are committed.
+///
+/// Implements a Copy-On-Write (CoW) mechanism:
+/// - Reads check `delta_accounts` first, then fall back to `real_ledger`.
+/// - Writes clone the account from `real_ledger` to `delta_accounts` before modifying.
+///
+/// This allows validating a batch of commands atomically without side effects.
 pub struct ShadowLedger<'a> {
     real_ledger: &'a GlobalLedger,
     delta_accounts: FxHashMap<UserId, UserAccount>,
@@ -774,6 +781,7 @@ impl GlobalLedger {
 
     pub fn commit_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
         // Phase 1: Validate all commands using shadow ledger (no side effects)
+        // This ensures atomicity: if any command fails here, we abort before writing to WAL.
         let start_validate = std::time::Instant::now();
         let mut shadow = ShadowLedger::new(self);
         for cmd in cmds {
