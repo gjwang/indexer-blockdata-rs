@@ -10,6 +10,94 @@ use fetcher::ledger::{LedgerCommand, LedgerListener};
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::OrderRequest;
 use fetcher::symbol_manager::SymbolManager;
+use fetcher::models::BalanceRequest;
+use std::collections::{HashMap, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Time window for accepting requests (60 seconds)
+const TIME_WINDOW_MS: u64 = 60_000;
+/// Time window for tracking request IDs (5 minutes)
+const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5;
+
+struct BalanceProcessor {
+    recent_requests: HashMap<String, u64>,
+    request_queue: VecDeque<(String, u64)>,
+}
+
+impl BalanceProcessor {
+    fn new() -> Self {
+        Self {
+            recent_requests: HashMap::new(),
+            request_queue: VecDeque::new(),
+        }
+    }
+
+    fn current_time_ms(&self) -> u64 {
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    }
+
+    fn cleanup_old_requests(&mut self) {
+        let current_time = self.current_time_ms();
+        while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
+            if current_time - timestamp > TRACKING_WINDOW_MS {
+                self.recent_requests.remove(&request_id);
+                self.request_queue.pop_front();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn process_balance_request(&mut self, engine: &mut MatchingEngine, req: BalanceRequest) -> Result<(), anyhow::Error> {
+        let current_time = self.current_time_ms();
+        let request_id = req.request_id().to_string();
+
+        // 1. Validate timestamp
+        if !req.is_within_time_window(current_time) {
+            println!("❌ REJECTED: Request outside time window: {}", request_id);
+            return Ok(());
+        }
+
+        // 2. Check duplicate
+        if self.recent_requests.contains_key(&request_id) {
+            println!("❌ REJECTED: Duplicate request: {}", request_id);
+            return Ok(());
+        }
+
+        // 3. Process
+        match req {
+            BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
+                println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
+                
+                // Direct call, no lock needed!
+                match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
+                    Ok(()) => {
+                        println!("✅ Transfer In success: {}", request_id);
+                        self.recent_requests.insert(request_id.clone(), timestamp);
+                        self.request_queue.push_back((request_id, timestamp));
+                    }
+                    Err(e) => {
+                        println!("❌ Transfer In failed: {}", e);
+                    }
+                }
+            }
+            BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
+                println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
+                // Direct call, no lock needed!
+                match engine.transfer_out_from_trading_account(user_id, asset_id, amount) {
+                    Ok(()) => {
+                        println!("✅ Transfer Out success: {}", request_id);
+                        self.recent_requests.insert(request_id.clone(), timestamp);
+                        self.request_queue.push_back((request_id, timestamp));
+                    }
+                    Err(e) => println!("❌ Transfer Out failed: {}", e),
+                }
+            }
+        }
+        self.cleanup_old_requests();
+        Ok(())
+    }
+}
 
 struct RedpandaTradeProducer {
     producer: FutureProducer,
@@ -157,8 +245,11 @@ async fn main() {
     };
     engine.ledger.set_listener(Box::new(trade_producer));
 
+    let balance_topic = config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
+    let mut balance_processor = BalanceProcessor::new();
+
     consumer
-        .subscribe(&[&config.kafka.topics.orders])
+        .subscribe(&[&config.kafka.topics.orders, &balance_topic])
         .expect("Can't subscribe");
 
     println!("--------------------------------------------------");
@@ -178,6 +269,13 @@ async fn main() {
     let batch_poll_count = 1000;
 
     loop {
+        //TODO: review architecture of this loop
+        //we already order store in the redpanda, 
+        //Do we need to duplicate write order wal?
+        //My Q: if something bad happen, 
+        // How do we base on ledger and redpanda, no order_wal
+        
+
         let mut batch = Vec::with_capacity(batch_poll_count);
 
         let poll_start = std::time::Instant::now();
@@ -212,6 +310,7 @@ async fn main() {
             );
         }
 
+
         println!("Processing batch of {} orders", batch.len());
 
         // 3. Process the batch
@@ -219,44 +318,56 @@ async fn main() {
         let mut place_orders = Vec::with_capacity(batch.len());
 
         for m in batch {
+            let topic = m.topic();
             if let Some(payload) = m.payload_view::<str>() {
                 match payload {
                     Ok(text) => {
-                        // Deserialize
-                        if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
-                            match req {
-                                OrderRequest::PlaceOrder {
-                                    order_id,
-                                    user_id,
-                                    symbol_id,
-                                    side,
-                                    price,
-                                    quantity,
-                                    order_type,
-                                } => {
-                                    if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                        place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
-                                    } else {
-                                        eprintln!("Unknown symbol ID: {}", symbol_id);
-                                    }
-                                }
-                                OrderRequest::CancelOrder {
-                                    order_id,
-                                    symbol_id,
-                                    ..
-                                } => {
-                                    if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                        match engine.cancel_order(symbol_id, order_id) {
-                                            Ok(_) => println!("Order {} Cancelled", order_id),
-                                            Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                        if topic == config.kafka.topics.orders {
+                            // Deserialize Order
+                            if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
+                                match req {
+                                    OrderRequest::PlaceOrder {
+                                        order_id,
+                                        user_id,
+                                        symbol_id,
+                                        side,
+                                        price,
+                                        quantity,
+                                        order_type,
+                                    } => {
+                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                            place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
+                                        } else {
+                                            eprintln!("Unknown symbol ID: {}", symbol_id);
                                         }
-                                    } else {
-                                        eprintln!("Unknown symbol ID: {}", symbol_id);
+                                    }
+                                    OrderRequest::CancelOrder {
+                                        order_id,
+                                        symbol_id,
+                                        ..
+                                    } => {
+                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                            match engine.cancel_order(symbol_id, order_id) {
+                                                Ok(_) => println!("Order {} Cancelled", order_id),
+                                                Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                            }
+                                        } else {
+                                            eprintln!("Unknown symbol ID: {}", symbol_id);
+                                        }
                                     }
                                 }
+                            } else {
+                                eprintln!("Failed to parse Order JSON: {}", text);
                             }
-                        } else {
-                            eprintln!("Failed to parse JSON: {}", text);
+                        } else if topic == balance_topic {
+                            // Deserialize Balance Request
+                            if let Ok(req) = serde_json::from_str::<BalanceRequest>(text) {
+                                if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
+                                    eprintln!("Balance processing error: {}", e);
+                                }
+                            } else {
+                                eprintln!("Failed to parse Balance JSON: {}", text);
+                            }
                         }
                     }
                     Err(e) => eprintln!("Error reading payload: {}", e),

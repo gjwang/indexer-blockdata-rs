@@ -747,10 +747,10 @@ impl MatchingEngine {
         }
     }
 
-    /// Deposit funds to a user's trading account
+    /// Transfer funds IN to a user's trading account
     /// Called by balance_processor after validating funding account
     /// This is the ONLY way to add funds to trading accounts
-    pub fn deposit_to_trading_account(
+    pub fn transfer_in_to_trading_account(
         &mut self,
         user_id: u64,
         asset_id: u32,
@@ -762,13 +762,13 @@ impl MatchingEngine {
                 asset: asset_id,
                 amount,
             })
-            .map_err(|e| format!("Failed to deposit to trading account: {}", e))
+            .map_err(|e| format!("Failed to transfer in to trading account: {}", e))
     }
 
-    /// Withdraw funds from a user's trading account
+    /// Transfer funds OUT from a user's trading account
     /// Called by balance_processor to return funds to funding account
     /// This is the ONLY way to remove funds from trading accounts
-    pub fn withdraw_from_trading_account(
+    pub fn transfer_out_from_trading_account(
         &mut self,
         user_id: u64,
         asset_id: u32,
@@ -780,6 +780,6 @@ impl MatchingEngine {
                 asset: asset_id,
                 amount,
             })
-            .map_err(|e| format!("Failed to withdraw from trading account: {}", e))
+            .map_err(|e| format!("Failed to transfer out from trading account: {}", e))
     }
 }

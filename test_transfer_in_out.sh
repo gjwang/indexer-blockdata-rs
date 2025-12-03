@@ -29,31 +29,33 @@ echo ""
 
 # Check if binaries are built
 echo -e "${YELLOW}2. Checking binaries...${NC}"
-if [ ! -f "target/release/deposit_withdraw_gateway" ]; then
+if [ ! -f "target/release/transfer_server" ]; then
     echo -e "${YELLOW}Building binaries...${NC}"
     cargo build --release \
-        --bin deposit_withdraw_gateway \
-        --bin balance_processor \
+        --bin transfer_server \
+        --bin matching_engine_server \
         --bin balance_test_client
 fi
 echo -e "${GREEN}✅ Binaries ready${NC}"
 echo ""
 
 # Check if gateway is running
-echo -e "${YELLOW}3. Checking Gateway...${NC}"
-if curl -s http://localhost:8082/health > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ Gateway is running on :8082${NC}"
+echo -e "${YELLOW}3. Checking Transfer Server...${NC}"
+if curl -s http://localhost:8083/health > /dev/null 2>&1; then
+    echo -e "${GREEN}✅ Transfer Server is running on :8083${NC}"
 else
-    echo -e "${RED}❌ Gateway is NOT running!${NC}"
+    echo -e "${RED}❌ Transfer Server is NOT running!${NC}"
     echo "Start it in another terminal with:"
-    echo "  cargo run --bin deposit_withdraw_gateway --release"
+    echo "  cargo run --bin transfer_server --release"
     exit 1
 fi
 echo ""
 
-# Check if balance processor is running
-echo -e "${YELLOW}4. Checking Balance Processor...${NC}"
-echo -e "${YELLOW}   (Assuming it's running - check Terminal 2)${NC}"
+# Check if matching engine is running
+echo -e "${YELLOW}4. Checking Matching Engine...${NC}"
+# We assume it's running or user will start it.
+# Ideally we check for the process or a health endpoint if it had one.
+echo -e "${YELLOW}   (Ensure matching_engine_server is running in Terminal 2)${NC}"
 echo ""
 
 # Run test client
@@ -65,5 +67,5 @@ echo ""
 
 echo -e "${GREEN}✅ All tests completed!${NC}"
 echo ""
-echo "Check the balance_processor terminal for detailed logs."
+echo "Check the matching_engine_server terminal for detailed logs."
 echo ""
