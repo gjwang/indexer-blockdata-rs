@@ -1,17 +1,14 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 
-use fetcher::ledger::{GlobalLedger, LedgerCommand};
+use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::BalanceRequest;
-
-/// Special user ID for the funding account
-/// All external funds flow through this account
-const FUNDING_ACCOUNT_ID: u64 = 0;
 
 /// Time window for accepting requests (60 seconds)
 /// Requests older than this are REJECTED
@@ -24,25 +21,65 @@ const TIME_WINDOW_MS: u64 = 60_000;
 /// an old request, we'll still detect it as a duplicate.
 const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5; // 5x acceptance window
 
+/// Simulated funding account balances
+/// In production, this would be a database tracking external funds
+struct SimulatedFundingAccount {
+    balances: HashMap<u32, u64>, // asset_id -> amount
+}
+
+impl SimulatedFundingAccount {
+    fn new() -> Self {
+        let mut balances = HashMap::new();
+        // Initialize with large amounts for testing
+        balances.insert(1, 1_000_000_000_000_000); // BTC
+        balances.insert(2, 1_000_000_000_000_000); // USDT
+        balances.insert(3, 1_000_000_000_000_000); // ETH
+        Self { balances }
+    }
+
+    fn has_balance(&self, asset_id: u32, amount: u64) -> bool {
+        self.balances.get(&asset_id).map_or(false, |&bal| bal >= amount)
+    }
+
+    fn reserve(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
+        let balance = self.balances.get_mut(&asset_id)
+            .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
+        
+        if *balance < amount {
+            return Err(format!(
+                "Insufficient funding balance: need {}, have {}",
+                amount, balance
+            ));
+        }
+        
+        *balance -= amount;
+        Ok(())
+    }
+
+    fn release(&mut self, asset_id: u32, amount: u64) {
+        *self.balances.entry(asset_id).or_insert(0) += amount;
+    }
+}
+
 struct BalanceProcessor {
-    ledger: GlobalLedger,
+    matching_engine: Arc<Mutex<MatchingEngine>>,
+    funding_account: SimulatedFundingAccount,
     /// Track recent request IDs with their timestamps
-    /// Key: request_id, Value: timestamp_ms
     recent_requests: HashMap<String, u64>,
     /// Queue of request IDs ordered by timestamp for cleanup
     request_queue: VecDeque<(String, u64)>,
 }
 
 impl BalanceProcessor {
-    fn new(ledger: GlobalLedger) -> Self {
+    fn new(matching_engine: Arc<Mutex<MatchingEngine>>) -> Self {
         Self {
-            ledger,
+            matching_engine,
+            funding_account: SimulatedFundingAccount::new(),
             recent_requests: HashMap::new(),
             request_queue: VecDeque::new(),
         }
     }
 
-    /// Get current timestamp in milliseconds
     fn current_time_ms(&self) -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -50,17 +87,11 @@ impl BalanceProcessor {
             .as_millis() as u64
     }
 
-    /// Clean up old requests outside the TRACKING window
-    /// Note: TRACKING_WINDOW_MS (5 min) >> TIME_WINDOW_MS (60 sec)
-    /// This prevents replay attacks even after the acceptance window closes
     fn cleanup_old_requests(&mut self) {
         let current_time = self.current_time_ms();
         
         while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
-            // Only cleanup requests older than TRACKING_WINDOW_MS (5 minutes)
-            // NOT TIME_WINDOW_MS (60 seconds)
             if current_time - timestamp > TRACKING_WINDOW_MS {
-                // Remove from tracking
                 self.recent_requests.remove(&request_id);
                 self.request_queue.pop_front();
                 println!("   🧹 Cleaned up old request: {} (age: {}s)", 
@@ -68,7 +99,6 @@ impl BalanceProcessor {
                     (current_time - timestamp) / 1000
                 );
             } else {
-                // Queue is ordered, so we can stop
                 break;
             }
         }
@@ -93,7 +123,7 @@ impl BalanceProcessor {
             let age_sec = if current_time > req.timestamp() {
                 (current_time - req.timestamp()) / 1000
             } else {
-                0 // Future timestamp
+                0
             };
             
             println!(
@@ -135,29 +165,39 @@ impl BalanceProcessor {
                     amount, asset_id, user_id
                 );
 
-                // Transfer from funding_account to user's trading account
-                // This is atomic: withdraw from funding + deposit to user
-                
-                // Step 1: Withdraw from funding account
-                self.ledger.apply(&LedgerCommand::Withdraw {
-                    user_id: FUNDING_ACCOUNT_ID,
-                    asset: asset_id,
-                    amount,
-                })?;
+                // Phase 1: Check funding account (simulated)
+                if !self.funding_account.has_balance(asset_id, amount) {
+                    println!("❌ Insufficient funding account balance");
+                    return Ok(());
+                }
 
-                // Step 2: Deposit to user's trading account
-                self.ledger.apply(&LedgerCommand::Deposit {
-                    user_id,
-                    asset: asset_id,
-                    amount,
-                })?;
+                // Phase 2: Reserve from funding account (simulated)
+                if let Err(e) = self.funding_account.reserve(asset_id, amount) {
+                    println!("❌ Failed to reserve from funding account: {}", e);
+                    return Ok(());
+                }
+                println!("   ✓ Reserved {} from funding account", amount);
 
-                // Track this request
-                self.recent_requests.insert(request_id.clone(), timestamp);
-                self.request_queue.push_back((request_id.clone(), timestamp));
-
-                println!("✅ Deposit completed: {}", request_id);
-                println!("   Transferred {} from funding_account to user {}", amount, user_id);
+                // Phase 3: Deposit to trading account via MatchingEngine
+                let mut me = self.matching_engine.lock().unwrap();
+                match me.deposit_to_trading_account(user_id, asset_id, amount) {
+                    Ok(()) => {
+                        // Success! Funds moved from funding -> trading
+                        println!("✅ Deposit completed: {}", request_id);
+                        println!("   Transferred {} from funding_account to user {}'s trading account", 
+                            amount, user_id);
+                        
+                        // Track this request
+                        self.recent_requests.insert(request_id.clone(), timestamp);
+                        self.request_queue.push_back((request_id, timestamp));
+                    }
+                    Err(e) => {
+                        // Failed! Return funds to funding account
+                        println!("❌ Failed to deposit to trading account: {}", e);
+                        self.funding_account.release(asset_id, amount);
+                        println!("   ↩️  Returned {} to funding account (rollback)", amount);
+                    }
+                }
             }
 
             BalanceRequest::Withdraw {
@@ -172,29 +212,29 @@ impl BalanceProcessor {
                     amount, asset_id, user_id
                 );
 
-                // Transfer from user's trading account to funding_account
-                // This is atomic: withdraw from user + deposit to funding
-
-                // Step 1: Withdraw from user's trading account
-                self.ledger.apply(&LedgerCommand::Withdraw {
-                    user_id,
-                    asset: asset_id,
-                    amount,
-                })?;
-
-                // Step 2: Deposit to funding account
-                self.ledger.apply(&LedgerCommand::Deposit {
-                    user_id: FUNDING_ACCOUNT_ID,
-                    asset: asset_id,
-                    amount,
-                })?;
-
-                // Track this request
-                self.recent_requests.insert(request_id.clone(), timestamp);
-                self.request_queue.push_back((request_id.clone(), timestamp));
-
-                println!("✅ Withdrawal completed: {}", request_id);
-                println!("   Transferred {} from user {} to funding_account", amount, user_id);
+                // Phase 1: Withdraw from trading account via MatchingEngine
+                let mut me = self.matching_engine.lock().unwrap();
+                match me.withdraw_from_trading_account(user_id, asset_id, amount) {
+                    Ok(()) => {
+                        // Success! Funds withdrawn from trading account
+                        println!("   ✓ Withdrawn {} from user {}'s trading account", amount, user_id);
+                        
+                        // Phase 2: Add to funding account (simulated)
+                        self.funding_account.release(asset_id, amount);
+                        
+                        println!("✅ Withdrawal completed: {}", request_id);
+                        println!("   Transferred {} from user {}'s trading account to funding_account", 
+                            amount, user_id);
+                        
+                        // Track this request
+                        self.recent_requests.insert(request_id.clone(), timestamp);
+                        self.request_queue.push_back((request_id, timestamp));
+                    }
+                    Err(e) => {
+                        println!("❌ Failed to withdraw from trading account: {}", e);
+                        println!("   (Likely insufficient balance)");
+                    }
+                }
             }
         }
 
@@ -208,28 +248,15 @@ impl BalanceProcessor {
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
-    let wal_dir = Path::new("balance_processor_wal");
-    let snap_dir = Path::new("balance_processor_snapshots");
+    let wal_dir = Path::new("me_wal_data");
+    let snap_dir = Path::new("me_snapshots");
 
-    // Initialize ledger
-    let ledger = GlobalLedger::new(wal_dir, snap_dir).expect("Failed to create ledger");
-    let mut processor = BalanceProcessor::new(ledger);
-
-    // Initialize funding account with some balance for testing
-    println!("🏦 Initializing funding account (ID: {})...", FUNDING_ACCOUNT_ID);
-    for asset_id in [1, 2, 3] {
-        // BTC, USDT, ETH
-        let initial_amount = 1_000_000_000_000_000u64; // Large amount for testing
-        processor
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: FUNDING_ACCOUNT_ID,
-                asset: asset_id,
-                amount: initial_amount,
-            })
-            .expect("Failed to initialize funding account");
-        println!("   Asset {}: {} units", asset_id, initial_amount);
-    }
+    // Initialize MatchingEngine (shared with matching_engine_server in production)
+    let matching_engine = Arc::new(Mutex::new(
+        MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create MatchingEngine")
+    ));
+    
+    let mut processor = BalanceProcessor::new(matching_engine.clone());
 
     // Kafka Consumer Setup
     let consumer: StreamConsumer = ClientConfig::new()
@@ -253,15 +280,19 @@ async fn main() {
         .expect("Can't subscribe to balance_ops topic");
 
     println!("\n--------------------------------------------------");
-    println!("Balance Processor Started (Simplified Internal Transfers)");
+    println!("Balance Processor Started (Direct ME Integration)");
     println!("  Kafka Broker:      {}", config.kafka.broker);
     println!("  Balance Topic:     {}", balance_topic);
     println!("  Consumer Group:    balance_processor_group");
     println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
-    println!("  Funding Account:   {}", FUNDING_ACCOUNT_ID);
     println!("  Acceptance Window: {} seconds (requests older than this are rejected)", TIME_WINDOW_MS / 1000);
     println!("  Tracking Window:   {} seconds (prevents replay attacks)", TRACKING_WINDOW_MS / 1000);
+    println!("--------------------------------------------------");
+    println!("Architecture:");
+    println!("  Funding Account:   Simulated (Database in production)");
+    println!("  Trading Accounts:  MatchingEngine.ledger");
+    println!("  Integration:       Direct function call");
     println!("--------------------------------------------------\n");
 
     let mut total_processed = 0;
@@ -291,7 +322,6 @@ async fn main() {
                     }
                 }
 
-                // Periodic reporting
                 if last_report.elapsed() >= std::time::Duration::from_secs(10) {
                     println!(
                         "\n📊 Stats: {} requests processed, {} in tracking window",
