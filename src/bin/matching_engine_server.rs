@@ -338,6 +338,7 @@ async fn main() {
         let batch_len = batch.len();
         let mut place_orders = Vec::with_capacity(batch.len());
 
+        let t_prep_start = std::time::Instant::now();
         for m in batch {
             let topic = m.topic();
             if let Some(payload) = m.payload_view::<str>() {
@@ -395,10 +396,14 @@ async fn main() {
                 }
             }
         }
+        let t_prep = t_prep_start.elapsed();
+        let mut t_engine = std::time::Duration::from_secs(0);
 
         if !place_orders.is_empty() {
             let count = place_orders.len();
+            let t_engine_start = std::time::Instant::now();
             let results = engine.add_order_batch(place_orders);
+            t_engine = t_engine_start.elapsed();
             for res in results {
                 if let Err(e) = res {
                     eprintln!("Failed to add order in batch: {}", e);
@@ -416,7 +421,7 @@ async fn main() {
         }
 
         if batch_len > 0 {
-            println!("[PERF] Loop Active: {:?}", poll_start.elapsed() - wait_time);
+            println!("[PERF] Loop Active: {:?}. Prep: {:?}, Engine: {:?}", poll_start.elapsed() - wait_time, t_prep, t_engine);
         }
     }
 }
