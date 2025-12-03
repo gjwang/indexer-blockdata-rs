@@ -153,7 +153,7 @@ impl BalanceProcessor {
 
         // 3. Process the request (validation passed)
         match req {
-            BalanceRequest::Deposit {
+            BalanceRequest::TransferIn {
                 request_id,
                 user_id,
                 asset_id,
@@ -161,7 +161,7 @@ impl BalanceProcessor {
                 timestamp,
             } => {
                 println!(
-                    "\n📥 Processing Deposit: {} units of asset {} for user {}",
+                    "\n📥 Processing Transfer In: {} units of asset {} for user {}",
                     amount, asset_id, user_id
                 );
 
@@ -180,10 +180,10 @@ impl BalanceProcessor {
 
                 // Phase 3: Deposit to trading account via MatchingEngine
                 let mut me = self.matching_engine.lock().unwrap();
-                match me.deposit_to_trading_account(user_id, asset_id, amount) {
+                match me.transfer_in_to_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
                         // Success! Funds moved from funding -> trading
-                        println!("✅ Deposit completed: {}", request_id);
+                        println!("✅ Transfer In completed: {}", request_id);
                         println!("   Transferred {} from funding_account to user {}'s trading account", 
                             amount, user_id);
                         
@@ -193,14 +193,14 @@ impl BalanceProcessor {
                     }
                     Err(e) => {
                         // Failed! Return funds to funding account
-                        println!("❌ Failed to deposit to trading account: {}", e);
+                        println!("❌ Failed to transfer in to trading account: {}", e);
                         self.funding_account.release(asset_id, amount);
                         println!("   ↩️  Returned {} to funding account (rollback)", amount);
                     }
                 }
             }
 
-            BalanceRequest::Withdraw {
+            BalanceRequest::TransferOut {
                 request_id,
                 user_id,
                 asset_id,
@@ -208,13 +208,13 @@ impl BalanceProcessor {
                 timestamp,
             } => {
                 println!(
-                    "\n📤 Processing Withdrawal: {} units of asset {} from user {}",
+                    "\n📤 Processing Transfer Out: {} units of asset {} from user {}",
                     amount, asset_id, user_id
                 );
 
                 // Phase 1: Withdraw from trading account via MatchingEngine
                 let mut me = self.matching_engine.lock().unwrap();
-                match me.withdraw_from_trading_account(user_id, asset_id, amount) {
+                match me.transfer_out_from_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
                         // Success! Funds withdrawn from trading account
                         println!("   ✓ Withdrawn {} from user {}'s trading account", amount, user_id);
@@ -222,7 +222,7 @@ impl BalanceProcessor {
                         // Phase 2: Add to funding account (simulated)
                         self.funding_account.release(asset_id, amount);
                         
-                        println!("✅ Withdrawal completed: {}", request_id);
+                        println!("✅ Transfer Out completed: {}", request_id);
                         println!("   Transferred {} from user {}'s trading account to funding_account", 
                             amount, user_id);
                         
@@ -231,7 +231,7 @@ impl BalanceProcessor {
                         self.request_queue.push_back((request_id, timestamp));
                     }
                     Err(e) => {
-                        println!("❌ Failed to withdraw from trading account: {}", e);
+                        println!("❌ Failed to transfer out from trading account: {}", e);
                         println!("   (Likely insufficient balance)");
                     }
                 }
