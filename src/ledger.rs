@@ -489,6 +489,12 @@ impl<'a> ShadowLedger<'a> {
             pending_commands: Vec::new(),
         }
     }
+
+    /// Consumes the ShadowLedger and returns the modified accounts.
+    /// This releases the borrow on the real_ledger.
+    pub fn into_delta(self) -> FxHashMap<UserId, UserAccount> {
+        self.delta_accounts
+    }
 }
 
 impl<'a> Ledger for ShadowLedger<'a> {
@@ -787,6 +793,8 @@ impl GlobalLedger {
         for cmd in cmds {
             shadow.apply(cmd)?;
         }
+        // Optimization: Capture the calculated state changes
+        let delta = shadow.into_delta();
         let validate_duration = start_validate.elapsed();
 
         // Phase 2: Write to WAL (all commands validated, so this should succeed)
@@ -799,14 +807,22 @@ impl GlobalLedger {
         self.wal.flush()?;
         let persist_duration = start_persist.elapsed();
 
-        // Phase 3: Apply to real accounts (guaranteed to succeed since validated)
+        // Phase 3: Apply to real accounts (Merge delta state)
+        // Instead of re-calculating, we just swap in the new account states.
         let start_apply = std::time::Instant::now();
-        for cmd in cmds {
-            Self::apply_transaction(&mut self.accounts, cmd)?;
-            if let Some(listener) = &mut self.listener {
+        
+        // 3a. Update Memory
+        for (user_id, account) in delta {
+            self.accounts.insert(user_id, account);
+        }
+
+        // 3b. Notify Listeners (if any)
+        if let Some(listener) = &mut self.listener {
+            for cmd in cmds {
                 listener.on_command(cmd)?;
             }
         }
+        
         let apply_duration = start_apply.elapsed();
 
         println!("[PERF] Commit Batch: Validate: {:?}, Persist: {:?}, Apply: {:?}", validate_duration, persist_duration, apply_duration);
