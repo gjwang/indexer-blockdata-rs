@@ -20,7 +20,7 @@ pub trait OrderPublisher: Send + Sync {
         &self,
         topic: String,
         key: String,
-        payload: String,
+        payload: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
 pub struct AppState {
@@ -58,7 +58,7 @@ async fn create_order(
     )?;
 
     // Send to Kafka
-    let payload = serde_json::to_string(&internal_order).unwrap();
+    let payload = serde_json::to_vec(&internal_order).unwrap();
     let key = order_id.to_string();
 
     state
