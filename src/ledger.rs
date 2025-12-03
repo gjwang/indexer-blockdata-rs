@@ -863,7 +863,7 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                bal.lock(*amount).map_err(|_| {
+                bal.frozen(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient funds for lock: User {} Asset {}",
                         user_id,
@@ -880,7 +880,7 @@ impl GlobalLedger {
                     .entry(*user_id)
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
-                bal.unlock(*amount).map_err(|_| {
+                bal.unfrozen(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient frozen funds for unlock: User {} Asset {}",
                         user_id,

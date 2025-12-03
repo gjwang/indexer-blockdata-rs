@@ -29,9 +29,9 @@ echo ""
 
 # Check if binaries are built
 echo -e "${YELLOW}2. Checking binaries...${NC}"
-if [ ! -f "target/release/transfer_server" ]; then
+if [ ! -f "target/debug/transfer_server" ]; then
     echo -e "${YELLOW}Building binaries...${NC}"
-    cargo build --release \
+    cargo build \
         --bin transfer_server \
         --bin matching_engine_server \
         --bin balance_test_client
@@ -46,7 +46,7 @@ if curl -s http://localhost:8083/health > /dev/null 2>&1; then
 else
     echo -e "${RED}❌ Transfer Server is NOT running!${NC}"
     echo "Start it in another terminal with:"
-    echo "  cargo run --bin transfer_server --release"
+    echo "  cargo run --bin transfer_server"
     exit 1
 fi
 echo ""
@@ -61,7 +61,7 @@ echo ""
 # Run test client
 echo -e "${YELLOW}5. Running Test Client...${NC}"
 echo "=========================================="
-cargo run --bin balance_test_client --release
+cargo run --bin balance_test_client
 echo "=========================================="
 echo ""
 

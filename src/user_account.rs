@@ -27,7 +27,7 @@ impl Balance {
         Ok(())
     }
 
-    pub fn lock(&mut self, amount: u64) -> Result<(), &'static str> {
+    pub fn frozen(&mut self, amount: u64) -> Result<(), &'static str> {
         if self.avail < amount {
             return Err("Insufficient funds");
         }
@@ -37,7 +37,7 @@ impl Balance {
         Ok(())
     }
 
-    pub fn unlock(&mut self, amount: u64) -> Result<(), &'static str> {
+    pub fn unfrozen(&mut self, amount: u64) -> Result<(), &'static str> {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
@@ -144,7 +144,7 @@ impl UserAccount {
         // Refund Quote (Frozen -> Available)
         if refund_quote > 0 {
             let quote_bal = self.get_balance_mut(quote_asset);
-            quote_bal.unlock(refund_quote)?;
+            quote_bal.unfrozen(refund_quote)?;
         }
         Ok(())
     }
@@ -168,7 +168,7 @@ impl UserAccount {
         // Refund Base (Frozen -> Available)
         if refund_base > 0 {
             let base_bal = self.get_balance_mut(base_asset);
-            base_bal.unlock(refund_base)?;
+            base_bal.unfrozen(refund_base)?;
         }
         Ok(())
     }
