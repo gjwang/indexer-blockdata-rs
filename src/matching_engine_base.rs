@@ -13,7 +13,6 @@ use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
 
-
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
     pub symbol_id: u32,
@@ -449,7 +448,13 @@ impl MatchingEngine {
             &mut self.order_books,
             &self.asset_map,
             &mut self.trade_id_gen,
-            symbol_id, order_id, side, order_type, price, quantity, user_id,
+            symbol_id,
+            order_id,
+            side,
+            order_type,
+            price,
+            quantity,
+            user_id,
         )?;
 
         // 3. Flush WALs
@@ -574,7 +579,9 @@ impl MatchingEngine {
             let (base_asset, quote_asset) = match self.asset_map.get(symbol_id) {
                 Some(&pair) => pair,
                 None => {
-                    results[i] = Err(OrderError::AssetMapNotFound { symbol_id: *symbol_id });
+                    results[i] = Err(OrderError::AssetMapNotFound {
+                        symbol_id: *symbol_id,
+                    });
                     continue;
                 }
             };
@@ -629,7 +636,13 @@ impl MatchingEngine {
                 &mut self.order_books,
                 &self.asset_map,
                 &mut self.trade_id_gen,
-                symbol_id, order_id, side, order_type, price, quantity, user_id,
+                symbol_id,
+                order_id,
+                side,
+                order_type,
+                price,
+                quantity,
+                user_id,
             ) {
                 Ok(oid) => results[i] = Ok(oid),
                 Err(e) => results[i] = Err(e),

@@ -38,20 +38,24 @@ impl SimulatedFundingAccount {
     }
 
     fn has_balance(&self, asset_id: u32, amount: u64) -> bool {
-        self.balances.get(&asset_id).map_or(false, |&bal| bal >= amount)
+        self.balances
+            .get(&asset_id)
+            .map_or(false, |&bal| bal >= amount)
     }
 
     fn reserve(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
-        let balance = self.balances.get_mut(&asset_id)
+        let balance = self
+            .balances
+            .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
-        
+
         if *balance < amount {
             return Err(format!(
                 "Insufficient funding balance: need {}, have {}",
                 amount, balance
             ));
         }
-        
+
         *balance -= amount;
         Ok(())
     }
@@ -89,13 +93,14 @@ impl BalanceProcessor {
 
     fn cleanup_old_requests(&mut self) {
         let current_time = self.current_time_ms();
-        
+
         while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
             if current_time - timestamp > TRACKING_WINDOW_MS {
                 self.recent_requests.remove(&request_id);
                 self.request_queue.pop_front();
-                println!("   🧹 Cleaned up old request: {} (age: {}s)", 
-                    request_id, 
+                println!(
+                    "   🧹 Cleaned up old request: {} (age: {}s)",
+                    request_id,
                     (current_time - timestamp) / 1000
                 );
             } else {
@@ -110,7 +115,7 @@ impl BalanceProcessor {
         // The gateway is UNTRUSTED - it could be compromised or have
         // clock skew. We validate timestamp and check duplicates here.
         // ============================================================
-        
+
         let current_time = self.current_time_ms();
         let request_id = req.request_id().to_string();
 
@@ -125,16 +130,16 @@ impl BalanceProcessor {
             } else {
                 0
             };
-            
+
             println!(
                 "❌ REJECTED: Request outside time window: {} (age: {}s, max: 60s)",
                 request_id, age_sec
             );
-            
+
             if current_time < req.timestamp() {
                 println!("   ⚠️  WARNING: Request timestamp is in the future! Possible clock skew or attack.");
             }
-            
+
             return Ok(());
         }
         println!("   ✓ Timestamp valid (within 60s window)");
@@ -146,7 +151,9 @@ impl BalanceProcessor {
                 "❌ REJECTED: Duplicate request detected: {} (first seen {}s ago)",
                 request_id, age_sec
             );
-            println!("   ⚠️  This request_id was already processed. Ignoring to prevent double-spend.");
+            println!(
+                "   ⚠️  This request_id was already processed. Ignoring to prevent double-spend."
+            );
             return Ok(());
         }
         println!("   ✓ Request ID is unique (not seen before)");
@@ -184,9 +191,11 @@ impl BalanceProcessor {
                     Ok(()) => {
                         // Success! Funds moved from funding -> trading
                         println!("✅ Transfer In completed: {}", request_id);
-                        println!("   Transferred {} from funding_account to user {}'s trading account", 
-                            amount, user_id);
-                        
+                        println!(
+                            "   Transferred {} from funding_account to user {}'s trading account",
+                            amount, user_id
+                        );
+
                         // Track this request
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
@@ -217,15 +226,20 @@ impl BalanceProcessor {
                 match me.transfer_out_from_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
                         // Success! Funds withdrawn from trading account
-                        println!("   ✓ Withdrawn {} from user {}'s trading account", amount, user_id);
-                        
+                        println!(
+                            "   ✓ Withdrawn {} from user {}'s trading account",
+                            amount, user_id
+                        );
+
                         // Phase 2: Add to funding account (simulated)
                         self.funding_account.release(asset_id, amount);
-                        
+
                         println!("✅ Transfer Out completed: {}", request_id);
-                        println!("   Transferred {} from user {}'s trading account to funding_account", 
-                            amount, user_id);
-                        
+                        println!(
+                            "   Transferred {} from user {}'s trading account to funding_account",
+                            amount, user_id
+                        );
+
                         // Track this request
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
@@ -253,9 +267,9 @@ async fn main() {
 
     // Initialize MatchingEngine (shared with matching_engine_server in production)
     let matching_engine = Arc::new(Mutex::new(
-        MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create MatchingEngine")
+        MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create MatchingEngine"),
     ));
-    
+
     let mut processor = BalanceProcessor::new(matching_engine.clone());
 
     // Kafka Consumer Setup
@@ -286,8 +300,14 @@ async fn main() {
     println!("  Consumer Group:    balance_processor_group");
     println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
-    println!("  Acceptance Window: {} seconds (requests older than this are rejected)", TIME_WINDOW_MS / 1000);
-    println!("  Tracking Window:   {} seconds (prevents replay attacks)", TRACKING_WINDOW_MS / 1000);
+    println!(
+        "  Acceptance Window: {} seconds (requests older than this are rejected)",
+        TIME_WINDOW_MS / 1000
+    );
+    println!(
+        "  Tracking Window:   {} seconds (prevents replay attacks)",
+        TRACKING_WINDOW_MS / 1000
+    );
     println!("--------------------------------------------------");
     println!("Architecture:");
     println!("  Funding Account:   Simulated (Database in production)");
@@ -303,21 +323,19 @@ async fn main() {
             Ok(m) => {
                 if let Some(payload) = m.payload_view::<str>() {
                     match payload {
-                        Ok(text) => {
-                            match serde_json::from_str::<BalanceRequest>(text) {
-                                Ok(req) => {
-                                    if let Err(e) = processor.process_balance_request(req) {
-                                        eprintln!("❌ Failed to process request: {}", e);
-                                    }
-                                    
-                                    total_processed += 1;
+                        Ok(text) => match serde_json::from_str::<BalanceRequest>(text) {
+                            Ok(req) => {
+                                if let Err(e) = processor.process_balance_request(req) {
+                                    eprintln!("❌ Failed to process request: {}", e);
                                 }
-                                Err(e) => {
-                                    eprintln!("Failed to parse balance request: {}", e);
-                                    eprintln!("Payload: {}", text);
-                                }
+
+                                total_processed += 1;
                             }
-                        }
+                            Err(e) => {
+                                eprintln!("Failed to parse balance request: {}", e);
+                                eprintln!("Payload: {}", text);
+                            }
+                        },
                         Err(e) => eprintln!("Error reading payload: {}", e),
                     }
                 }

@@ -44,7 +44,7 @@ pub type UserId = u64;
 pub struct Balance {
     pub available: u64,
     pub frozen: u64,
-    pub version: u64,//TODO: every time update balance, version++, and write to ledger wal, for replay&tracking each balance change
+    pub version: u64, //TODO: every time update balance, version++, and write to ledger wal, for replay&tracking each balance change
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 /// Simplified balance requests for internal account transfers
 /// All transfers are between funding_account and user trading accounts
 #[derive(Debug, Serialize, Deserialize, Clone)]
-
 #[serde(tag = "type", content = "data")]
 pub enum BalanceRequest {
     /// Transfer funds from funding_account to user's trading account (transfer in)
@@ -50,12 +49,12 @@ impl BalanceRequest {
     pub fn is_within_time_window(&self, current_time_ms: u64) -> bool {
         const TIME_WINDOW_MS: u64 = 60_000; // 60 seconds
         let request_time = self.timestamp();
-        
+
         if current_time_ms < request_time {
             // Request from future, reject
             return false;
         }
-        
+
         let age_ms = current_time_ms - request_time;
         age_ms <= TIME_WINDOW_MS
     }
@@ -92,7 +91,7 @@ mod tests {
     #[test]
     fn test_time_window_validation() {
         let current_time = 1000000;
-        
+
         // Valid: within 60 seconds
         let req = BalanceRequest::TransferIn {
             request_id: "test1".to_string(),
