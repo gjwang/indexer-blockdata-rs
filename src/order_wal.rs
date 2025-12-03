@@ -56,6 +56,7 @@ fn to_fbs_ulid(id: u64) -> UlidStruct {
 pub struct Wal {
     writer: BufWriter<File>,
     pub current_seq: u64,
+    progress_id: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Wal {
@@ -64,6 +65,7 @@ impl Wal {
         Ok(Self {
             writer: BufWriter::new(file),
             current_seq: 0,
+            progress_id: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
         })
     }
 
@@ -222,7 +224,21 @@ impl Wal {
         Ok(())
     }
     pub fn flush(&mut self) -> Result<(), std::io::Error> {
-        self.writer.flush()
+        self.writer.flush()?;
+        // Update progress_id after successful flush
+        self.progress_id.store(self.current_seq, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Get a clone of the progress_id Arc for reading from another thread
+    pub fn get_progress_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.progress_id.clone()
+    }
+
+    /// Increment sequence number (call before writing each entry)
+    pub fn next_seq(&mut self) -> u64 {
+        self.current_seq += 1;
+        self.current_seq
     }
 
     pub fn log_place_order_no_flush(
