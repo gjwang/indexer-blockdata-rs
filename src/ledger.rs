@@ -2002,4 +2002,63 @@ mod tests {
             "Version should increment on updates"
         );
     }
+
+    #[test]
+    fn test_shadow_ledger_delta_merge() {
+        let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
+
+        // 1. Setup initial state
+        setup_user_with_balance(&mut ledger, 1, 100, 1000); // User 1: 1000
+        setup_user_with_balance(&mut ledger, 2, 100, 2000); // User 2: 2000
+        ledger.flush().unwrap();
+
+        // 2. Create a batch of commands
+        let cmds = vec![
+            // User 1: Lock 500
+            LedgerCommand::Lock {
+                user_id: 1,
+                asset: 100,
+                amount: 500,
+            },
+            // User 2: Withdraw 1000
+            LedgerCommand::Withdraw {
+                user_id: 2,
+                asset: 100,
+                amount: 1000,
+            },
+            // User 3 (New): Deposit 500
+            LedgerCommand::Deposit {
+                user_id: 3,
+                asset: 100,
+                amount: 500,
+            },
+        ];
+
+        // 3. Commit batch (triggers ShadowLedger delta merge)
+        ledger.commit_batch(&cmds).unwrap();
+
+        // 4. Verify Final State
+
+        // User 1: 1000 - 500 (locked) = 500 avail, 500 frozen
+        let u1 = ledger.get_user_balances(1).unwrap();
+        let b1 = u1.iter().find(|(a, _)| *a == 100).unwrap().1;
+        assert_eq!(b1.avail, 500);
+        assert_eq!(b1.frozen, 500);
+
+        // User 2: 2000 - 1000 (withdrawn) = 1000 avail, 0 frozen
+        let u2 = ledger.get_user_balances(2).unwrap();
+        let b2 = u2.iter().find(|(a, _)| *a == 100).unwrap().1;
+        assert_eq!(b2.avail, 1000);
+        assert_eq!(b2.frozen, 0);
+
+        // User 3: 500 avail
+        let u3 = ledger.get_user_balances(3).unwrap();
+        let b3 = u3.iter().find(|(a, _)| *a == 100).unwrap().1;
+        assert_eq!(b3.avail, 500);
+        assert_eq!(b3.frozen, 0);
+
+        // 5. Verify WAL persistence
+        // We expect 2 initial deposits + 3 batch commands = 5 commands total
+        assert_eq!(ledger.last_seq, 5);
+    }
 }
