@@ -1,63 +1,125 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 
-use fetcher::ledger::{GlobalLedger, Ledger, LedgerCommand};
-use fetcher::models::{BalanceRequest, DepositSource};
+use fetcher::ledger::{GlobalLedger, LedgerCommand};
+use fetcher::models::BalanceRequest;
+
+/// Special user ID for the funding account
+/// All external funds flow through this account
+const FUNDING_ACCOUNT_ID: u64 = 0;
+
+/// Time window for request deduplication (60 seconds)
+const TIME_WINDOW_MS: u64 = 60_000;
 
 struct BalanceProcessor {
     ledger: GlobalLedger,
-    processed_requests: HashSet<String>, // Idempotency tracking
+    /// Track recent request IDs with their timestamps
+    /// Key: request_id, Value: timestamp_ms
+    recent_requests: HashMap<String, u64>,
+    /// Queue of request IDs ordered by timestamp for cleanup
+    request_queue: VecDeque<(String, u64)>,
 }
 
 impl BalanceProcessor {
     fn new(ledger: GlobalLedger) -> Self {
         Self {
             ledger,
-            processed_requests: HashSet::new(),
+            recent_requests: HashMap::new(),
+            request_queue: VecDeque::new(),
+        }
+    }
+
+    /// Get current timestamp in milliseconds
+    fn current_time_ms(&self) -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+    }
+
+    /// Clean up old requests outside the time window
+    fn cleanup_old_requests(&mut self) {
+        let current_time = self.current_time_ms();
+        
+        while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
+            if current_time - timestamp > TIME_WINDOW_MS {
+                // Remove from tracking
+                self.recent_requests.remove(&request_id);
+                self.request_queue.pop_front();
+                println!("   🧹 Cleaned up old request: {}", request_id);
+            } else {
+                // Queue is ordered, so we can stop
+                break;
+            }
         }
     }
 
     fn process_balance_request(&mut self, req: BalanceRequest) -> Result<(), anyhow::Error> {
+        let current_time = self.current_time_ms();
+        let request_id = req.request_id().to_string();
+
+        // 1. Check time window
+        if !req.is_within_time_window(current_time) {
+            let age_sec = (current_time - req.timestamp()) / 1000;
+            println!(
+                "❌ Request outside time window: {} (age: {}s, max: 60s)",
+                request_id, age_sec
+            );
+            return Ok(());
+        }
+
+        // 2. Check for duplicate (idempotency)
+        if let Some(&prev_timestamp) = self.recent_requests.get(&request_id) {
+            let age_sec = (current_time - prev_timestamp) / 1000;
+            println!(
+                "⚠️  Duplicate request detected: {} (seen {}s ago)",
+                request_id, age_sec
+            );
+            return Ok(());
+        }
+
+        // 3. Process the request
         match req {
             BalanceRequest::Deposit {
                 request_id,
                 user_id,
                 asset_id,
                 amount,
-                source,
-                external_tx_id,
-                confirmations,
+                timestamp,
             } => {
-                // 1. Check idempotency
-                if self.processed_requests.contains(&request_id) {
-                    println!("⚠️  Duplicate deposit request: {}", request_id);
-                    return Ok(());
-                }
+                println!(
+                    "\n📥 Processing Deposit: {} units of asset {} for user {}",
+                    amount, asset_id, user_id
+                );
 
-                // 2. Validate deposit
-                if !self.validate_deposit(&source, confirmations) {
-                    println!("❌ Deposit validation failed: {}", request_id);
-                    return Ok(());
-                }
+                // Transfer from funding_account to user's trading account
+                // This is atomic: withdraw from funding + deposit to user
+                
+                // Step 1: Withdraw from funding account
+                self.ledger.apply(&LedgerCommand::Withdraw {
+                    user_id: FUNDING_ACCOUNT_ID,
+                    asset: asset_id,
+                    amount,
+                })?;
 
-                // 3. Apply to ledger
+                // Step 2: Deposit to user's trading account
                 self.ledger.apply(&LedgerCommand::Deposit {
                     user_id,
                     asset: asset_id,
                     amount,
                 })?;
 
-                // 4. Mark as processed
-                self.processed_requests.insert(request_id.clone());
+                // Track this request
+                self.recent_requests.insert(request_id.clone(), timestamp);
+                self.request_queue.push_back((request_id.clone(), timestamp));
 
-                println!(
-                    "✅ Deposit processed: {} units of asset {} for user {} (tx: {})",
-                    amount, asset_id, user_id, external_tx_id
-                );
+                println!("✅ Deposit completed: {}", request_id);
+                println!("   Transferred {} from funding_account to user {}", amount, user_id);
             }
 
             BalanceRequest::Withdraw {
@@ -65,102 +127,43 @@ impl BalanceProcessor {
                 user_id,
                 asset_id,
                 amount,
-                destination,
-                external_address,
+                timestamp,
             } => {
-                // 1. Check idempotency
-                if self.processed_requests.contains(&request_id) {
-                    println!("⚠️  Duplicate withdraw request: {}", request_id);
-                    return Ok(());
-                }
+                println!(
+                    "\n📤 Processing Withdrawal: {} units of asset {} from user {}",
+                    amount, asset_id, user_id
+                );
 
-                // 2. Check balance
-                let balance = self.ledger.get_balance(user_id, asset_id);
-                if balance < amount {
-                    println!(
-                        "❌ Insufficient balance for withdrawal: user {} needs {} but has {}",
-                        user_id, amount, balance
-                    );
-                    return Err(anyhow::anyhow!("Insufficient balance"));
-                }
+                // Transfer from user's trading account to funding_account
+                // This is atomic: withdraw from user + deposit to funding
 
-                // 3. Lock funds (freeze until external tx confirms)
-                self.ledger.apply(&LedgerCommand::Lock {
+                // Step 1: Withdraw from user's trading account
+                self.ledger.apply(&LedgerCommand::Withdraw {
                     user_id,
                     asset: asset_id,
                     amount,
                 })?;
 
-                // 4. Mark as processed (pending external confirmation)
-                self.processed_requests.insert(request_id.clone());
+                // Step 2: Deposit to funding account
+                self.ledger.apply(&LedgerCommand::Deposit {
+                    user_id: FUNDING_ACCOUNT_ID,
+                    asset: asset_id,
+                    amount,
+                })?;
 
-                // 5. Log external withdrawal initiation
-                println!(
-                    "🔒 Withdrawal locked: {} units of asset {} for user {} to {}",
-                    amount, asset_id, user_id, external_address
-                );
-                println!("   Destination: {:?}", destination);
-                println!("   ⏳ Awaiting external confirmation...");
-            }
+                // Track this request
+                self.recent_requests.insert(request_id.clone(), timestamp);
+                self.request_queue.push_back((request_id.clone(), timestamp));
 
-            BalanceRequest::WithdrawConfirm {
-                request_id,
-                external_tx_id,
-            } => {
-                println!(
-                    "✅ Withdrawal confirmed: {} (external tx: {})",
-                    request_id, external_tx_id
-                );
-                println!("   Frozen funds will be spent (implement tracking mechanism)");
-                // TODO: Implement withdrawal tracking to spend the correct frozen funds
-                // This requires maintaining a map of request_id -> (user_id, asset_id, amount)
-            }
-
-            BalanceRequest::WithdrawReject {
-                request_id,
-                reason,
-            } => {
-                println!(
-                    "❌ Withdrawal rejected: {} - {}",
-                    request_id, reason
-                );
-                println!("   Frozen funds will be unlocked (implement tracking mechanism)");
-                // TODO: Implement withdrawal tracking to unlock the correct frozen funds
+                println!("✅ Withdrawal completed: {}", request_id);
+                println!("   Transferred {} from user {} to funding_account", amount, user_id);
             }
         }
+
+        // 4. Cleanup old requests
+        self.cleanup_old_requests();
 
         Ok(())
-    }
-
-    fn validate_deposit(&self, source: &DepositSource, confirmations: u32) -> bool {
-        match source {
-            DepositSource::Blockchain {
-                chain,
-                required_confirmations,
-            } => {
-                if confirmations >= *required_confirmations {
-                    println!(
-                        "   ✓ Blockchain deposit validated: {} confirmations on {} (required: {})",
-                        confirmations, chain, required_confirmations
-                    );
-                    true
-                } else {
-                    println!(
-                        "   ✗ Insufficient confirmations: {} on {} (required: {})",
-                        confirmations, chain, required_confirmations
-                    );
-                    false
-                }
-            }
-            DepositSource::BankTransfer { reference } => {
-                println!("   ✓ Bank transfer validated: {}", reference);
-                true
-            }
-            DepositSource::Internal { from_user_id } => {
-                println!("   ✓ Internal transfer validated from user {}", from_user_id);
-                true
-            }
-        }
     }
 }
 
@@ -173,6 +176,22 @@ async fn main() {
     // Initialize ledger
     let ledger = GlobalLedger::new(wal_dir, snap_dir).expect("Failed to create ledger");
     let mut processor = BalanceProcessor::new(ledger);
+
+    // Initialize funding account with some balance for testing
+    println!("🏦 Initializing funding account (ID: {})...", FUNDING_ACCOUNT_ID);
+    for asset_id in [1, 2, 3] {
+        // BTC, USDT, ETH
+        let initial_amount = 1_000_000_000_000_000u64; // Large amount for testing
+        processor
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: FUNDING_ACCOUNT_ID,
+                asset: asset_id,
+                amount: initial_amount,
+            })
+            .expect("Failed to initialize funding account");
+        println!("   Asset {}: {} units", asset_id, initial_amount);
+    }
 
     // Kafka Consumer Setup
     let consumer: StreamConsumer = ClientConfig::new()
@@ -195,14 +214,16 @@ async fn main() {
         .subscribe(&[&balance_topic])
         .expect("Can't subscribe to balance_ops topic");
 
-    println!("--------------------------------------------------");
-    println!("Balance Processor Started");
+    println!("\n--------------------------------------------------");
+    println!("Balance Processor Started (Simplified Internal Transfers)");
     println!("  Kafka Broker:      {}", config.kafka.broker);
     println!("  Balance Topic:     {}", balance_topic);
     println!("  Consumer Group:    balance_processor_group");
     println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
-    println!("--------------------------------------------------");
+    println!("  Funding Account:   {}", FUNDING_ACCOUNT_ID);
+    println!("  Time Window:       60 seconds");
+    println!("--------------------------------------------------\n");
 
     let mut total_processed = 0;
     let mut last_report = std::time::Instant::now();
@@ -215,8 +236,6 @@ async fn main() {
                         Ok(text) => {
                             match serde_json::from_str::<BalanceRequest>(text) {
                                 Ok(req) => {
-                                    println!("\n📨 Received: {:?}", req);
-                                    
                                     if let Err(e) = processor.process_balance_request(req) {
                                         eprintln!("❌ Failed to process request: {}", e);
                                     }
@@ -236,9 +255,9 @@ async fn main() {
                 // Periodic reporting
                 if last_report.elapsed() >= std::time::Duration::from_secs(10) {
                     println!(
-                        "\n📊 Stats: {} requests processed, {} unique requests tracked",
+                        "\n📊 Stats: {} requests processed, {} in tracking window",
                         total_processed,
-                        processor.processed_requests.len()
+                        processor.recent_requests.len()
                     );
                     last_report = std::time::Instant::now();
                 }

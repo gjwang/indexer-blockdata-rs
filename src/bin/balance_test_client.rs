@@ -6,19 +6,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new();
     let gateway_url = "http://localhost:8082";
 
-    println!("=== Deposit/Withdraw Test Client ===\n");
+    println!("=== Simplified Deposit/Withdraw Test Client ===\n");
+    println!("All transfers are internal: funding_account <-> trading_account");
+    println!("Time window: 60 seconds\n");
 
-    // Test 1: Deposit from blockchain
-    println!("📥 Test 1: Blockchain Deposit");
+    // Test 1: Deposit to user's trading account
+    println!("📥 Test 1: Deposit (funding_account → user 1001)");
     let deposit_payload = json!({
-        "request_id": "deposit_btc_001",
+        "request_id": "deposit_001",
         "user_id": 1001,
         "asset_id": 1,  // BTC
-        "amount": 100000000,  // 1 BTC (in satoshis)
-        "chain": "Bitcoin",
-        "external_tx_id": "0x1234567890abcdef",
-        "confirmations": 6,
-        "required_confirmations": 6
+        "amount": 100000000  // 1 BTC (in satoshis)
     });
 
     let response = client
@@ -30,20 +28,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Response: {}", response.status());
     println!("Body: {}\n", response.text().await?);
 
-    // Wait a bit for processing
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 2: Another deposit with insufficient confirmations
-    println!("📥 Test 2: Blockchain Deposit (Insufficient Confirmations)");
+    // Test 2: Another deposit to different user
+    println!("📥 Test 2: Deposit (funding_account → user 1002)");
     let deposit_payload2 = json!({
-        "request_id": "deposit_eth_002",
+        "request_id": "deposit_002",
         "user_id": 1002,
-        "asset_id": 3,  // ETH
-        "amount": 5000000000000000000u64,  // 5 ETH (in wei)
-        "chain": "Ethereum",
-        "external_tx_id": "0xabcdef1234567890",
-        "confirmations": 5,
-        "required_confirmations": 12
+        "asset_id": 2,  // USDT
+        "amount": 10000000000u64  // 10,000 USDT
     });
 
     let response = client
@@ -57,15 +50,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
-    // Test 3: Withdrawal
-    println!("📤 Test 3: Blockchain Withdrawal");
+    // Test 3: Withdrawal from user's trading account
+    println!("📤 Test 3: Withdrawal (user 1001 → funding_account)");
     let withdraw_payload = json!({
-        "request_id": "withdraw_btc_003",
+        "request_id": "withdraw_001",
         "user_id": 1001,
         "asset_id": 1,  // BTC
-        "amount": 50000000,  // 0.5 BTC
-        "chain": "Bitcoin",
-        "address": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh"
+        "amount": 50000000  // 0.5 BTC
     });
 
     let response = client
@@ -90,8 +81,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Response: {}", response.status());
     println!("Body: {}\n", response.text().await?);
 
-    // Test 5: Health check
-    println!("🏥 Test 5: Health Check");
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Test 5: Multiple rapid deposits (stress test)
+    println!("📥 Test 5: Rapid Deposits (Stress Test)");
+    for i in 0..5 {
+        let payload = json!({
+            "request_id": format!("rapid_deposit_{}", i),
+            "user_id": 1003,
+            "asset_id": 3,  // ETH
+            "amount": 1000000000000000000u64  // 1 ETH
+        });
+
+        let response = client
+            .post(format!("{}/api/v1/deposit", gateway_url))
+            .json(&payload)
+            .send()
+            .await?;
+
+        println!("  Deposit {}: {}", i, response.status());
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    println!();
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+
+    // Test 6: Health check
+    println!("🏥 Test 6: Health Check");
     let response = client
         .get(format!("{}/health", gateway_url))
         .send()
@@ -101,6 +117,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Body: {}\n", response.text().await?);
 
     println!("=== All tests completed ===");
+    println!("\nNote: Check balance_processor logs to see:");
+    println!("  - Transfers between funding_account and trading accounts");
+    println!("  - Duplicate detection");
+    println!("  - Automatic cleanup of old requests");
 
     Ok(())
 }
