@@ -105,16 +105,14 @@ struct RedpandaTradeProducer {
 }
 
 impl RedpandaTradeProducer {
-    fn collect_trades(cmd: &LedgerCommand, buffer: &mut HashMap<String, Vec<fetcher::models::Trade>>) {
+    fn collect_trades(cmd: &LedgerCommand, buffer: &mut Vec<fetcher::models::Trade>) {
         match cmd {
             LedgerCommand::MatchExec(data) => {
-                let key = format!("{}_{}", data.base_asset, data.quote_asset);
-                buffer.entry(key).or_default().push(Self::to_trade(data));
+                buffer.push(Self::to_trade(data));
             }
             LedgerCommand::MatchExecBatch(batch) => {
                 for data in batch {
-                    let key = format!("{}_{}", data.base_asset, data.quote_asset);
-                    buffer.entry(key).or_default().push(Self::to_trade(data));
+                    buffer.push(Self::to_trade(data));
                 }
             }
             LedgerCommand::Batch(cmds) => {
@@ -148,13 +146,13 @@ impl LedgerListener for RedpandaTradeProducer {
     }
 
     fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
-        let mut trades_by_symbol: HashMap<String, Vec<fetcher::models::Trade>> = HashMap::new();
+        let mut all_trades = Vec::new();
 
         for cmd in cmds {
-            Self::collect_trades(cmd, &mut trades_by_symbol);
+            Self::collect_trades(cmd, &mut all_trades);
         }
 
-        if trades_by_symbol.is_empty() {
+        if all_trades.is_empty() {
             return Ok(());
         }
 
@@ -162,21 +160,20 @@ impl LedgerListener for RedpandaTradeProducer {
         let topic = self.topic.clone();
 
         tokio::spawn(async move {
-            for (key, trades) in trades_by_symbol {
-                if let Ok(payload) = serde_json::to_string(&trades) {
-                    match producer
-                        .send(
-                            FutureRecord::to(&topic).payload(&payload).key(&key),
-                            std::time::Duration::from_secs(0),
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            // println!("Trades batch sent successfully to topic '{}' key '{}'", topic, key)
-                        }
-                        Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}' with key '{}': {}", topic, key, e),
-                    };
-                }
+            if let Ok(payload) = serde_json::to_string(&all_trades) {
+                let key = "batch";
+                match producer
+                    .send(
+                        FutureRecord::to(&topic).payload(&payload).key(key),
+                        std::time::Duration::from_secs(0),
+                    )
+                    .await
+                {
+                    Ok(_) => {
+                        // println!("Trades batch sent successfully to topic '{}'", topic)
+                    }
+                    Err((e, _)) => eprintln!("Failed to send trades batch to topic '{}': {}", topic, e),
+                };
             }
         });
         Ok(())
