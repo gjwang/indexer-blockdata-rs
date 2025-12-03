@@ -640,7 +640,8 @@ impl MatchingEngine {
         // 4. Commit Batch (Persist + Memory)
         let t_commit_start = std::time::Instant::now();
         if !shadow.pending_commands.is_empty() {
-            if let Err(e) = self.ledger.commit_batch(&shadow.pending_commands) {
+            let (delta, cmds) = shadow.into_delta();
+            if let Err(e) = self.ledger.commit_delta(&cmds, delta) {
                 eprintln!("CRITICAL: Failed to commit ledger batch: {}", e);
                 panic!("CRITICAL: Ledger commit failed. System inconsistent.");
             }
