@@ -32,7 +32,10 @@ impl Balance {
             return Err("Insufficient funds");
         }
         self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
-        self.frozen = self.frozen.checked_add(amount).ok_or("Frozen balance overflow")?;
+        self.frozen = self
+            .frozen
+            .checked_add(amount)
+            .ok_or("Frozen balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -41,7 +44,10 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
+        self.frozen = self
+            .frozen
+            .checked_sub(amount)
+            .ok_or("Frozen balance underflow")?;
         self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
@@ -51,7 +57,10 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
+        self.frozen = self
+            .frozen
+            .checked_sub(amount)
+            .ok_or("Frozen balance underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -100,8 +109,10 @@ impl UserAccount {
         spend_quote: u64,
         refund_quote: u64,
     ) -> Result<(), &'static str> {
-        let quote_bal = self.get_balance(quote_asset).ok_or("Quote asset not found")?;
-        
+        let quote_bal = self
+            .get_balance(quote_asset)
+            .ok_or("Quote asset not found")?;
+
         // Check if we have enough frozen funds for both the spend and the refund
         // Usually these come from the same frozen bucket.
         let required = spend_quote + refund_quote;

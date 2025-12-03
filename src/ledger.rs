@@ -31,7 +31,6 @@ const WAL_RETENTION: usize = 3;
 // Snapshot Configuration
 const SNAPSHOT_RETENTION: usize = 3;
 
-
 // Snapshot on disk
 #[derive(Serialize, Deserialize)]
 pub struct Snapshot {
@@ -355,7 +354,7 @@ impl RollingWal {
     pub fn replay_iter(
         dir: &Path,
         min_seq: u64,
-    ) -> Result<impl Iterator<Item=Result<(u64, LedgerCommand)>>> {
+    ) -> Result<impl Iterator<Item = Result<(u64, LedgerCommand)>>> {
         let wals = Self::list_wals(dir)?;
         let start_idx = wals
             .partition_point(|(seq, _)| *seq <= min_seq)
@@ -525,14 +524,14 @@ impl<'a> Ledger for ShadowLedger<'a> {
                     .delta_accounts
                     .entry(*user_id)
                     .or_insert_with(|| self.real_ledger.get_account_copy(*user_id));
-                
-                // We use a static helper to apply to a single account map, 
+
+                // We use a static helper to apply to a single account map,
                 // but apply_transaction takes the whole map.
                 // Let's reuse apply_transaction but pass a temporary map containing just this user?
                 // Or better: extract apply logic to work on UserAccount.
                 // For now, let's just use apply_transaction on our delta map.
                 // But apply_transaction expects the map to have the user. We ensured that.
-                
+
                 // Wait, apply_transaction takes &mut FxHashMap<UserId, UserAccount>.
                 // We can pass &mut self.delta_accounts.
                 // But we need to ensure ALL users involved in the command are in delta_accounts.
@@ -541,14 +540,22 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
             }
             LedgerCommand::MatchExec(data) => {
-                self.delta_accounts.entry(data.buyer_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
-                self.delta_accounts.entry(data.seller_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
+                self.delta_accounts
+                    .entry(data.buyer_user_id)
+                    .or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
+                self.delta_accounts
+                    .entry(data.seller_user_id)
+                    .or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
                 GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
             }
             LedgerCommand::MatchExecBatch(batch) => {
                 for data in batch {
-                    self.delta_accounts.entry(data.buyer_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
-                    self.delta_accounts.entry(data.seller_user_id).or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
+                    self.delta_accounts
+                        .entry(data.buyer_user_id)
+                        .or_insert_with(|| self.real_ledger.get_account_copy(data.buyer_user_id));
+                    self.delta_accounts
+                        .entry(data.seller_user_id)
+                        .or_insert_with(|| self.real_ledger.get_account_copy(data.seller_user_id));
                 }
                 GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
             }
@@ -763,7 +770,10 @@ impl GlobalLedger {
     }
 
     pub fn get_account_copy(&self, user_id: UserId) -> UserAccount {
-        self.accounts.get(&user_id).cloned().unwrap_or_else(|| UserAccount::new(user_id))
+        self.accounts
+            .get(&user_id)
+            .cloned()
+            .unwrap_or_else(|| UserAccount::new(user_id))
     }
 
     pub fn set_listener(&mut self, listener: Box<dyn LedgerListener>) {
@@ -776,7 +786,8 @@ impl GlobalLedger {
 
 impl Ledger for GlobalLedger {
     fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64 {
-        self.accounts.get(&user_id)
+        self.accounts
+            .get(&user_id)
             .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
             .map(|(_, b)| b.avail)
             .unwrap_or(0)
@@ -788,8 +799,11 @@ impl Ledger for GlobalLedger {
 }
 
 impl GlobalLedger {
-
-    pub fn commit_delta(&mut self, cmds: &[LedgerCommand], delta: FxHashMap<UserId, UserAccount>) -> Result<()> {
+    pub fn commit_delta(
+        &mut self,
+        cmds: &[LedgerCommand],
+        delta: FxHashMap<UserId, UserAccount>,
+    ) -> Result<()> {
         // Phase 2: Write to WAL (all commands validated, so this should succeed)
         let start_persist = std::time::Instant::now();
         for cmd in cmds {
@@ -870,12 +884,7 @@ impl GlobalLedger {
                     .or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.deposit(*amount).map_err(|e| {
-                    anyhow::anyhow!(
-                        "Deposit failed for User {} Asset {}: {}",
-                        user_id,
-                        asset,
-                        e
-                    )
+                    anyhow::anyhow!("Deposit failed for User {} Asset {}: {}", user_id, asset, e)
                 })?;
             }
             LedgerCommand::Withdraw {
@@ -944,13 +953,16 @@ impl GlobalLedger {
                 let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset);
 
                 if let Some(idx) = spend_idx {
-                    user.assets[idx].1.spend_frozen(*spend_amount).map_err(|_| {
-                        anyhow::anyhow!(
-                            "Insufficient frozen funds for settle: User {} Asset {}",
-                            user_id,
-                            spend_asset
-                        )
-                    })?;
+                    user.assets[idx]
+                        .1
+                        .spend_frozen(*spend_amount)
+                        .map_err(|_| {
+                            anyhow::anyhow!(
+                                "Insufficient frozen funds for settle: User {} Asset {}",
+                                user_id,
+                                spend_asset
+                            )
+                        })?;
                 } else {
                     anyhow::bail!(
                         "Asset not found for spend: User {} Asset {}",
@@ -1449,9 +1461,7 @@ mod tests {
             match_seq: 1,
         };
 
-        ledger
-            .apply(&LedgerCommand::MatchExec(match_data))
-            .unwrap();
+        ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
 
         // Verify buyer got base asset
         assert_eq!(ledger.get_balance(1, 100), 5);
@@ -1864,10 +1874,7 @@ mod tests {
 
         // Verify all balances
         for asset_id in 100..110 {
-            assert_eq!(
-                ledger.get_balance(1, asset_id),
-                asset_id as u64 * 1000
-            );
+            assert_eq!(ledger.get_balance(1, asset_id), asset_id as u64 * 1000);
         }
     }
 
@@ -1913,9 +1920,7 @@ mod tests {
             match_seq: 1,
         };
 
-        ledger
-            .apply(&LedgerCommand::MatchExec(match_data))
-            .unwrap();
+        ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
 
         // Verify buyer state
         let buyer_balances = ledger.get_user_balances(1).unwrap();
@@ -2083,17 +2088,21 @@ mod tests {
         ledger.flush().unwrap();
 
         // 2. Pre-lock funds (simulating order placement)
-        ledger.apply(&LedgerCommand::Lock {
-            user_id: 1,
-            asset: 200,
-            amount: 1000,
-        }).unwrap();
+        ledger
+            .apply(&LedgerCommand::Lock {
+                user_id: 1,
+                asset: 200,
+                amount: 1000,
+            })
+            .unwrap();
 
-        ledger.apply(&LedgerCommand::Lock {
-            user_id: 2,
-            asset: 100,
-            amount: 10,
-        }).unwrap();
+        ledger
+            .apply(&LedgerCommand::Lock {
+                user_id: 2,
+                asset: 100,
+                amount: 10,
+            })
+            .unwrap();
 
         // 3. Create MatchExec command (Trade: 5 BTC @ 100 USDT = 500 USDT)
         let match_data = MatchExecData {
@@ -2124,7 +2133,7 @@ mod tests {
         let u1 = ledger.get_user_balances(1).unwrap();
         let b1_usdt = u1.iter().find(|(a, _)| *a == 200).unwrap().1;
         let b1_btc = u1.iter().find(|(a, _)| *a == 100).unwrap().1;
-        
+
         assert_eq!(b1_usdt.frozen, 500, "Buyer USDT frozen incorrect");
         assert_eq!(b1_usdt.avail, 0, "Buyer USDT avail incorrect"); // All 1000 was locked
         assert_eq!(b1_btc.avail, 5, "Buyer BTC avail incorrect");

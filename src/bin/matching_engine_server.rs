@@ -171,8 +171,6 @@ impl LedgerListener for RedpandaTradeProducer {
     }
 
     fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
-
-
         // Clone commands to move them to the background task
         let cmds = cmds.to_vec();
         let producer = self.producer.clone();

@@ -1,9 +1,4 @@
-use axum::{
-    extract::Extension,
-    http::StatusCode,
-    routing::post,
-    Json, Router,
-};
+use axum::{extract::Extension, http::StatusCode, routing::post, Json, Router};
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 use serde::{Deserialize, Serialize};
@@ -23,26 +18,55 @@ impl SimulatedFundingAccount {
     fn new() -> Self {
         let mut balances = HashMap::new();
         // Initialize with large available balances
-        balances.insert(1, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // BTC
-        balances.insert(2, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // USDT
-        balances.insert(3, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // ETH
+        balances.insert(
+            1,
+            Balance {
+                avail: 1_000_000_000_000_000,
+                frozen: 0,
+                version: 0,
+            },
+        ); // BTC
+        balances.insert(
+            2,
+            Balance {
+                avail: 1_000_000_000_000_000,
+                frozen: 0,
+                version: 0,
+            },
+        ); // USDT
+        balances.insert(
+            3,
+            Balance {
+                avail: 1_000_000_000_000_000,
+                frozen: 0,
+                version: 0,
+            },
+        ); // ETH
         Self { balances }
     }
 
     /// Lock funds for Transfer In (Funding -> Trading)
     fn lock(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
-        let balance = self.balances.get_mut(&asset_id)
+        let balance = self
+            .balances
+            .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
-        
-        balance.frozen(amount).map_err(|e| format!("Lock failed: {}", e))
+
+        balance
+            .frozen(amount)
+            .map_err(|e| format!("Lock failed: {}", e))
     }
 
     /// Finalize Transfer In: Remove from locked (funds moved to Trading Engine)
     fn spend(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
-        let balance = self.balances.get_mut(&asset_id)
+        let balance = self
+            .balances
+            .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
-            
-        balance.spend_frozen(amount).map_err(|e| format!("Spend failed: {}", e))
+
+        balance
+            .spend_frozen(amount)
+            .map_err(|e| format!("Spend failed: {}", e))
     }
 
     /// Finalize Transfer Out: Add to available (funds received from Trading Engine)
@@ -116,15 +140,15 @@ async fn transfer_in(
         timestamp: current_time_ms(),
     };
 
-    let json_payload = serde_json::to_string(&balance_req)
-        .map_err(|e| {
-            eprintln!("Failed to serialize transfer_in request: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let json_payload = serde_json::to_string(&balance_req).map_err(|e| {
+        eprintln!("Failed to serialize transfer_in request: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let key = payload.user_id.to_string();
 
-    state.producer
+    state
+        .producer
         .send(
             FutureRecord::to(&state.topic)
                 .payload(&json_payload)
@@ -138,7 +162,10 @@ async fn transfer_in(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!("✅ Transfer In request published to Kafka: {}", payload.request_id);
+    println!(
+        "✅ Transfer In request published to Kafka: {}",
+        payload.request_id
+    );
 
     // 3. Wait for Settlement (Simulated)
     println!("⏳ Waiting 5s for settlement...");
@@ -148,10 +175,10 @@ async fn transfer_in(
     {
         let mut funding = state.funding_account.lock().unwrap();
         if let Err(e) = funding.spend(payload.asset_id, payload.amount) {
-             eprintln!("❌ Critical: Failed to spend locked funds: {}", e);
-             // In production this would be a critical alert
+            eprintln!("❌ Critical: Failed to spend locked funds: {}", e);
+            // In production this would be a critical alert
         } else {
-             println!("💰 Locked funds spent. Transfer In complete.");
+            println!("💰 Locked funds spent. Transfer In complete.");
         }
     }
 
@@ -180,15 +207,15 @@ async fn transfer_out(
         timestamp: current_time_ms(),
     };
 
-    let json_payload = serde_json::to_string(&balance_req)
-        .map_err(|e| {
-            eprintln!("Failed to serialize transfer_out request: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
+    let json_payload = serde_json::to_string(&balance_req).map_err(|e| {
+        eprintln!("Failed to serialize transfer_out request: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
     let key = payload.user_id.to_string();
 
-    state.producer
+    state
+        .producer
         .send(
             FutureRecord::to(&state.topic)
                 .payload(&json_payload)
@@ -201,7 +228,10 @@ async fn transfer_out(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);
+    println!(
+        "✅ Transfer Out request published to Kafka: {}",
+        payload.request_id
+    );
 
     // 2. Wait for Settlement (Simulated)
     println!("⏳ Waiting 5s for settlement...");

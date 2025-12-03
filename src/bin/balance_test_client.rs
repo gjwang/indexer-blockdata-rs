@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "asset_id": 1,
         "amount": 100000000
     });
-    
+
     // Send first time
     let response = client
         .post(format!("{}/api/v1/transfer_in", gateway_url))
@@ -94,13 +94,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .send()
         .await?;
     println!("First request: {}", response.status());
-    
+
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    
+
     // Send duplicate
     let response = client
         .post(format!("{}/api/v1/transfer_in", gateway_url))
-        .json(&dup_payload)  // Same request_id
+        .json(&dup_payload) // Same request_id
         .send()
         .await?;
 
@@ -126,7 +126,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .send()
             .await?;
 
-        println!("  Transfer In {} ({}): {}", i, request_id, response.status());
+        println!(
+            "  Transfer In {} ({}): {}",
+            i,
+            request_id,
+            response.status()
+        );
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
     println!();
@@ -135,10 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Test 6: Health check
     println!("🏥 Test 6: Health Check");
-    let response = client
-        .get(format!("{}/health", gateway_url))
-        .send()
-        .await?;
+    let response = client.get(format!("{}/health", gateway_url)).send().await?;
 
     println!("Response: {}", response.status());
     println!("Body: {}\n", response.text().await?);

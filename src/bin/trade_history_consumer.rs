@@ -34,7 +34,8 @@ async fn main() {
             &config.kafka.socket_keepalive_enable,
         )
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
-        .create().unwrap();
+        .create()
+        .unwrap();
 
     consumer.subscribe(&[&topic]).expect("Can't subscribe");
     println!("Listening for trades...");

@@ -158,7 +158,13 @@ fn validate_cid(id: &str) -> Result<(), ValidationError> {
     // Check length
     if id.len() < 16 || id.len() > 32 {
         let mut err = ValidationError::new("cid_length");
-        err.message = Some(format!("Client order ID must be between 16 and 32 characters (got {})", id.len()).into());
+        err.message = Some(
+            format!(
+                "Client order ID must be between 16 and 32 characters (got {})",
+                id.len()
+            )
+            .into(),
+        );
         return Err(err);
     }
     // Check alphanumeric and underscore

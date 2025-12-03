@@ -296,7 +296,10 @@ impl Wal {
         Ok(())
     }
 
-    pub fn log_trade_batch_no_flush(&mut self, trades: &[TradeModel]) -> Result<(), std::io::Error> {
+    pub fn log_trade_batch_no_flush(
+        &mut self,
+        trades: &[TradeModel],
+    ) -> Result<(), std::io::Error> {
         let mut builder = FlatBufferBuilder::new();
 
         let mut trade_offsets = Vec::with_capacity(trades.len());
