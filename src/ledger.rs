@@ -568,11 +568,9 @@ impl<'a> Ledger for ShadowLedger<'a> {
 
 pub trait LedgerListener: Send + Sync {
     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<()>;
+
     fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<()> {
-        for cmd in cmds {
-            self.on_command(cmd)?;
-        }
-        Ok(())
+        self.on_command(&LedgerCommand::Batch(cmds.to_vec()))
     }
 }
 
