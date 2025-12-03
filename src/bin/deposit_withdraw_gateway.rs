@@ -52,15 +52,33 @@ async fn deposit(
     Extension(state): Extension<AppState>,
     Json(payload): Json<DepositRequestPayload>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
+    // ============================================================
+    // IMPORTANT: This gateway is UNTRUSTED
+    // - Could be compromised
+    // - Could have clock skew
+    // - Could send malicious timestamps
+    // 
+    // ALL VALIDATION happens in balance_processor:
+    // - Timestamp window validation
+    // - Duplicate request_id detection
+    // - Balance checks
+    // 
+    // This gateway only:
+    // 1. Accepts HTTP requests
+    // 2. Adds current timestamp
+    // 3. Publishes to Kafka
+    // ============================================================
+    
     println!("📥 Deposit request received: {:?}", payload);
 
     // Create BalanceRequest with current timestamp
+    // Note: balance_processor will validate this timestamp
     let balance_req = BalanceRequest::Deposit {
         request_id: payload.request_id.clone(),
         user_id: payload.user_id,
         asset_id: payload.asset_id,
         amount: payload.amount,
-        timestamp: current_time_ms(),
+        timestamp: current_time_ms(), // Gateway's clock (untrusted)
     };
 
     // Serialize and publish to Kafka
@@ -102,6 +120,11 @@ async fn withdraw(
     Extension(state): Extension<AppState>,
     Json(payload): Json<WithdrawRequestPayload>,
 ) -> Result<Json<ApiResponse>, StatusCode> {
+    // ============================================================
+    // IMPORTANT: This gateway is UNTRUSTED
+    // ALL VALIDATION happens in balance_processor
+    // ============================================================
+    
     println!("📤 Withdraw request received: {:?}", payload);
 
     // TODO: Add authentication/authorization checks here
@@ -109,12 +132,13 @@ async fn withdraw(
     // TODO: Check withdrawal limits
 
     // Create BalanceRequest with current timestamp
+    // Note: balance_processor will validate this timestamp
     let balance_req = BalanceRequest::Withdraw {
         request_id: payload.request_id.clone(),
         user_id: payload.user_id,
         asset_id: payload.asset_id,
         amount: payload.amount,
-        timestamp: current_time_ms(),
+        timestamp: current_time_ms(), // Gateway's clock (untrusted)
     };
 
     // Serialize and publish to Kafka
