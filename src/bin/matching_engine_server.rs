@@ -341,58 +341,53 @@ async fn main() {
         let t_prep_start = std::time::Instant::now();
         for m in batch {
             let topic = m.topic();
-            if let Some(payload) = m.payload_view::<str>() {
-                match payload {
-                    Ok(text) => {
-                        if topic == config.kafka.topics.orders {
-                            // Deserialize Order
-                            if let Ok(req) = serde_json::from_str::<OrderRequest>(text) {
-                                match req {
-                                    OrderRequest::PlaceOrder {
-                                        order_id,
-                                        user_id,
-                                        symbol_id,
-                                        side,
-                                        price,
-                                        quantity,
-                                        order_type,
-                                    } => {
-                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                            place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
-                                        } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol_id);
-                                        }
-                                    }
-                                    OrderRequest::CancelOrder {
-                                        order_id,
-                                        symbol_id,
-                                        ..
-                                    } => {
-                                        if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
-                                            match engine.cancel_order(symbol_id, order_id) {
-                                                Ok(_) => println!("Order {} Cancelled", order_id),
-                                                Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
-                                            }
-                                        } else {
-                                            eprintln!("Unknown symbol ID: {}", symbol_id);
-                                        }
-                                    }
+            if let Some(payload) = m.payload() {
+                if topic == config.kafka.topics.orders {
+                    // Deserialize Order
+                    if let Ok(req) = serde_json::from_slice::<OrderRequest>(payload) {
+                        match req {
+                            OrderRequest::PlaceOrder {
+                                order_id,
+                                user_id,
+                                symbol_id,
+                                side,
+                                price,
+                                quantity,
+                                order_type,
+                            } => {
+                                if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                    place_orders.push((symbol_id, order_id, side, order_type, price, quantity, user_id));
+                                } else {
+                                    eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
-                            } else {
-                                eprintln!("Failed to parse Order JSON: {}", text);
                             }
-                        } else if topic == balance_topic {
-                            // Deserialize Balance Request
-                            if let Ok(req) = serde_json::from_str::<BalanceRequest>(text) {
-                                if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
-                                    eprintln!("Balance processing error: {}", e);
+                            OrderRequest::CancelOrder {
+                                order_id,
+                                symbol_id,
+                                ..
+                            } => {
+                                if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
+                                    match engine.cancel_order(symbol_id, order_id) {
+                                        Ok(_) => println!("Order {} Cancelled", order_id),
+                                        Err(e) => eprintln!("Cancel {} Failed: {}", order_id, e),
+                                    }
+                                } else {
+                                    eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
-                            } else {
-                                eprintln!("Failed to parse Balance JSON: {}", text);
                             }
                         }
+                    } else {
+                        eprintln!("Failed to parse Order JSON");
                     }
-                    Err(e) => eprintln!("Error reading payload: {}", e),
+                } else if topic == balance_topic {
+                    // Deserialize Balance Request
+                    if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
+                        if let Err(e) = balance_processor.process_balance_request(&mut engine, req) {
+                            eprintln!("Balance processing error: {}", e);
+                        }
+                    } else {
+                        eprintln!("Failed to parse Balance JSON");
+                    }
                 }
             }
         }
