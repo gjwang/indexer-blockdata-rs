@@ -13,35 +13,6 @@ use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
 
-// pub struct TradeWalListener {
-//     pub wal: Wal,
-// }
-
-// impl LedgerListener for TradeWalListener {
-//     fn on_command(&mut self, cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
-//         if let LedgerCommand::MatchExecBatch(batch) = cmd {
-//             // Convert MatchExecData back to TradeModel for logging
-//             // Note: TradeModel has buy_order_id, sell_order_id, etc.
-//             // MatchExecData has the same fields.
-//             // We need to map them.
-//             let trades: Vec<crate::models::Trade> = batch
-//                 .iter()
-//                 .map(|data| crate::models::Trade {
-//                     trade_id: data.trade_id,
-//                     buy_order_id: data.buy_order_id,
-//                     sell_order_id: data.sell_order_id,
-//                     buy_user_id: data.buyer_user_id,
-//                     sell_user_id: data.seller_user_id,
-//                     price: data.price,
-//                     quantity: data.quantity,
-//                 })
-//                 .collect();
-
-//             self.wal.log_trade_batch(&trades)?;
-//         }
-//         Ok(())
-//     }
-// }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
@@ -349,11 +320,6 @@ impl MatchingEngine {
         // 2. Initialize Ledger from State
         let mut ledger =
             GlobalLedger::new(&ledger_wal_path, &ledger_snap_path).map_err(|e| e.to_string())?;
-
-        // Initialize Trade WAL Listener
-        // let trade_wal = Wal::new(&trade_wal_path).map_err(|e| e.to_string())?;
-        // let listener = Box::new(TradeWalListener { wal: trade_wal });
-        // ledger.set_listener(listener);
 
         // 3. Replay WAL
         let order_wal = Wal::new(&order_wal_path).map_err(|e| e.to_string())?;
