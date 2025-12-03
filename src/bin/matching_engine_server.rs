@@ -160,7 +160,7 @@ impl LedgerListener for RedpandaTradeProducer {
         let topic = self.topic.clone();
 
         tokio::spawn(async move {
-            if let Ok(payload) = serde_json::to_string(&all_trades) {
+            if let Ok(payload) = serde_json::to_vec(&all_trades) {
                 let key = "batch";
                 match producer
                     .send(
