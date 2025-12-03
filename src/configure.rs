@@ -6,6 +6,7 @@ use serde::Deserialize;
 pub struct KafkaTopics {
     pub orders: String,
     pub trades: String,
+    pub balance_ops: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

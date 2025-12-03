@@ -9,6 +9,7 @@ kafka:
   topics:
     orders: "latency-test-topic"
     trades: "trade.history"
+    balance_ops: "balance.operations"
   group_id: "centrifugo-pusher"
   linger_ms: "3"
   fetch_wait_max_ms: "3"
