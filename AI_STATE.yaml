@@ -8,13 +8,13 @@ last_updated: "2025-12-04"
 architecture_doc: "PURE_MEMORY_SMR_ARCH.md"
 plan_doc: "IMPLEMENTATION_PLAN.md"
 
-current_phase: "Phase 3: The Input Pipeline"
+current_phase: "Phase 3: Settlement Service"
  
 active_task:
   id: "3.1"
-  name: "Implement Sequencer (Kafka Producer Wrapper)"
+  name: "Skeleton Service"
   status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Create Sequencer struct to wrap Kafka producer"
+  next_action: "Create src/bin/settlement_service.rs"
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
