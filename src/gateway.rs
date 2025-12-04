@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::Query;
 use axum::{
@@ -9,13 +11,15 @@ use axum::{
     routing::post,
     Router,
 };
+use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{
-    u64_to_decimal_string, ApiResponse, ClientOrder, OrderStatus, UserAccountManager,
+    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
+    UserAccountManager,
 };
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
@@ -28,13 +32,85 @@ pub trait OrderPublisher: Send + Sync {
         payload: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
+
+pub struct SimulatedFundingAccount {
+    balances: HashMap<u32, Balance>,
+}
+
+impl SimulatedFundingAccount {
+    pub fn new() -> Self {
+        let mut balances = HashMap::new();
+        // Initialize with large available balances
+        balances.insert(1, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // BTC
+        balances.insert(2, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // USDT
+        balances.insert(3, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // ETH
+        Self { balances }
+    }
+
+    /// Lock funds for Transfer In (Funding -> Trading)
+    fn lock(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
+        let balance = self
+            .balances
+            .get_mut(&asset_id)
+            .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
+
+        balance.frozen(amount).map_err(|e| format!("Lock failed: {}", e))
+    }
+
+    /// Finalize Transfer In: Remove from locked (funds moved to Trading Engine)
+    fn spend(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
+        let balance = self
+            .balances
+            .get_mut(&asset_id)
+            .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
+
+        balance.spend_frozen(amount).map_err(|e| format!("Spend failed: {}", e))
+    }
+
+    /// Finalize Transfer Out: Add to available (funds received from Trading Engine)
+    fn credit(&mut self, asset_id: u32, amount: u64) {
+        let balance = self.balances.entry(asset_id).or_insert(Balance::default());
+        // We ignore error here as deposit shouldn't fail unless overflow
+        let _ = balance.deposit(amount);
+    }
+}
+
+use rust_decimal::Decimal;
+
+// ... imports ...
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TransferInRequestPayload {
+    pub request_id: String,
+    pub user_id: u64,
+    pub asset: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TransferOutRequestPayload {
+    pub request_id: String,
+    pub user_id: u64,
+    pub asset: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct TransferResponse {
+    pub success: bool,
+    pub message: String,
+    pub request_id: Option<String>,
+}
+
 pub struct AppState {
     pub symbol_manager: SymbolManager,
     pub producer: Arc<dyn OrderPublisher>,
     pub snowflake_gen: Mutex<SnowflakeGenRng>,
     pub kafka_topic: String,
+    pub balance_topic: String,
     pub user_manager: UserAccountManager,
     pub db: Option<Arc<SettlementDb>>,
+    pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -43,8 +119,178 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/user/balance", axum::routing::get(get_balance))
         .route("/api/user/trade_history", axum::routing::get(get_trade_history))
         .route("/api/user/order_history", axum::routing::get(get_order_history))
+        .route("/api/v1/transfer_in", post(transfer_in))
+        .route("/api/v1/transfer_out", post(transfer_out))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
+}
+
+/// Get current timestamp in milliseconds
+fn current_time_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+async fn transfer_in(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<TransferInRequestPayload>,
+) -> Result<Json<TransferResponse>, StatusCode> {
+    println!("📥 Transfer In request received: {:?}", payload);
+
+    // Resolve Asset ID and Decimals
+    let asset_id = state
+        .symbol_manager
+        .get_asset_id(&payload.asset)
+        .ok_or_else(|| {
+            eprintln!("Unknown asset: {}", payload.asset);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+    let multiplier = Decimal::from(10_u64.pow(decimals));
+    let raw_amount = (payload.amount * multiplier)
+        .round()
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| {
+            eprintln!("Amount overflow");
+            StatusCode::BAD_REQUEST
+        })?;
+
+    // 1. Lock Funding Account & Reserve Funds
+    {
+        let mut funding = state.funding_account.lock().unwrap();
+        if let Err(e) = funding.lock(asset_id, raw_amount) {
+            eprintln!("❌ Lock failed: {}", e);
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        println!("🔒 Funds locked in funding account (pending transfer)");
+    }
+
+    // 2. Create Request & Send to Kafka
+    let balance_req = BalanceRequest::TransferIn {
+        request_id: payload.request_id.clone(),
+        user_id: payload.user_id,
+        asset_id,
+        amount: raw_amount,
+        timestamp: current_time_ms(),
+    };
+
+    let json_payload = serde_json::to_string(&balance_req).map_err(|e| {
+        eprintln!("Failed to serialize transfer_in request: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let key = payload.user_id.to_string();
+
+    state
+        .producer
+        .publish(state.balance_topic.clone(), key, json_payload.into_bytes())
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to send transfer_in to Kafka: {}", e);
+            // TODO: Rollback locked funds here if Kafka fails!
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    println!("✅ Transfer In request published to Kafka: {}", payload.request_id);
+
+    // 3. Wait for Settlement (Simulated)
+    println!("⏳ Waiting 5s for settlement...");
+    sleep(Duration::from_secs(5)).await;
+
+    // 4. "Spend" the locked funds
+    {
+        let mut funding = state.funding_account.lock().unwrap();
+        if let Err(e) = funding.spend(asset_id, raw_amount) {
+            eprintln!("❌ Critical: Failed to spend locked funds: {}", e);
+            // In production this would be a critical alert
+        } else {
+            println!("💰 Locked funds spent. Transfer In complete.");
+        }
+    }
+
+    Ok(Json(TransferResponse {
+        success: true,
+        message: format!(
+            "Transfer In request submitted & settled: {} units of asset {} transferred to user {}",
+            payload.amount, payload.asset, payload.user_id
+        ),
+        request_id: Some(payload.request_id),
+    }))
+}
+
+async fn transfer_out(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<TransferOutRequestPayload>,
+) -> Result<Json<TransferResponse>, StatusCode> {
+    println!("📤 Transfer Out request received: {:?}", payload);
+
+    // Resolve Asset ID and Decimals
+    let asset_id = state
+        .symbol_manager
+        .get_asset_id(&payload.asset)
+        .ok_or_else(|| {
+            eprintln!("Unknown asset: {}", payload.asset);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+    let multiplier = Decimal::from(10_u64.pow(decimals));
+    let raw_amount = (payload.amount * multiplier)
+        .round()
+        .to_string()
+        .parse::<u64>()
+        .map_err(|_| {
+            eprintln!("Amount overflow");
+            StatusCode::BAD_REQUEST
+        })?;
+
+    // 1. Create Request & Send to Kafka
+    let balance_req = BalanceRequest::TransferOut {
+        request_id: payload.request_id.clone(),
+        user_id: payload.user_id,
+        asset_id,
+        amount: raw_amount,
+        timestamp: current_time_ms(),
+    };
+
+    let json_payload = serde_json::to_string(&balance_req).map_err(|e| {
+        eprintln!("Failed to serialize transfer_out request: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let key = payload.user_id.to_string();
+
+    state
+        .producer
+        .publish(state.balance_topic.clone(), key, json_payload.into_bytes())
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to send transfer_out to Kafka: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);
+
+    // 2. Wait for Settlement (Simulated)
+    println!("⏳ Waiting 5s for settlement...");
+    sleep(Duration::from_secs(5)).await;
+
+    // 3. Credit funds to funding account (Funds coming from Trading Engine)
+    {
+        let mut funding = state.funding_account.lock().unwrap();
+        funding.credit(asset_id, raw_amount);
+        println!("💰 Funds credited to funding account (Transfer Out complete).");
+    }
+
+    Ok(Json(TransferResponse {
+        success: true,
+        message: format!(
+            "Transfer Out request submitted & settled: {} units of asset {} transferred from user {} to funding account",
+            payload.amount, payload.asset, payload.user_id
+        ),
+        request_id: Some(payload.request_id),
+    }))
 }
 
 #[derive(Debug, serde::Serialize)]
