@@ -177,9 +177,13 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 
 ## Phase 5: Advanced Features (Future)
 
-### Task 5.1: StarRocks Integration (Analytics)
+### Task 5.1: StarRocks Integration (Setup & Schema)
 *   **Goal**: Add real-time analytics database for settlement data.
-*   **Steps**: *(To be defined)*
+*   **Steps**:
+    1.  [x] **Docker**: Add StarRocks to `docker-compose.yml`.
+    2.  [x] **Schema**: Design `trades` and `candles` tables in `schema/starrocks_schema.sql`.
+    3.  [x] **Init**: Create `scripts/init_starrocks.sh`.
+    4.  [x] **Commit**: `git commit -m "feat: add starrocks setup and schema"`
 
 ### Task 5.2: S3 Archival
 *   **Goal**: Archive old settlement data to S3 for compliance.
