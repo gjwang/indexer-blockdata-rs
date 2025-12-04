@@ -85,7 +85,10 @@ impl SymbolManager {
     }
 
     pub fn add_asset(&mut self, asset_id: u32, decimals: u32, display_decimals: u32, name: &str) {
-        self.assets.insert(asset_id, AssetInfo { asset_id, decimals, display_decimals, name: name.to_string() });
+        self.assets.insert(
+            asset_id,
+            AssetInfo { asset_id, decimals, display_decimals, name: name.to_string() },
+        );
     }
 
     pub fn get_asset_name(&self, asset_id: u32) -> Option<String> {

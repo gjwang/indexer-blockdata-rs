@@ -536,14 +536,15 @@ impl MatchingEngine {
         let mut match_batch = Vec::with_capacity(trades.len());
 
         // Track temporary version increments within the batch
-        let mut temp_versions: std::collections::HashMap<(u64, u32), u64> = std::collections::HashMap::new();
+        let mut temp_versions: std::collections::HashMap<(u64, u32), u64> =
+            std::collections::HashMap::new();
 
         for trade in trades {
             // Helper to get and increment version
             let mut get_and_inc_version = |user_id: u64, asset_id: u32| -> u64 {
-                let entry = temp_versions.entry((user_id, asset_id)).or_insert_with(|| {
-                    ledger.get_balance_version(user_id, asset_id)
-                });
+                let entry = temp_versions
+                    .entry((user_id, asset_id))
+                    .or_insert_with(|| ledger.get_balance_version(user_id, asset_id));
                 let v = *entry;
                 *entry += 1;
                 v

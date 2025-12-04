@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    Router,
     routing::post,
+    Router,
 };
-use axum::extract::Query;
 use rust_decimal::Decimal;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
@@ -19,7 +19,7 @@ use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{
-    ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
+    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
     UserAccountManager,
 };
 use crate::symbol_manager::SymbolManager;
@@ -51,21 +51,22 @@ impl BalanceManager {
         self.to_client_balance(internal.asset_id, internal.balance.avail, internal.balance.frozen)
     }
 
-    pub fn to_internal_balance_struct(&self, client: ClientBalance) -> Result<InternalBalance, String> {
+    pub fn to_internal_balance_struct(
+        &self,
+        client: ClientBalance,
+    ) -> Result<InternalBalance, String> {
         let (asset_id, avail) = self.to_internal_amount(&client.asset, client.avail)?;
         let (_, frozen) = self.to_internal_amount(&client.asset, client.frozen)?;
 
-        Ok(InternalBalance {
-            asset_id,
-            balance: Balance {
-                avail,
-                frozen,
-                version: 0,
-            },
-        })
+        Ok(InternalBalance { asset_id, balance: Balance { avail, frozen, version: 0 } })
     }
 
-    pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
+    pub fn to_client_balance(
+        &self,
+        asset_id: u32,
+        avail: u64,
+        frozen: u64,
+    ) -> Option<ClientBalance> {
         let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
 
         Some(ClientBalance {
@@ -75,26 +76,37 @@ impl BalanceManager {
         })
     }
 
-
     pub fn to_client_amount(&self, asset_id: u32, amount: u64) -> Option<Decimal> {
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
-        let display_decimals = self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
+        let display_decimals =
+            self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
         let divisor = Decimal::from(10_u64.pow(decimals));
 
-        Some((Decimal::from(amount) / divisor)
-            .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero))
+        Some(
+            (Decimal::from(amount) / divisor)
+                .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero),
+        )
     }
 
-    pub fn to_internal_amount(&self, asset_name: &str, amount: Decimal) -> Result<(u32, u64), String> {
-        let asset_id = self.symbol_manager.get_asset_id(asset_name)
+    pub fn to_internal_amount(
+        &self,
+        asset_name: &str,
+        amount: Decimal,
+    ) -> Result<(u32, u64), String> {
+        let asset_id = self
+            .symbol_manager
+            .get_asset_id(asset_name)
             .ok_or_else(|| format!("Unknown asset: {}", asset_name))?;
 
         // decimals: Internal storage scale (e.g., 8 for BTC)
-        let decimals = self.symbol_manager.get_asset_decimal(asset_id)
+        let decimals = self
+            .symbol_manager
+            .get_asset_decimal(asset_id)
             .ok_or_else(|| format!("Decimal not found for asset: {}", asset_name))?;
 
         // display_decimals: Max allowed decimal places for input (e.g., 3 for BTC)
-        let display_decimals = self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
+        let display_decimals =
+            self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
 
         // Validate input precision
         // Example: if display_decimals is 3, input 1.234 is valid, 1.2345 is invalid.
@@ -136,15 +148,10 @@ pub struct TransferResponse {
     pub request_id: Option<String>,
 }
 
-
-
-
-
 #[derive(serde::Deserialize)]
 struct UserIdParams {
     user_id: u64,
 }
-
 
 pub trait OrderPublisher: Send + Sync {
     fn publish(
@@ -152,7 +159,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
 
 pub struct SimulatedFundingAccount {
@@ -197,7 +204,6 @@ impl SimulatedFundingAccount {
     }
 }
 
-
 pub struct AppState {
     pub symbol_manager: Arc<SymbolManager>,
     pub balance_manager: BalanceManager,
@@ -234,9 +240,8 @@ async fn transfer_in(
     println!("📥 Transfer In request received: {:?}", payload);
 
     // Resolve Asset ID and Decimals
-    let (asset_id, raw_amount) = state.balance_manager
-        .to_internal_amount(&payload.asset, payload.amount)
-        .map_err(|e| {
+    let (asset_id, raw_amount) =
+        state.balance_manager.to_internal_amount(&payload.asset, payload.amount).map_err(|e| {
             eprintln!("Conversion failed: {}", e);
             StatusCode::BAD_REQUEST
         })?;
@@ -311,9 +316,8 @@ async fn transfer_out(
     println!("📤 Transfer Out request received: {:?}", payload);
 
     // Resolve Asset ID and Decimals
-    let (asset_id, raw_amount) = state.balance_manager
-        .to_internal_amount(&payload.asset, payload.amount)
-        .map_err(|e| {
+    let (asset_id, raw_amount) =
+        state.balance_manager.to_internal_amount(&payload.asset, payload.amount).map_err(|e| {
             eprintln!("Conversion failed: {}", e);
             StatusCode::BAD_REQUEST
         })?;
@@ -411,7 +415,6 @@ async fn create_order(
     Ok(Json(ApiResponse::success(response_data)))
 }
 
-
 async fn get_balance(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<UserIdParams>,
@@ -438,10 +441,12 @@ async fn get_balance(
         for (asset_id, amount) in balances {
             let avail = if amount < 0 { 0 } else { amount as u64 };
 
-            if let Some(client_balance) = state.balance_manager.to_client_balance(asset_id, avail, 0) {
+            if let Some(client_balance) =
+                state.balance_manager.to_client_balance(asset_id, avail, 0)
+            {
                 response.push(client_balance);
             } else {
-                 return Err((
+                return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
                     format!("Asset info not found for ID {}", asset_id),
                 ));
