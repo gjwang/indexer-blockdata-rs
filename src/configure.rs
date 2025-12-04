@@ -38,11 +38,23 @@ pub struct ZmqConfig {
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub log_file: String,
+    #[serde(default = "default_log_level")]
+    pub log_level: String,
+    #[serde(default = "default_log_to_file")]
+    pub log_to_file: bool,
     pub centrifugo: CentrifugoConfig,
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub enable_local_wal: bool,
     pub zeromq: Option<ZmqConfig>,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_log_to_file() -> bool {
+    true
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {

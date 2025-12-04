@@ -12,9 +12,15 @@ use crate::configure::load_config;
 
 pub fn setup_logger() -> Result<(), Box<dyn Error>> {
     let config = load_config()?;
-    // Get the log file path from the configuration
-    let log_file = config.log_file;
-    println!("log_file={log_file}");
+    
+    // Parse log level from config
+    let log_level = match config.log_level.to_lowercase().as_str() {
+        "debug" => LevelFilter::Debug,
+        "info" => LevelFilter::Info,
+        "warn" => LevelFilter::Warn,
+        "error" => LevelFilter::Error,
+        _ => LevelFilter::Info, // Default to Info
+    };
 
     // Create a stdout appender
     let stdout = ConsoleAppender::builder()
@@ -23,23 +29,30 @@ pub fn setup_logger() -> Result<(), Box<dyn Error>> {
         )))
         .build();
 
-    // Create a file appender
-    let file = FileAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(
-            "{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}",
-        )))
-        .build(log_file)?;
+    let mut log_config_builder = LogConfig::builder()
+        .appender(Appender::builder().build("stdout", Box::new(stdout)));
 
-    // Build the log4rs configuration
-    let log_config = LogConfig::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)))
-        .appender(Appender::builder().build("file", Box::new(file)))
-        .build(
-            Root::builder()
-                .appender("stdout")
-                .appender("file")
-                .build(LevelFilter::Info),
-        )?;
+    let mut root_builder = Root::builder().appender("stdout");
+
+    // Conditionally add file appender
+    if config.log_to_file {
+        let log_file = config.log_file;
+        println!("Logging to file: {}", log_file);
+        
+        let file = FileAppender::builder()
+            .encoder(Box::new(PatternEncoder::new(
+                "{d(%Y-%m-%d %H:%M:%S)} [{l}] - {m}{n}",
+            )))
+            .build(log_file)?;
+
+        log_config_builder = log_config_builder
+            .appender(Appender::builder().build("file", Box::new(file)));
+        
+        root_builder = root_builder.appender("file");
+    }
+
+    let log_config = log_config_builder
+        .build(root_builder.build(log_level))?;
 
     // Initialize the logger
     log4rs::init_config(log_config)?;

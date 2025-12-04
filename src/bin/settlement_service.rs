@@ -1,12 +1,20 @@
 use fetcher::configure;
+use fetcher::logger::setup_logger;
 use zmq::{Context, SUB};
+use log::{info, error, warn, debug};
 
 fn main() {
-    // 1. Load Config
+    // 1. Setup Logger
+    if let Err(e) = setup_logger() {
+        eprintln!("Failed to initialize logger: {}", e);
+        return;
+    }
+
+    // 2. Load Config
     let config = configure::load_config().expect("Failed to load config");
     let zmq_config = config.zeromq.expect("ZMQ config missing");
 
-    // 2. Setup ZMQ Subscriber
+    // 3. Setup ZMQ Subscriber
     let context = Context::new();
     let subscriber = context.socket(SUB).expect("Failed to create SUB socket");
     
@@ -14,11 +22,11 @@ fn main() {
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
 
-    println!("Settlement Service started.");
-    println!("Listening on {}", endpoint);
+    info!("Settlement Service started.");
+    info!("Listening on {}", endpoint);
 
-    // 3. Event Loop
-    println!("Waiting for trades...");
+    // 4. Event Loop
+    info!("Waiting for trades...");
     let mut next_sequence: u64 = 0;
     
     // Open CSV Writer in Append Mode
@@ -34,8 +42,25 @@ fn main() {
         .from_writer(file);
 
     loop {
-        let topic = subscriber.recv_string(0).unwrap().unwrap();
-        let data = subscriber.recv_bytes(0).unwrap();
+        let topic = match subscriber.recv_string(0) {
+            Ok(Ok(t)) => t,
+            Ok(Err(_)) => {
+                error!("Failed to decode topic string");
+                continue;
+            }
+            Err(e) => {
+                error!("ZMQ recv error: {}", e);
+                continue;
+            }
+        };
+        
+        let data = match subscriber.recv_bytes(0) {
+            Ok(d) => d,
+            Err(e) => {
+                error!("ZMQ recv bytes error: {}", e);
+                continue;
+            }
+        };
         
         // println!("Received [{}]: {} bytes", topic, data.len());
         
@@ -48,7 +73,7 @@ fn main() {
                     // First message, initialize sequence
                     next_sequence = seq + 1;
                 } else if seq != next_sequence {
-                    eprintln!("CRITICAL: GAP DETECTED! Expected: {}, Got: {}", next_sequence, seq);
+                    error!("CRITICAL: GAP DETECTED! Expected: {}, Got: {}", next_sequence, seq);
                     // In a real system, we would request replay here.
                     // For now, just update to current to continue.
                     next_sequence = seq + 1;
@@ -56,7 +81,7 @@ fn main() {
                     next_sequence += 1;
                 }
 
-                println!(
+                info!(
                     "[Settlement] Seq: {}, TradeID: {}, Price: {}, Qty: {}, Buyer: {}, Seller: {}",
                     trade.output_sequence,
                     trade.trade_id,
@@ -68,14 +93,16 @@ fn main() {
                 
                 // Persist to CSV
                 if let Err(e) = wtr.serialize(&trade) {
-                    eprintln!("[Settlement] Failed to write to CSV: {}", e);
+                    error!("[Settlement] Failed to write to CSV: {}", e);
                 }
-                wtr.flush().unwrap();
+                if let Err(e) = wtr.flush() {
+                    error!("[Settlement] Failed to flush CSV: {}", e);
+                }
             }
             Err(e) => {
-                eprintln!("[Settlement] Failed to deserialize: {}", e);
+                error!("[Settlement] Failed to deserialize: {}", e);
                 if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) {
-                     println!("  Raw Data: {}", json);
+                     debug!("  Raw Data: {}", json);
                 }
             }
         }
