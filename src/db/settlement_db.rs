@@ -503,6 +503,182 @@ impl SettlementDb {
             seller_quote_version: 0,
         })
     }
+
+    /// Update user balance with version-based idempotency
+    ///
+    /// Uses Lightweight Transactions (LWT) to ensure idempotent updates.
+    /// Only updates if the current version matches the expected version.
+    ///
+    /// # Arguments
+    /// * `user_id` - User ID
+    /// * `asset_id` - Asset ID
+    /// * `delta` - Balance change (positive = increase, negative = decrease)
+    /// * `expected_version` - Expected current version from matching engine
+    ///
+    /// # Returns
+    /// * `Ok(true)` - Update successful
+    /// * `Ok(false)` - Version conflict (already updated)
+    /// * `Err(_)` - Database error
+    pub async fn update_balance_with_version(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        delta: i64,
+        expected_version: u64,
+    ) -> Result<bool> {
+        const UPDATE_BALANCE_CQL: &str = "
+            UPDATE user_balances
+            SET available = available + ?,
+                version = ?,
+                updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+            IF version = ?
+        ";
+
+        let now = get_current_timestamp_ms();
+        let new_version = expected_version + 1;
+
+        let result = self
+            .session
+            .query(
+                UPDATE_BALANCE_CQL,
+                (
+                    delta,
+                    new_version as i64,
+                    now,
+                    user_id as i64,
+                    asset_id as i32,
+                    expected_version as i64,
+                ),
+            )
+            .await?;
+
+        // Check LWT result
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.first() {
+                // LWT returns [applied] column
+                if let Some(applied_col) = row.columns.first() {
+                    if let Some(scylla::frame::response::result::CqlValue::Boolean(applied)) =
+                        applied_col
+                    {
+                        if !applied {
+                            log::debug!(
+                                "Balance update skipped (version conflict): user={}, asset={}, expected_v={}",
+                                user_id,
+                                asset_id,
+                                expected_version
+                            );
+                            return Ok(false);
+                        }
+
+                        log::debug!(
+                            "Balance updated: user={}, asset={}, delta={}, v={} -> {}",
+                            user_id,
+                            asset_id,
+                            delta,
+                            expected_version,
+                            new_version
+                        );
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        // If record doesn't exist, initialize it
+        self.init_balance_if_not_exists(user_id, asset_id).await?;
+
+        // Retry update (using Box::pin to avoid recursion error)
+        Box::pin(self.update_balance_with_version(user_id, asset_id, delta, expected_version)).await
+    }
+
+    /// Initialize balance record if it doesn't exist
+    async fn init_balance_if_not_exists(&self, user_id: u64, asset_id: u32) -> Result<()> {
+        const INIT_BALANCE_CQL: &str = "
+            INSERT INTO user_balances (user_id, asset_id, available, frozen, version, updated_at)
+            VALUES (?, ?, 0, 0, 0, ?)
+            IF NOT EXISTS
+        ";
+
+        let now = get_current_timestamp_ms();
+
+        self.session.query(INIT_BALANCE_CQL, (user_id as i64, asset_id as i32, now)).await?;
+
+        Ok(())
+    }
+
+    /// Get user balance for a specific asset
+    pub async fn get_user_balance(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+    ) -> Result<Option<UserBalance>> {
+        const GET_BALANCE_CQL: &str = "
+            SELECT available, frozen, version, updated_at
+            FROM user_balances
+            WHERE user_id = ? AND asset_id = ?
+        ";
+
+        let result = self.session.query(GET_BALANCE_CQL, (user_id as i64, asset_id as i32)).await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                let (available, frozen, version, updated_at): (i64, i64, i64, i64) =
+                    row.into_typed().context("Failed to parse balance row")?;
+
+                return Ok(Some(UserBalance {
+                    user_id,
+                    asset_id,
+                    available: available as u64,
+                    frozen: frozen as u64,
+                    version: version as u64,
+                    updated_at: updated_at as u64,
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get all balances for a user
+    pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
+        const GET_ALL_BALANCES_CQL: &str = "
+            SELECT asset_id, available, frozen, version, updated_at
+            FROM user_balances
+            WHERE user_id = ?
+        ";
+
+        let result = self.session.query(GET_ALL_BALANCES_CQL, (user_id as i64,)).await?;
+
+        let mut balances = Vec::new();
+        if let Some(rows) = result.rows {
+            for row in rows.into_iter() {
+                let (asset_id, available, frozen, version, updated_at): (i32, i64, i64, i64, i64) =
+                    row.into_typed().context("Failed to parse balance row")?;
+
+                balances.push(UserBalance {
+                    user_id,
+                    asset_id: asset_id as u32,
+                    available: available as u64,
+                    frozen: frozen as u64,
+                    version: version as u64,
+                    updated_at: updated_at as u64,
+                });
+            }
+        }
+
+        Ok(balances)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserBalance {
+    pub user_id: u64,
+    pub asset_id: u32,
+    pub available: u64,
+    pub frozen: u64,
+    pub version: u64,
+    pub updated_at: u64,
 }
 
 #[cfg(test)]
