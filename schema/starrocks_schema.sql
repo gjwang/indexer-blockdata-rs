@@ -7,7 +7,8 @@ CREATE TABLE IF NOT EXISTS trades (
     trade_date DATE NOT NULL,
     trade_id BIGINT NOT NULL,
     match_seq BIGINT NOT NULL,
-    symbol VARCHAR(32) NOT NULL,
+    base_asset INT NOT NULL,
+    quote_asset INT NOT NULL,
     price DECIMAL(18, 8) NOT NULL,
     quantity DECIMAL(18, 8) NOT NULL,
     buyer_user_id BIGINT NOT NULL,
@@ -26,7 +27,8 @@ PROPERTIES (
 
 -- Candles table (Aggregated)
 CREATE TABLE IF NOT EXISTS candles (
-    symbol VARCHAR(32) NOT NULL,
+    base_asset INT NOT NULL,
+    quote_asset INT NOT NULL,
     interval_str VARCHAR(10) NOT NULL, -- '1m', '1h', '1d'
     event_time DATETIME NOT NULL,
     open DECIMAL(18, 8) NOT NULL,
@@ -36,11 +38,11 @@ CREATE TABLE IF NOT EXISTS candles (
     volume DECIMAL(18, 8) NOT NULL
 )
 ENGINE=OLAP
-PRIMARY KEY(symbol, interval_str, event_time)
+PRIMARY KEY(base_asset, quote_asset, interval_str, event_time)
 PARTITION BY RANGE(event_time) (
     START ("2024-01-01") END ("2026-01-01") EVERY (INTERVAL 1 MONTH)
 )
-DISTRIBUTED BY HASH(symbol) BUCKETS 10
+DISTRIBUTED BY HASH(base_asset, quote_asset) BUCKETS 10
 PROPERTIES (
     "replication_num" = "1"
 );
