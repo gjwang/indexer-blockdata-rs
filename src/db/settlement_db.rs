@@ -12,6 +12,7 @@ use crate::ledger::MatchExecData;
 // Retry configuration
 const MAX_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 50;
+const SLOW_QUERY_THRESHOLD_MS: u128 = 100;
 
 // CQL Statements
 const INSERT_TRADE_CQL: &str = "
@@ -122,6 +123,7 @@ impl SettlementDb {
         }
     }
 
+
     /// Insert a single trade into the database with retry logic
     /// 
     /// # Arguments
@@ -130,12 +132,14 @@ impl SettlementDb {
     /// # Returns
     /// * `Result<()>` - Success or error
     pub async fn insert_trade(&self, trade: &MatchExecData) -> Result<()> {
+        let start = std::time::Instant::now();
+
         // Get current date as days since Unix epoch (for partitioning)
         let now_ts = Utc::now().timestamp();
         let trade_date = (now_ts / 86400) as i32;  // Days since Unix epoch
         let settled_at = Utc::now().timestamp_millis();
 
-        Self::retry_with_backoff(|| async {
+        let result = Self::retry_with_backoff(|| async {
             self.session
                 .execute(
                     &self.insert_trade_stmt,
@@ -159,7 +163,19 @@ impl SettlementDb {
                 )
                 .await
                 .map(|_| ())
-        }).await
+        }).await;
+
+        let duration = start.elapsed();
+        let duration_ms = duration.as_millis();
+
+        if duration_ms > SLOW_QUERY_THRESHOLD_MS {
+            log::warn!("Slow insert_trade: {}ms", duration_ms);
+        }
+
+        // Log metric (debug level to avoid spamming info)
+        log::debug!("[METRIC] settlement_db_insert_latency_ms={}", duration_ms);
+
+        result
     }
 
     /// Insert multiple trades in a batch (more efficient)
@@ -173,6 +189,8 @@ impl SettlementDb {
         if trades.is_empty() {
             return Ok(());
         }
+
+        let start = std::time::Instant::now();
 
         let now_ts = Utc::now().timestamp();
         let trade_date = (now_ts / 86400) as i32;
@@ -206,6 +224,15 @@ impl SettlementDb {
                     .map(|_| ())
             }).await?;
         }
+
+        let duration = start.elapsed();
+        let duration_ms = duration.as_millis();
+
+        if duration_ms > SLOW_QUERY_THRESHOLD_MS {
+            log::warn!("Slow insert_batch ({} trades): {}ms", trades.len(), duration_ms);
+        }
+
+        log::debug!("[METRIC] settlement_db_batch_insert_latency_ms={}", duration_ms);
 
         Ok(())
     }

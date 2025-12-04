@@ -30,7 +30,7 @@ async fn main() {
     let settlement_db = match SettlementDb::connect(&scylla_config).await {
         Ok(db) => {
             log::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB");
-            db
+            std::sync::Arc::new(db)
         }
         Err(e) => {
             log::error!(target: LOG_TARGET, "❌ Failed to connect to ScyllaDB: {}", e);
@@ -40,7 +40,7 @@ async fn main() {
         }
     };
 
-    // Health check
+    // Initial Health check
     match settlement_db.health_check().await {
         Ok(true) => log::info!(target: LOG_TARGET, "✅ ScyllaDB health check passed"),
         Ok(false) => {
@@ -52,6 +52,19 @@ async fn main() {
             return;
         }
     }
+
+    // Spawn background health check task
+    let db_clone = settlement_db.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            match db_clone.health_check().await {
+                Ok(true) => log::debug!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection active"),
+                Ok(false) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection lost!"),
+                Err(e) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB health check error: {}", e),
+            }
+        }
+    });
 
     // Setup ZMQ Subscriber
     let context = Context::new();
@@ -78,6 +91,7 @@ async fn main() {
     log::info!(target: LOG_TARGET, "Waiting for trades...");
     let mut next_sequence: u64 = 0;
     let mut total_settled: u64 = 0;
+    let mut total_errors: u64 = 0;
     
     // Open CSV Writer in Append Mode (keep as backup/audit trail)
     let file = std::fs::OpenOptions::new()
@@ -111,7 +125,7 @@ async fn main() {
                 continue;
             }
         };
-        
+
         // Deserialize into MatchExecData
         match serde_json::from_slice::<fetcher::ledger::MatchExecData>(&data) {
             Ok(trade) => {
@@ -137,16 +151,20 @@ async fn main() {
                 }
 
                 //TODO: add profiling here
+
                 // Persist to ScyllaDB (primary storage)
                 match settlement_db.insert_trade(&trade).await {
                     Ok(()) => {
                         total_settled += 1;
                         if total_settled % 100 == 0 {
                             log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
+                            log::info!(target: LOG_TARGET, "[METRIC] settlement_db_inserts_total={}", total_settled);
                         }
                     }
                     Err(e) => {
+                        total_errors += 1;
                         log::error!(target: LOG_TARGET, "Failed to insert trade to ScyllaDB: {}", e);
+                        log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
                         
                         // Log to failed_trades.json for manual recovery
                         let failed_file = std::fs::OpenOptions::new()
