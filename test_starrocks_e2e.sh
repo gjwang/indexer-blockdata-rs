@@ -42,8 +42,9 @@ docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "TRUNCATE TABLE sett
 echo "✅ StarRocks tables cleaned"
 
 echo ""
-echo "=== Step 4: Create StarRocks Routine Load Job ==="
-./scripts/create_starrocks_routine_load.sh
+echo ""
+echo "=== Step 4: (Skipped) Routine Load ==="
+echo "Direct ingestion from Settlement Service is now used."
 
 echo ""
 echo "=== Step 5: Run the main E2E test to generate trades ==="
@@ -52,12 +53,11 @@ echo "This will start services, initialize balances, and generate trades..."
 
 echo ""
 echo "=== Step 6: Wait for StarRocks to consume trades ==="
-echo "Waiting 15 seconds for Routine Load to process..."
+echo "Waiting 15 seconds for Settlement Service to load data..."
 sleep 15
 
 echo ""
-echo "=== Step 7: Checking StarRocks Routine Load Status ==="
-docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "SHOW ROUTINE LOAD FOR settlement.trades_load\G" | grep -E "(State|CurrentTaskNum|ErrorRows|TotalRows|LoadedRows)"
+echo "=== Step 7: (Skipped) Routine Load Status ==="
 
 echo ""
 echo "=== Step 8: Querying StarRocks for trades ==="
@@ -72,8 +72,8 @@ SELECT
     trade_id,
     price,
     quantity,
-    buyer_user_id,
-    seller_user_id,
+    buy_user_id,
+    sell_user_id,
     settled_at
 FROM settlement.trades
 ORDER BY settled_at DESC
@@ -86,20 +86,20 @@ echo "=== Step 9: Running OLAP queries ==="
 echo "Total volume by user:"
 docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "
 SELECT
-    buyer_user_id as user_id,
+    buy_user_id as user_id,
     'buy' as side,
     SUM(quantity) as total_volume,
     COUNT(*) as trade_count
 FROM settlement.trades
-GROUP BY buyer_user_id
+GROUP BY buy_user_id
 UNION ALL
 SELECT
-    seller_user_id as user_id,
+    sell_user_id as user_id,
     'sell' as side,
     SUM(quantity) as total_volume,
     COUNT(*) as trade_count
 FROM settlement.trades
-GROUP BY seller_user_id
+GROUP BY sell_user_id
 ORDER BY user_id, side;
 "
 
@@ -120,6 +120,6 @@ echo "  ✅ StarRocks E2E Test Complete!"
 echo "=========================================="
 echo ""
 echo "Summary:"
-echo "  - StarRocks Routine Load consumed trades from Kafka"
+echo "  - Settlement Service directly loaded trades into StarRocks"
 echo "  - OLAP queries successfully executed"
-echo "  - Data pipeline verified: Trades → Kafka → StarRocks"
+echo "  - Data pipeline verified: ME → Settlement → StarRocks"

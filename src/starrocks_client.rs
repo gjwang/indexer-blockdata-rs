@@ -68,30 +68,28 @@ impl StarRocksClient {
         let label_num = self.label_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let label = format!("settlement_{}", label_num);
 
-        // Convert to newline-delimited JSON
-        let mut payload = String::new();
-        for trade in &trades {
-            payload.push_str(&serde_json::to_string(trade)?);
-            payload.push('\n');
-        }
+        // Convert to JSON Array
+        let payload = serde_json::to_string(&trades)?;
+        // println!("[DEBUG] StarRocks Payload: {}", payload); // Uncomment for verbose debug
 
         let response = self.client
             .put(&self.url)
             .basic_auth("root", Some(""))
             .header("label", &label)
             .header("format", "json")
+            .header("strip_outer_array", "true")
             .body(payload)
             .timeout(Duration::from_secs(5))
             .send()
             .await?;
 
         let status = response.status();
+        let body = response.text().await?;
+
         if !status.is_success() {
-            let body = response.text().await?;
             anyhow::bail!("StarRocks load failed: HTTP {} - {}", status, body);
         }
 
-        let body = response.text().await?;
         let result: serde_json::Value = serde_json::from_str(&body)?;
 
         if result["Status"] != "Success" {
