@@ -126,8 +126,9 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     5.  [x] **Verify**: Compiles successfully.
     6.  [x] **Commit**: `git commit -m "feat: integrate scylladb into settlement service"`
 
-### Task 4.5: Batch Insertion Optimization
+### Task 4.5: Batch Insertion Optimization (DEFERRED)
 *   **Goal**: Improve throughput with batch inserts.
+*   **Status**: Deferred per user request ("leave opt later").
 *   **Steps**:
     1.  [ ] **Modify**: Implement `async fn insert_batch(&self, trades: &[MatchExecData]) -> Result<()>`.
     2.  [ ] **Modify**: Buffer trades in settlement service (e.g., 100 trades or 100ms timeout).

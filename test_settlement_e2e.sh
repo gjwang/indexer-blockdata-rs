@@ -150,7 +150,9 @@ fi
 # 4. Check ScyllaDB Persistence (primary)
 echo ""
 echo "--- ScyllaDB Verification ---"
-DB_COUNT=$(docker exec scylla cqlsh -e "SELECT COUNT(*) FROM settlement.settled_trades;" | grep -oP '\d+' | head -1)
+# Use awk to extract the number, handling potential whitespace
+# grep -o '[0-9]\+' extracts all numbers. The first one is the count, the second is "(1 rows)"
+DB_COUNT=$(docker exec scylla cqlsh -e "SELECT COUNT(*) FROM settlement.settled_trades;" | grep -o '[0-9]\+' | head -n 1)
 
 if [ -z "$DB_COUNT" ]; then
     failure "Could not query ScyllaDB"
