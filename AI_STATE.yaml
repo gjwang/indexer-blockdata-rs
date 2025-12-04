@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 5: Advanced Features (Future)"
 
 active_task:
-  id: "5.1"
-  name: "StarRocks Integration"
+  id: "5.2"
+  name: "StarRocks Data Ingestion"
   status: "IN_PROGRESS" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Add StarRocks to docker-compose and design schema"
+  next_action: "Create Routine Load script for Kafka ingestion"
 
 # Phase 3 Completion Summary
 phase_3_completed:

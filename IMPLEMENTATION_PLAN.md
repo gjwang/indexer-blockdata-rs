@@ -170,7 +170,8 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 *   **Goal**: Implement complete audit trail for all balance changes.
 *   **Steps**:
     1.  [x] **Schema**: Add `ledger_events` table to `settlement_schema.cql`.
-    2.  [x] **Modify**: Update `SettlementDb` to support `insert_ledger_event`.
+    2.  [x] **Modify**:
+     Update `SettlementDb` to support `insert_ledger_event`.
     3.  [x] **Modify**: Update `settlement_service.rs` to handle Deposit/Withdrawal messages.
     4.  [x] **Verify**: Verify deposits/withdrawals are persisted to ScyllaDB.
     5.  [x] **Commit**: `git commit -m "feat: implement event sourcing for ledger events"`
@@ -185,9 +186,13 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     3.  [x] **Init**: Create `scripts/init_starrocks.sh`.
     4.  [x] **Commit**: `git commit -m "feat: add starrocks setup and schema"`
 
-### Task 5.2: S3 Archival
-*   **Goal**: Archive old settlement data to S3 for compliance.
-*   **Steps**: *(To be defined)*
+### Task 5.2: StarRocks Data Ingestion
+*   **Goal**: Ingest trade data from Kafka into StarRocks using Routine Load.
+*   **Steps**:
+    1.  [ ] **Script**: Create `scripts/create_starrocks_routine_load.sh`.
+    2.  [ ] **Job**: Define `CREATE ROUTINE LOAD` for `trades` topic.
+    3.  [ ] **Verify**: Run the script and check job status.
+    4.  [ ] **Commit**: `git commit -m "feat: add starrocks routine load script"`
 
 ### Task 5.3: Settlement Reconciliation
 *   **Goal**: Periodic reconciliation between ME state and settlement DB.
