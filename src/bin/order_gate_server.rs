@@ -1,13 +1,15 @@
-use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{create_app, AppState, OrderPublisher};
-use fetcher::models::UserAccountManager;
-use fetcher::symbol_manager::SymbolManager;
-use rdkafka::config::ClientConfig;
-use rdkafka::producer::{FutureProducer, FutureRecord};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use rdkafka::config::ClientConfig;
+use rdkafka::producer::{FutureProducer, FutureRecord};
+
+use fetcher::fast_ulid::SnowflakeGenRng;
+use fetcher::gateway::{AppState, create_app, OrderPublisher};
+use fetcher::models::{balance_manager, UserAccountManager};
+use fetcher::symbol_manager::SymbolManager;
 
 struct KafkaPublisher(FutureProducer);
 
@@ -17,7 +19,7 @@ impl OrderPublisher for KafkaPublisher {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
         let producer = self.0.clone();
         Box::pin(async move {
             let record = FutureRecord::to(&topic).payload(&payload).key(&key);
@@ -67,7 +69,7 @@ async fn main() {
         config.kafka.topics.balance_ops.as_ref().unwrap_or(&"balance_ops".to_string()).clone();
 
     let symbol_manager = Arc::new(symbol_manager);
-    let balance_manager = fetcher::gateway::BalanceManager::new(symbol_manager.clone());
+    let balance_manager = balance_manager::BalanceManager::new(symbol_manager.clone());
 
     let state = Arc::new(AppState {
         symbol_manager,
