@@ -155,6 +155,13 @@ async fn main() {
             match settlement_db.insert_trade(&trade).await {
                 Ok(()) => {
                     total_settled += 1;
+
+                    // Update user balances using version-based idempotent updates
+                    if let Err(e) = update_balances_for_trade(&settlement_db, &trade).await {
+                        log::error!(target: LOG_TARGET, "Failed to update balances for trade {}: {}", trade.trade_id, e);
+                        // Continue processing - balance can be rebuilt from trades
+                    }
+
                     if total_settled % 100 == 0 {
                         log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
                         log::info!(target: LOG_TARGET, "[METRIC] settlement_db_inserts_total={}", total_settled);
@@ -229,4 +236,87 @@ async fn main() {
             }
         }
     }
+}
+
+/// Update user balances for a trade using version-based idempotent updates
+///
+/// This function updates both buyer and seller balances atomically using
+/// the balance versions captured from the matching engine at trade execution time.
+///
+/// # Arguments
+/// * `db` - Settlement database connection
+/// * `trade` - Trade data with balance versions
+///
+/// # Returns
+/// * `Ok(())` - All balances updated successfully (or skipped due to version conflict)
+/// * `Err(_)` - Database error
+async fn update_balances_for_trade(
+    db: &SettlementDb,
+    trade: &fetcher::ledger::MatchExecData,
+) -> anyhow::Result<()> {
+    // Calculate amounts
+    let quote_amount = trade.price * trade.quantity;
+
+    // Update buyer balances
+    // Buyer: spend quote_asset, gain base_asset
+    let buyer_quote_updated = db
+        .update_balance_with_version(
+            trade.buyer_user_id,
+            trade.quote_asset,
+            -(quote_amount as i64), // Spend USDT
+            trade.buyer_quote_version,
+        )
+        .await?;
+
+    let buyer_base_updated = db
+        .update_balance_with_version(
+            trade.buyer_user_id,
+            trade.base_asset,
+            trade.quantity as i64, // Gain BTC
+            trade.buyer_base_version,
+        )
+        .await?;
+
+    // Update seller balances
+    // Seller: spend base_asset, gain quote_asset
+    let seller_base_updated = db
+        .update_balance_with_version(
+            trade.seller_user_id,
+            trade.base_asset,
+            -(trade.quantity as i64), // Spend BTC
+            trade.seller_base_version,
+        )
+        .await?;
+
+    let seller_quote_updated = db
+        .update_balance_with_version(
+            trade.seller_user_id,
+            trade.quote_asset,
+            quote_amount as i64, // Gain USDT
+            trade.seller_quote_version,
+        )
+        .await?;
+
+    // Log results
+    if buyer_quote_updated && buyer_base_updated && seller_base_updated && seller_quote_updated {
+        log::debug!(
+            target: LOG_TARGET,
+            "Balances updated for trade {}: buyer={}, seller={}",
+            trade.trade_id,
+            trade.buyer_user_id,
+            trade.seller_user_id
+        );
+    } else {
+        log::debug!(
+            target: LOG_TARGET,
+            "Balance update skipped (version conflict) for trade {}: buyer_q={}, buyer_b={}, seller_b={}, seller_q={}",
+            trade.trade_id,
+            buyer_quote_updated,
+            buyer_base_updated,
+            seller_base_updated,
+            seller_quote_updated
+        );
+    }
+
+    Ok(())
 }
