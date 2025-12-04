@@ -12,10 +12,12 @@ pub enum OrderRequest {
         price: u64,
         quantity: u64,
         order_type: OrderType,
+        checksum: u32,
     },
     CancelOrder {
         order_id: u64,
         user_id: u64,
         symbol_id: u32,
+        checksum: u32,
     },
 }

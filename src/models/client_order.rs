@@ -4,6 +4,7 @@ use validator::{Validate, ValidationError};
 
 use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
+use crc32fast::Hasher;
 
 #[derive(Debug, Deserialize, Serialize, Validate)]
 pub struct ClientOrder {
@@ -83,6 +84,8 @@ impl ClientOrder {
         Ok(())
     }
 
+
+
     /// Convert ClientOrder to internal OrderRequest
     pub fn try_to_internal(
         &self,
@@ -95,6 +98,16 @@ impl ClientOrder {
 
         let raw_order = self.to_raw_order(symbol_manager, user_id)?;
 
+        let checksum = calculate_checksum(
+            order_id,
+            raw_order.user_id,
+            raw_order.symbol_id as u32,
+            raw_order.side as u8,
+            raw_order.price,
+            raw_order.quantity,
+            raw_order.order_type as u8,
+        );
+
         Ok(OrderRequest::PlaceOrder {
             order_id,
             user_id: raw_order.user_id,
@@ -103,6 +116,7 @@ impl ClientOrder {
             price: raw_order.price,
             quantity: raw_order.quantity,
             order_type: raw_order.order_type,
+            checksum,
         })
     }
 
@@ -274,4 +288,16 @@ impl ClientOrder {
             order_type: self.order_type,
         })
     }
+}
+
+pub fn calculate_checksum(order_id: u64, user_id: u64, symbol_id: u32, side: u8, price: u64, qty: u64, type_id: u8) -> u32 {
+    let mut hasher = Hasher::new();
+    hasher.update(&order_id.to_le_bytes());
+    hasher.update(&user_id.to_le_bytes());
+    hasher.update(&symbol_id.to_le_bytes());
+    hasher.update(&[side]);
+    hasher.update(&price.to_le_bytes());
+    hasher.update(&qty.to_le_bytes());
+    hasher.update(&[type_id]);
+    hasher.finalize()
 }

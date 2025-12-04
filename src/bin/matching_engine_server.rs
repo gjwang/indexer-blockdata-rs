@@ -13,6 +13,7 @@ use disruptor::*;
 use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData};
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
+use fetcher::models::client_order::calculate_checksum;
 use fetcher::symbol_manager::SymbolManager;
 
 /// Event structure for the Disruptor ring buffer
@@ -230,8 +231,11 @@ impl LedgerListener for RedpandaTradeProducer {
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
-    let wal_dir = Path::new("me_wal_data");
-    let snap_dir = Path::new("me_snapshots");
+    
+    let wal_dir_str = std::env::var("APP_WAL_DIR").unwrap_or_else(|_| "me_wal_data".to_string());
+    let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
+    let wal_dir = Path::new(&wal_dir_str);
+    let snap_dir = Path::new(&snap_dir_str);
 
     // Clean up previous run (Optional: maybe we want to recover?)
     // For this demo refactor, let's keep it clean to avoid state issues during dev.
@@ -576,7 +580,15 @@ async fn main() {
                                 price,
                                 quantity,
                                 order_type,
+                                checksum,
                             } => {
+                                let calculated = calculate_checksum(
+                                    order_id, user_id, symbol_id, side as u8, price, quantity, order_type as u8
+                                );
+                                if calculated != checksum {
+                                    eprintln!("❌ Checksum Mismatch! OrderID: {}", order_id);
+                                    continue;
+                                }
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
                                     // Accumulate orders for batch processing
                                     place_orders.push((
