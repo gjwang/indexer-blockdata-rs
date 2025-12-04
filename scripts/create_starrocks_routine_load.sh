@@ -13,24 +13,19 @@ fi
 docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "STOP ROUTINE LOAD FOR settlement.trades_load;" 2>/dev/null || true
 sleep 2
 
-# Define the job
+# Define the job - Aligned with ME Trade output
 echo "Submitting job..."
 docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root << 'EOF'
 CREATE ROUTINE LOAD settlement.trades_load ON trades
 COLUMNS(
-    output_sequence,
     trade_id,
     match_seq,
     buy_order_id,
     sell_order_id,
-    buyer_user_id,
-    seller_user_id,
+    buy_user_id,
+    sell_user_id,
     price,
     quantity,
-    base_asset,
-    quote_asset,
-    buyer_refund,
-    seller_refund,
     settled_at = from_unixtime(kafka_timestamp/1000),
     trade_date = to_date(from_unixtime(kafka_timestamp/1000))
 )
@@ -38,7 +33,7 @@ PROPERTIES
 (
     "desired_concurrent_number" = "1",
     "format" = "json",
-    "jsonpaths" = "[\"$.output_sequence\", \"$.trade_id\", \"$.match_seq\", \"$.buy_order_id\", \"$.sell_order_id\", \"$.buyer_user_id\", \"$.seller_user_id\", \"$.price\", \"$.quantity\", \"$.base_asset\", \"$.quote_asset\", \"$.buyer_refund\", \"$.seller_refund\"]"
+    "strip_outer_array" = "true"
 )
 FROM KAFKA
 (
@@ -51,7 +46,7 @@ EOF
 
 if [ $? -eq 0 ]; then
     echo "Routine Load job submitted successfully."
-    echo "Check status with: docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e 'SHOW ROUTINE LOAD\\G'"
+    echo "Check status with: docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e 'SHOW ROUTINE LOAD\G'"
 else
     echo "Failed to submit Routine Load job."
     exit 1
