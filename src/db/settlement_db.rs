@@ -526,9 +526,47 @@ impl SettlementDb {
         delta: i64,
         expected_version: u64,
     ) -> Result<bool> {
+        // First, get current balance
+        let current = self.get_user_balance(user_id, asset_id).await?;
+
+        let (current_available, current_version) = match current {
+            Some(balance) => {
+                // Verify version matches
+                if balance.version != expected_version {
+                    log::debug!(
+                        "Balance version mismatch: user={}, asset={}, expected={}, actual={}",
+                        user_id,
+                        asset_id,
+                        expected_version,
+                        balance.version
+                    );
+                    return Ok(false);
+                }
+                (balance.available as i64, balance.version)
+            }
+            None => {
+                // Balance doesn't exist, initialize it first
+                self.init_balance_if_not_exists(user_id, asset_id).await?;
+                (0, 0)
+            }
+        };
+
+        // Calculate new balance
+        let new_available = current_available + delta;
+        if new_available < 0 {
+            anyhow::bail!(
+                "Balance would go negative: user={}, asset={}, current={}, delta={}",
+                user_id,
+                asset_id,
+                current_available,
+                delta
+            );
+        }
+
+        // Update with LWT
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = available + ?,
+            SET available = ?,
                 version = ?,
                 updated_at = ?
             WHERE user_id = ? AND asset_id = ?
@@ -536,60 +574,54 @@ impl SettlementDb {
         ";
 
         let now = get_current_timestamp_ms();
-        let new_version = expected_version + 1;
+        let new_version = current_version + 1;
 
         let result = self
             .session
             .query(
                 UPDATE_BALANCE_CQL,
                 (
-                    delta,
+                    new_available,
                     new_version as i64,
                     now,
                     user_id as i64,
                     asset_id as i32,
-                    expected_version as i64,
+                    current_version as i64,
                 ),
             )
             .await?;
 
         // Check LWT result
         if let Some(rows) = result.rows {
-            if let Some(row) = rows.first() {
+            if let Some(row) = rows.into_iter().next() {
                 // LWT returns [applied] column
-                if let Some(applied_col) = row.columns.first() {
-                    if let Some(scylla::frame::response::result::CqlValue::Boolean(applied)) =
-                        applied_col
-                    {
-                        if !applied {
-                            log::debug!(
-                                "Balance update skipped (version conflict): user={}, asset={}, expected_v={}",
-                                user_id,
-                                asset_id,
-                                expected_version
-                            );
-                            return Ok(false);
-                        }
-
+                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                    if !applied {
                         log::debug!(
-                            "Balance updated: user={}, asset={}, delta={}, v={} -> {}",
+                            "Balance update skipped (version conflict): user={}, asset={}, expected_v={}",
                             user_id,
                             asset_id,
-                            delta,
-                            expected_version,
-                            new_version
+                            current_version
                         );
-                        return Ok(true);
+                        return Ok(false);
                     }
+
+                    log::debug!(
+                        "Balance updated: user={}, asset={}, {} -> {}, v={} -> {}",
+                        user_id,
+                        asset_id,
+                        current_available,
+                        new_available,
+                        current_version,
+                        new_version
+                    );
+                    return Ok(true);
                 }
             }
         }
 
-        // If record doesn't exist, initialize it
-        self.init_balance_if_not_exists(user_id, asset_id).await?;
-
-        // Retry update (using Box::pin to avoid recursion error)
-        Box::pin(self.update_balance_with_version(user_id, asset_id, delta, expected_version)).await
+        // If we get here, something unexpected happened
+        Ok(false)
     }
 
     /// Initialize balance record if it doesn't exist
