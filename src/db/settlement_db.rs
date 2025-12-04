@@ -96,6 +96,32 @@ impl SettlementDb {
         })
     }
 
+    /// Execute an async operation with exponential backoff retry
+    async fn retry_with_backoff<F, Fut, T, E>(operation: F) -> Result<T> 
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<T, E>>,
+        E: std::error::Error + Send + Sync + 'static,
+    {
+        let mut attempt = 0;
+        let mut delay = INITIAL_RETRY_DELAY_MS;
+
+        loop {
+            attempt += 1;
+            match operation().await {
+                Ok(val) => return Ok(val),
+                Err(e) => {
+                    if attempt > MAX_RETRIES {
+                        return Err(anyhow::Error::new(e))
+                            .context(format!("Operation failed after {} attempts", MAX_RETRIES));
+                    }
+                    sleep(Duration::from_millis(delay)).await;
+                    delay *= 2;
+                }
+            }
+        }
+    }
+
     /// Insert a single trade into the database with retry logic
     /// 
     /// # Arguments
@@ -109,14 +135,8 @@ impl SettlementDb {
         let trade_date = (now_ts / 86400) as i32;  // Days since Unix epoch
         let settled_at = Utc::now().timestamp_millis();
 
-        let mut attempt = 0;
-        let mut delay = INITIAL_RETRY_DELAY_MS;
-
-        loop {
-            attempt += 1;
-            
-            // Execute prepared statement
-            let result = self.session
+        Self::retry_with_backoff(|| async {
+            self.session
                 .execute(
                     &self.insert_trade_stmt,
                     (
@@ -137,22 +157,9 @@ impl SettlementDb {
                         settled_at,
                     ),
                 )
-                .await;
-
-            match result {
-                Ok(_) => return Ok(()),
-                Err(e) => {
-                    if attempt > MAX_RETRIES {
-                        return Err(e).context(format!("Failed to insert trade after {} attempts", MAX_RETRIES));
-                    }
-                    
-                    // Log warning (using println/eprintln as we don't have logger here, or just rely on caller)
-                    // Better to just sleep and retry.
-                    sleep(Duration::from_millis(delay)).await;
-                    delay *= 2; // Exponential backoff
-                }
-            }
-        }
+                .await
+                .map(|_| ())
+        }).await
     }
 
     /// Insert multiple trades in a batch (more efficient)
@@ -173,13 +180,8 @@ impl SettlementDb {
 
         // Execute all inserts (ScyllaDB will batch them automatically)
         for trade in trades {
-            let mut attempt = 0;
-            let mut delay = INITIAL_RETRY_DELAY_MS;
-
-            loop {
-                attempt += 1;
-
-                let result = self.session
+            Self::retry_with_backoff(|| async {
+                self.session
                     .execute(
                         &self.insert_trade_stmt,
                         (
@@ -200,19 +202,9 @@ impl SettlementDb {
                             settled_at,
                         ),
                     )
-                    .await;
-
-                match result {
-                    Ok(_) => break, // Success, move to next trade
-                    Err(e) => {
-                        if attempt > MAX_RETRIES {
-                            return Err(e).context(format!("Failed to insert trade in batch after {} attempts", MAX_RETRIES));
-                        }
-                        sleep(Duration::from_millis(delay)).await;
-                        delay *= 2;
-                    }
-                }
-            }
+                    .await
+                    .map(|_| ())
+            }).await?;
         }
 
         Ok(())
@@ -357,5 +349,56 @@ mod tests {
         let health = db.health_check().await;
         assert!(health.is_ok());
         assert!(health.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_retry_logic() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use std::fmt;
+
+        #[derive(Debug)]
+        struct MockError;
+        impl fmt::Display for MockError {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                write!(f, "Mock Error")
+            }
+        }
+        impl std::error::Error for MockError {}
+
+        // Test case 1: Succeeds immediately
+        let result = SettlementDb::retry_with_backoff(|| async {
+            Ok::<_, MockError>(())
+        }).await;
+        assert!(result.is_ok());
+
+        // Test case 2: Fails twice then succeeds
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        
+        let result = SettlementDb::retry_with_backoff(|| async {
+            let count = counter_clone.fetch_add(1, Ordering::SeqCst);
+            if count < 2 {
+                Err(MockError)
+            } else {
+                Ok(())
+            }
+        }).await;
+        
+        assert!(result.is_ok());
+        assert_eq!(counter.load(Ordering::SeqCst), 3); // 0 (fail), 1 (fail), 2 (success)
+
+        // Test case 3: Fails more than MAX_RETRIES (3)
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_clone = counter.clone();
+        
+        let result = SettlementDb::retry_with_backoff(|| async {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>(MockError)
+        }).await;
+        
+        assert!(result.is_err());
+        // Should try 1 initial + 3 retries = 4 attempts
+        assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
 }

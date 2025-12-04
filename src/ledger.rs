@@ -1469,6 +1469,7 @@ mod tests {
             buyer_refund: 0,
             seller_refund: 0,
             match_seq: 1,
+            output_sequence: 1,
         };
 
         ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
@@ -1600,6 +1601,7 @@ mod tests {
             buyer_refund: 0,
             seller_refund: 0,
             match_seq: 1,
+            output_sequence: 1,
         };
 
         let result = ledger.apply(&LedgerCommand::MatchExec(match_data));
@@ -1928,6 +1930,7 @@ mod tests {
             buyer_refund: 20000, // Refund unused quote
             seller_refund: 10,   // Refund unused base
             match_seq: 1,
+            output_sequence: 1,
         };
 
         ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
@@ -2128,6 +2131,7 @@ mod tests {
             buyer_refund: 0,
             seller_refund: 0,
             match_seq: 1,
+            output_sequence: 1,
         };
 
         let cmds = vec![LedgerCommand::MatchExec(match_data)];
