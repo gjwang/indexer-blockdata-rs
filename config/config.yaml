@@ -18,3 +18,7 @@ kafka:
   heartbeat_interval_ms: "3000"
   max_poll_interval_ms: "30000"
   socket_keepalive_enable: "true"
+
+zeromq:
+  settlement_port: 5557
+  market_data_port: 5558

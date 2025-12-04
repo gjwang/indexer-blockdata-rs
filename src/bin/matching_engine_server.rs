@@ -15,6 +15,7 @@ use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::models::client_order::calculate_checksum;
 use fetcher::symbol_manager::SymbolManager;
+use fetcher::zmq_publisher::ZmqPublisher;
 
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
@@ -231,6 +232,15 @@ impl LedgerListener for RedpandaTradeProducer {
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
+    
+    // Initialize ZMQ Publisher
+    let zmq_config = config.zeromq.as_ref().expect("ZMQ config missing");
+    let zmq_publisher = std::sync::Arc::new(
+        ZmqPublisher::new(
+            zmq_config.settlement_port,
+            zmq_config.market_data_port
+        ).expect("Failed to bind ZMQ sockets")
+    );
     
     let wal_dir_str = std::env::var("APP_WAL_DIR").unwrap_or_else(|_| "me_wal_data".to_string());
     let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
@@ -517,6 +527,27 @@ async fn main() {
             }
         }
     };
+
+    // === Consumer 3c: ZMQ Publisher (Critical & Fast Path) ===
+    let zmq_pub_clone = zmq_publisher.clone();
+    let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        let cmds_arc = {
+            event.processing_result.lock().unwrap().as_ref().cloned()
+        };
+        if let Some(cmds) = cmds_arc {
+            for cmd in cmds.iter() {
+                if let LedgerCommand::Match(match_data) = cmd {
+                     // Serialize match_data
+                     if let Ok(data) = serde_json::to_vec(match_data) {
+                         // Fast Path: Market Data
+                         let _ = zmq_pub_clone.publish_market_data(&data);
+                         // Critical Path: Settlement
+                         let _ = zmq_pub_clone.publish_settlement(&data);
+                     }
+                }
+            }
+        }
+    };
     
     // Build disruptor with 3-Stage Pipeline (Stage 3 is Parallel)
     // 1. WAL Writer & Matcher run in parallel
@@ -527,6 +558,7 @@ async fn main() {
         .and_then()
         .handle_events_with(ledger_writer)
         .handle_events_with(trade_publisher)
+        .handle_events_with(zmq_consumer)
         .build();
     
     println!(">>> Disruptor initialized with 3-STAGE PIPELINE (Parallel Output):");
