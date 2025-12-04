@@ -496,6 +496,11 @@ impl SettlementDb {
             match_seq: match_seq as u64,
             output_sequence: output_sequence as u64,
             settled_at: settled_at as u64,
+            // Note: Old data doesn't have version fields, default to 0
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
         })
     }
 }
