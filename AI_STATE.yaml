@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 2: The Output Pipeline"
 
 active_task:
-  id: "2.1"
-  name: "Add Dependencies (ZeroMQ & XXHash)"
+  id: "2.2"
+  name: "Implement State Hashing"
   status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Proceed to Task 2.2: Implement State Hashing"
+  next_action: "Proceed to Task 2.3: Implement ZeroMQ Publisher"
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:

@@ -26,7 +26,7 @@ fn setup_engine(test_name: &str) -> (MatchingEngine, PathBuf, PathBuf) {
         fs::remove_dir_all(&snap_dir).unwrap();
     }
 
-    let mut engine = MatchingEngine::new(&wal_dir, &snap_dir).unwrap();
+    let mut engine = MatchingEngine::new(&wal_dir, &snap_dir, false).unwrap();
 
     // Deposit funds for generic users
     // User 1: Seller (Base Asset 1)
@@ -102,11 +102,11 @@ fn test_basic_matching() {
     // 1. Add Sell Orders
     // Sell 100 @ 10 (ID 1, User 1) -> Actually Price 100, Qty 10 based on original code
     assert!(engine
-        .add_order(btc_id, 1, Side::Sell, OrderType::Limit, 100, 10, 1)
+        .add_order(btc_id, 1, Side::Sell, OrderType::Limit, 100, 10, 1, 0)
         .is_ok());
     // Sell 101 @ 5 (ID 2, User 2) -> Actually Price 101, Qty 5
     assert!(engine
-        .add_order(btc_id, 2, Side::Sell, OrderType::Limit, 101, 5, 2)
+        .add_order(btc_id, 2, Side::Sell, OrderType::Limit, 101, 5, 2, 0)
         .is_ok());
 
     // Verify Book State
@@ -117,7 +117,7 @@ fn test_basic_matching() {
     // 2. Add Buy Order (Partial Match)
     // Buy 100 @ 8 (ID 3, User 3). Matches 8 units of ID 1 (Price 100).
     assert!(engine
-        .add_order(btc_id, 3, Side::Buy, OrderType::Limit, 100, 8, 3)
+        .add_order(btc_id, 3, Side::Buy, OrderType::Limit, 100, 8, 3, 0)
         .is_ok());
 
     let book = engine.order_books[btc_id as usize].as_ref().unwrap();
@@ -132,7 +132,7 @@ fn test_basic_matching() {
     // Matches 5 of ID 2 (Price 101).
     // Remaining 3 units sit on Bid at 102.
     assert!(engine
-        .add_order(btc_id, 4, Side::Buy, OrderType::Limit, 102, 10, 4)
+        .add_order(btc_id, 4, Side::Buy, OrderType::Limit, 102, 10, 4, 0)
         .is_ok());
 
     let book = engine.order_books[btc_id as usize].as_ref().unwrap();
@@ -180,7 +180,7 @@ fn test_dynamic_symbol_registration() {
         .unwrap();
 
     assert!(engine
-        .add_order(new_id, 100, Side::Sell, OrderType::Limit, 50, 100, 1)
+        .add_order(new_id, 100, Side::Sell, OrderType::Limit, 50, 100, 1, 0)
         .is_ok());
 
     let book = engine.order_books[new_id as usize].as_ref().unwrap();
@@ -199,7 +199,7 @@ fn test_gap_handling() {
     engine.register_symbol(5, "SOL".to_string(), 4, 2).unwrap();
 
     // Access ID 2 (Gap)
-    let result = engine.add_order(2, 999, Side::Buy, OrderType::Limit, 1, 100, 3);
+    let result = engine.add_order(2, 999, Side::Buy, OrderType::Limit, 1, 100, 3, 0);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -207,7 +207,7 @@ fn test_gap_handling() {
     ));
 
     // Access ID 10 (Out of bounds)
-    let result = engine.add_order(10, 999, Side::Buy, OrderType::Limit, 1, 100, 3);
+    let result = engine.add_order(10, 999, Side::Buy, OrderType::Limit, 1, 100, 3, 0);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -225,21 +225,21 @@ fn test_duplicate_order_id() {
 
     // Add Order 1 (Buy 100 @ 10)
     engine
-        .add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 3)
+        .add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 3, 0)
         .unwrap();
 
     // Add Order 2 (Sell 50 @ 10) -> Match 50
     engine
-        .add_order(0, 2, Side::Sell, OrderType::Limit, 10, 50, 1)
+        .add_order(0, 2, Side::Sell, OrderType::Limit, 10, 50, 1, 0)
         .unwrap();
 
     // Add Order 3 (Sell 40 @ 10) -> Match 40, Rem 10 (Order 1 still active)
     engine
-        .add_order(0, 3, Side::Sell, OrderType::Limit, 10, 40, 2)
+        .add_order(0, 3, Side::Sell, OrderType::Limit, 10, 40, 2, 0)
         .unwrap();
 
     // Try adding Order 1 again (should fail as it's still active/partially filled)
-    let result = engine.add_order(0, 1, Side::Sell, OrderType::Limit, 10, 100, 1);
+    let result = engine.add_order(0, 1, Side::Sell, OrderType::Limit, 10, 100, 1, 0);
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -252,7 +252,7 @@ fn test_duplicate_order_id() {
     // Now ID 1 should be inactive (removed from set)
     // Re-using ID 1 should be allowed
     assert!(engine
-        .add_order(0, 1, Side::Buy, OrderType::Limit, 5, 99, 3)
+        .add_order(0, 1, Side::Buy, OrderType::Limit, 5, 99, 3, 0)
         .is_ok());
 
     drop(engine);
@@ -272,7 +272,7 @@ fn test_ledger_integration() {
     // Price 10, Qty 100.
     // Lock: 100 BTC (Asset 1).
     assert!(engine
-        .add_order(btc_id, 1, Side::Sell, OrderType::Limit, 10, 100, 1)
+        .add_order(btc_id, 1, Side::Sell, OrderType::Limit, 10, 100, 1, 0)
         .is_ok());
 
     // Check User 1 Balance
@@ -290,7 +290,7 @@ fn test_ledger_integration() {
     // Match: 50 units.
     // Trade: Price 10, Qty 50.
     assert!(engine
-        .add_order(btc_id, 2, Side::Buy, OrderType::Limit, 10, 50, 3)
+        .add_order(btc_id, 2, Side::Buy, OrderType::Limit, 10, 50, 3, 0)
         .is_ok());
 
     // Check User 1 (Seller)

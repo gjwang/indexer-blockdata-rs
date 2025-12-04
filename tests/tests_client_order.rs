@@ -124,6 +124,7 @@ mod tests {
             price: 350075,      // 3500.75 * 100 (2 decimals)
             quantity: 12345678, // 0.12345678 * 100000000 (8 decimals)
             order_type: OrderType::Market,
+            checksum: 0,
         };
 
         let result = ClientOrder::try_from_internal(&request, &sm);
@@ -152,6 +153,7 @@ mod tests {
             price: 350075,
             quantity: 12345678,
             order_type: OrderType::Market,
+            checksum: 0,
         };
 
         let result = ClientOrder::try_from_internal(&request, &sm);
@@ -166,6 +168,7 @@ mod tests {
             order_id: 1001,
             user_id: 1,
             symbol_id: 1,
+            checksum: 0,
         };
 
         let result = ClientOrder::try_from_internal(&request, &sm);
