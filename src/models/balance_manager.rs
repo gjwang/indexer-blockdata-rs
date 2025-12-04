@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
@@ -130,11 +131,11 @@ impl BalanceManager {
             10_u64.checked_pow(decimals).ok_or("Decimals too large, overflow")?,
         );
 
-        let raw_amount = (amount * multiplier)
-            .round()
-            .to_string()
-            .parse::<u64>()
-            .map_err(|_| "Amount overflow".to_string())?;
+        let result = (amount * multiplier).round();
+
+        let raw_amount = result
+            .to_u64()
+            .ok_or_else(|| format!("Amount overflow or negative: {}", result))?;
 
         Ok((asset_id, raw_amount))
     }
@@ -170,50 +171,44 @@ impl BalanceManager {
             10_u64.checked_pow(decimals).ok_or("Price decimals overflow")?,
         );
 
-        (price * multiplier)
-            .round()
-            .to_string()
-            .parse::<u64>()
-            .map_err(|_| "Price overflow".to_string())
+        let result = (price * multiplier).round();
+
+        result
+            .to_u64()
+            .ok_or_else(|| format!("Price overflow or negative: {}", result))
     }
 
     /// Converts an internal integer price to a client-facing Decimal.
     ///
     /// # Returns
-    /// * `Option<Decimal>` - The decimal price rounded to `price_display_decimal`.
+    /// * `Option<Decimal>` - The exact decimal price without rounding.
     ///
     /// # Notes
     /// * Returns `None` if symbol is unknown or calculation overflows.
+    /// * Does NOT round - returns exact value as stored internally.
     pub fn to_client_price(&self, symbol: &str, price: u64) -> Option<Decimal> {
         let symbol_info = self.symbol_manager.get_symbol_info(symbol)?;
         let decimals = symbol_info.price_decimal;
-        let display_decimals = symbol_info.price_display_decimal;
 
         let divisor = Decimal::from(10_u64.checked_pow(decimals)?);
 
-        Some(
-            (Decimal::from(price) / divisor)
-                .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero),
-        )
+        Some(Decimal::from(price) / divisor)
     }
 
     /// Converts an internal integer price to a client-facing Decimal using symbol ID.
     ///
     /// # Returns
-    /// * `Option<Decimal>` - The decimal price rounded to `price_display_decimal`.
+    /// * `Option<Decimal>` - The exact decimal price without rounding.
     ///
     /// # Notes
     /// * Returns `None` if symbol is unknown or calculation overflows.
+    /// * Does NOT round - returns exact value as stored internally.
     pub fn to_client_price_by_id(&self, symbol_id: u32, price: u64) -> Option<Decimal> {
         let symbol_info = self.symbol_manager.get_symbol_info_by_id(symbol_id)?;
         let decimals = symbol_info.price_decimal;
-        let display_decimals = symbol_info.price_display_decimal;
 
         let divisor = Decimal::from(10_u64.checked_pow(decimals)?);
 
-        Some(
-            (Decimal::from(price) / divisor)
-                .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero),
-        )
+        Some(Decimal::from(price) / divisor)
     }
 }
