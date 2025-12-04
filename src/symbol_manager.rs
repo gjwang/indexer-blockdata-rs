@@ -13,6 +13,7 @@ pub struct SymbolInfo {
 pub struct AssetInfo {
     pub asset_id: u32,
     pub decimals: u32,
+    pub name: String,
 }
 
 /// Manages symbol-to-ID and ID-to-symbol mappings
@@ -82,8 +83,12 @@ impl SymbolManager {
         self.symbol_info.get(&id)
     }
 
-    pub fn add_asset(&mut self, asset_id: u32, decimals: u32) {
-        self.assets.insert(asset_id, AssetInfo { asset_id, decimals });
+    pub fn add_asset(&mut self, asset_id: u32, decimals: u32, name: &str) {
+        self.assets.insert(asset_id, AssetInfo { asset_id, decimals, name: name.to_string() });
+    }
+
+    pub fn get_asset_name(&self, asset_id: u32) -> Option<String> {
+        self.assets.get(&asset_id).map(|a| a.name.clone())
     }
 
     pub fn get_asset_decimal(&self, asset_id: u32) -> Option<u32> {
@@ -95,9 +100,9 @@ impl SymbolManager {
         let mut manager = SymbolManager::new();
         //TODO: refactor: we do NOT need quantity decimal any more,juse use get_asset_decimal
         // Add Assets
-        manager.add_asset(1, 8); // BTC
-        manager.add_asset(2, 8); // USDT
-        manager.add_asset(3, 8); // ETH
+        manager.add_asset(1, 8, "BTC"); // BTC
+        manager.add_asset(2, 8, "USDT"); // USDT
+        manager.add_asset(3, 8, "ETH"); // ETH
 
         // BTC_USDT: Base 1 (BTC), Quote 2 (USDT), Price Decimal 2
         manager.insert_symbol("BTC_USDT", 0, 1, 2, 2);

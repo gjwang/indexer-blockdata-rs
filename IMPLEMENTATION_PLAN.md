@@ -206,6 +206,13 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     5.  [x] **Commit**: `git commit -m "feat: add automated reconciliation service"`
 
 ## Phase 6: Maintenance & Future Work
+### Task 6.1: Gateway API Extensions
+*   **Goal**: Add user data APIs to Order Gateway.
+*   **Steps**:
+    1.  [x] **DB**: Add user query methods to `SettlementDb`.
+    2.  [x] **API**: Add `/user/balance`, `/user/trade_history`, `/user/order_history` to `gateway.rs`.
+    3.  [x] **Test**: Add integration tests in `tests/gateway_tests.rs`.
+
 *   **S3 Archival**: Implement `archive_settlement` tool.
 *   **StarRocks**: Verify real-time ingestion with full load.
 *   **Monitoring**: Add Prometheus/Grafana dashboards.
