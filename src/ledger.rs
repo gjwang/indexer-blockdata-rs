@@ -86,6 +86,7 @@ pub struct MatchExecData {
     pub buyer_refund: u64,
     pub seller_refund: u64,
     pub match_seq: u64,
+    pub output_sequence: u64,
 }
 
 // ==========================================
