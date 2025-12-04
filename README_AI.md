@@ -23,4 +23,51 @@ Before you write a single line of code or answer a complex question:
 *   **Verify First**: Run the `verification_commands` listed in `AI_STATE.yaml` to ground yourself.
 *   **No Magic**: If it's not in the code, it doesn't exist. Trust `git status` over your training data.
 
+## 3. 🐳 Docker-First Development (MANDATORY)
+
+**CRITICAL RULE**: All dependency services MUST run in Docker containers in local development.
+
+### ✅ DO Use Docker
+```bash
+# This is the ONLY way to run dependencies
+docker-compose up -d
+```
+
+### ❌ NEVER Suggest Installing These Locally
+- ❌ Kafka/Redpanda via Homebrew
+- ❌ ScyllaDB/Cassandra via Homebrew  
+- ❌ PostgreSQL via Homebrew
+- ❌ Any database or message broker directly on the system
+
+### Why Docker?
+1. **Clean System**: No pollution of the user's Mac
+2. **Consistency**: Everyone uses exact same versions
+3. **Easy Reset**: `docker-compose down -v` for fresh start
+4. **Production Parity**: Dev matches production
+
+### Available Services
+- **Redpanda** (Kafka): Port 9093 - `docker-compose up -d redpanda`
+- **ScyllaDB**: Port 9042 - `docker-compose up -d scylla`
+- **Centrifugo**: Port 8000 - `docker-compose up -d centrifugo`
+
+### Common Commands
+```bash
+# Start all services
+docker-compose up -d
+
+# Check status
+docker-compose ps
+
+# View logs
+docker logs scylla -f
+
+# Stop services
+docker-compose stop
+
+# Fresh start (removes data)
+docker-compose down -v
+```
+
+**📚 For detailed Docker instructions, see `DEVELOPMENT.md`**
+
 **🚀 NOW, GO READ `AI_STATE.yaml`.**
