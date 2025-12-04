@@ -131,7 +131,9 @@ impl ClientOrder {
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?;
 
                 // Convert price from integer to Decimal
-                let price_divisor = Decimal::from(10_u64.pow(symbol_info.price_decimal));
+                let price_divisor = Decimal::from(
+                    10_u64.checked_pow(symbol_info.price_decimal).ok_or("Price decimals overflow")?,
+                );
                 let price_decimal = Decimal::from(*price) / price_divisor;
 
                 // Convert quantity from integer to Decimal (Base Asset)
@@ -240,7 +242,9 @@ impl ClientOrder {
             .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
 
         // Convert price to integer representation (already Decimal, no parsing needed)
-        let price_multiplier = Decimal::from(10_u64.pow(symbol_info.price_decimal));
+        let price_multiplier = Decimal::from(
+            10_u64.checked_pow(symbol_info.price_decimal).ok_or("Price decimals overflow")?,
+        );
         let price = (self.price * price_multiplier)
             .round()
             .to_string()
