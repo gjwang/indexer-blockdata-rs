@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 4: Database Integration (ScyllaDB)"
 
 active_task:
-  id: "4.10"
-  name: "Data Consistency Verification"
+  id: "4.11"
+  name: "Disaster Recovery Drill"
   status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Develop reconciliation tool"
+  next_action: "Simulate service failure and recovery"
 
 # Phase 3 Completion Summary
 phase_3_completed:
