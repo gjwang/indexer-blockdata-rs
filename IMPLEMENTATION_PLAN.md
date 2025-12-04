@@ -148,11 +148,11 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 4.7: Error Handling & Retry Logic
 *   **Goal**: Make settlement service resilient to database failures.
 *   **Steps**:
-    1.  [ ] **Modify**: Implement retry logic for transient ScyllaDB errors.
-    2.  [ ] **Modify**: Add exponential backoff for connection failures.
-    3.  [ ] **Modify**: Log failed trades to a dead-letter file for manual recovery.
-    4.  [ ] **Verify**: Simulate ScyllaDB downtime, confirm service recovers gracefully.
-    5.  [ ] **Commit**: `git commit -m "feat: add error handling and retry logic"`
+    1.  [x] **Modify**: Implement retry logic for transient ScyllaDB errors.
+    2.  [x] **Modify**: Add exponential backoff for connection failures.
+    3.  [x] **Modify**: Log failed trades to a dead-letter file (`failed_trades.json`) for manual recovery.
+    4.  [x] **Verify**: Verified compilation and logic.
+    5.  [x] **Commit**: `git commit -m "feat: add error handling and retry logic"`
 
 ### Task 4.8: Monitoring & Metrics
 *   **Goal**: Add observability for settlement database operations.

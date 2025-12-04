@@ -3,9 +3,15 @@ use scylla::{Session, SessionBuilder};
 use scylla::prepared_statement::PreparedStatement;
 use std::sync::Arc;
 use chrono::Utc;
+use std::time::Duration;
+use tokio::time::sleep;
 
 use crate::configure::ScyllaDbConfig;
 use crate::ledger::MatchExecData;
+
+// Retry configuration
+const MAX_RETRIES: u32 = 3;
+const INITIAL_RETRY_DELAY_MS: u64 = 50;
 
 // CQL Statements
 const INSERT_TRADE_CQL: &str = "
@@ -90,7 +96,7 @@ impl SettlementDb {
         })
     }
 
-    /// Insert a single trade into the database
+    /// Insert a single trade into the database with retry logic
     /// 
     /// # Arguments
     /// * `trade` - Trade data from matching engine
@@ -99,58 +105,18 @@ impl SettlementDb {
     /// * `Result<()>` - Success or error
     pub async fn insert_trade(&self, trade: &MatchExecData) -> Result<()> {
         // Get current date as days since Unix epoch (for partitioning)
-        // Unix epoch is 1970-01-01, so divide timestamp by seconds per day
         let now_ts = Utc::now().timestamp();
         let trade_date = (now_ts / 86400) as i32;  // Days since Unix epoch
         let settled_at = Utc::now().timestamp_millis();
 
-        // Execute prepared statement
-        self.session
-            .execute(
-                &self.insert_trade_stmt,
-                (
-                    trade_date,
-                    trade.output_sequence as i64,
-                    trade.trade_id as i64,
-                    trade.match_seq as i64,
-                    trade.buy_order_id as i64,
-                    trade.sell_order_id as i64,
-                    trade.buyer_user_id as i64,
-                    trade.seller_user_id as i64,
-                    trade.price as i64,
-                    trade.quantity as i64,
-                    trade.base_asset as i32,
-                    trade.quote_asset as i32,
-                    trade.buyer_refund as i64,
-                    trade.seller_refund as i64,
-                    settled_at,
-                ),
-            )
-            .await
-            .context("Failed to insert trade")?;
+        let mut attempt = 0;
+        let mut delay = INITIAL_RETRY_DELAY_MS;
 
-        Ok(())
-    }
-
-    /// Insert multiple trades in a batch (more efficient)
-    /// 
-    /// # Arguments
-    /// * `trades` - Slice of trades to insert
-    /// 
-    /// # Returns
-    /// * `Result<()>` - Success or error
-    pub async fn insert_batch(&self, trades: &[MatchExecData]) -> Result<()> {
-        if trades.is_empty() {
-            return Ok(());
-        }
-
-        let now_ts = Utc::now().timestamp();
-        let trade_date = (now_ts / 86400) as i32;
-        let settled_at = Utc::now().timestamp_millis();
-
-        // Execute all inserts (ScyllaDB will batch them automatically)
-        for trade in trades {
-            self.session
+        loop {
+            attempt += 1;
+            
+            // Execute prepared statement
+            let result = self.session
                 .execute(
                     &self.insert_trade_stmt,
                     (
@@ -171,8 +137,82 @@ impl SettlementDb {
                         settled_at,
                     ),
                 )
-                .await
-                .context("Failed to insert trade in batch")?;
+                .await;
+
+            match result {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    if attempt > MAX_RETRIES {
+                        return Err(e).context(format!("Failed to insert trade after {} attempts", MAX_RETRIES));
+                    }
+                    
+                    // Log warning (using println/eprintln as we don't have logger here, or just rely on caller)
+                    // Better to just sleep and retry.
+                    sleep(Duration::from_millis(delay)).await;
+                    delay *= 2; // Exponential backoff
+                }
+            }
+        }
+    }
+
+    /// Insert multiple trades in a batch (more efficient)
+    /// 
+    /// # Arguments
+    /// * `trades` - Slice of trades to insert
+    /// 
+    /// # Returns
+    /// * `Result<()>` - Success or error
+    pub async fn insert_batch(&self, trades: &[MatchExecData]) -> Result<()> {
+        if trades.is_empty() {
+            return Ok(());
+        }
+
+        let now_ts = Utc::now().timestamp();
+        let trade_date = (now_ts / 86400) as i32;
+        let settled_at = Utc::now().timestamp_millis();
+
+        // Execute all inserts (ScyllaDB will batch them automatically)
+        for trade in trades {
+            let mut attempt = 0;
+            let mut delay = INITIAL_RETRY_DELAY_MS;
+
+            loop {
+                attempt += 1;
+
+                let result = self.session
+                    .execute(
+                        &self.insert_trade_stmt,
+                        (
+                            trade_date,
+                            trade.output_sequence as i64,
+                            trade.trade_id as i64,
+                            trade.match_seq as i64,
+                            trade.buy_order_id as i64,
+                            trade.sell_order_id as i64,
+                            trade.buyer_user_id as i64,
+                            trade.seller_user_id as i64,
+                            trade.price as i64,
+                            trade.quantity as i64,
+                            trade.base_asset as i32,
+                            trade.quote_asset as i32,
+                            trade.buyer_refund as i64,
+                            trade.seller_refund as i64,
+                            settled_at,
+                        ),
+                    )
+                    .await;
+
+                match result {
+                    Ok(_) => break, // Success, move to next trade
+                    Err(e) => {
+                        if attempt > MAX_RETRIES {
+                            return Err(e).context(format!("Failed to insert trade in batch after {} attempts", MAX_RETRIES));
+                        }
+                        sleep(Duration::from_millis(delay)).await;
+                        delay *= 2;
+                    }
+                }
+            }
         }
 
         Ok(())
