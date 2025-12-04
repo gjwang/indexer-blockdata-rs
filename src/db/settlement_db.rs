@@ -169,6 +169,11 @@ impl SettlementDb {
         }
     }
 
+    /// Get reference to the ScyllaDB session for direct queries
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
     /// Insert a single trade into the database with retry logic
     ///
     /// # Arguments
@@ -531,10 +536,10 @@ impl SettlementDb {
 
         let (current_available, current_version) = match current {
             Some(balance) => {
-                // Verify version matches
-                if balance.version != expected_version {
+                // Verify version matches or is older (allowing gaps for non-persisted events like Locks)
+                if balance.version >= expected_version {
                     log::debug!(
-                        "Balance version mismatch: user={}, asset={}, expected={}, actual={}",
+                        "Balance update skipped (already processed/newer): user={}, asset={}, expected={}, actual={}",
                         user_id,
                         asset_id,
                         expected_version,
@@ -564,6 +569,7 @@ impl SettlementDb {
         }
 
         // Update with LWT
+        // We set version to expected_version + 1 to sync with ME, skipping any gaps
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
             SET available = ?,
@@ -574,7 +580,7 @@ impl SettlementDb {
         ";
 
         let now = get_current_timestamp_ms();
-        let new_version = current_version + 1;
+        let new_version = expected_version + 1;
 
         let result = self
             .session
@@ -655,14 +661,14 @@ impl SettlementDb {
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
-                let (available, frozen, version, updated_at): (i64, i64, i64, i64) =
+                let (available, frozen, version, updated_at): (i64, Option<i64>, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
 
                 return Ok(Some(UserBalance {
                     user_id,
                     asset_id,
                     available: available as u64,
-                    frozen: frozen as u64,
+                    frozen: frozen.unwrap_or(0) as u64,
                     version: version as u64,
                     updated_at: updated_at as u64,
                 }));
