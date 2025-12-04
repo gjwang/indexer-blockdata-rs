@@ -196,7 +196,12 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     3.  [ ] **Verify**: Run the script and check job status.
     4.  [ ] **Commit**: `git commit -m "feat: add starrocks routine load script"`
 
-### Task 5.3: Settlement Reconciliation
-*   **Goal**: Periodic reconciliation between ME state and settlement DB.
-*   **Steps**: *(To be defined)*
+### Task 5.3: Automated Reconciliation
+*   **Goal**: Periodic automated reconciliation with metrics.
+*   **Steps**:
+    1.  [ ] **Refactor**: Extract reconciliation logic from `verify_settlement.rs`.
+    2.  [ ] **Service**: Create `src/bin/reconciliation_service.rs`.
+    3.  [ ] **Metrics**: Add Prometheus metrics for reconciliation status.
+    4.  [ ] **Verify**: Run service and check metrics.
+    5.  [ ] **Commit**: `git commit -m "feat: add automated reconciliation service"`
 
