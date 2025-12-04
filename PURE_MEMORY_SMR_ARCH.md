@@ -198,3 +198,51 @@ graph TD
 4.  **Determinism Audit**:
     *   **Rule**: The Matching Engine logic MUST be deterministic.
     *   *Warning*: **NEVER** use `SystemTime::now()`, `Random()`, or thread scheduling inside the matching loop. Use the `timestamp` from the Input Log (Redpanda) for all time-based logic.
+
+## 8. Deployment & Storage Strategy (Tiered Storage)
+
+### A. Redpanda Tiered Storage (Infinite History)
+*   **Concept**: Use S3 (or MinIO) as the "Cold Store" for the Input Log.
+*   **Configuration**:
+    *   `cloud_storage_enabled=true`
+    *   `retention.local.target.bytes`: Set to ~100GB (fits on NVMe).
+    *   `retention.bytes`: Set to `-1` (Infinite) for S3.
+*   **Benefit**: Keeps local disk lean and fast. Allows "Replay from Genesis" for audit/debugging without filling local storage.
+
+### B. Snapshot & Prune (Fast Recovery)
+*   **Concept**: "Checkpoints" allow the ME to skip replaying old history.
+*   **Protocol**:
+    1.  **Trigger**: Every N trades (e.g., 1M) or T time (e.g., 1 hour).
+    2.  **Snapshot**: ME takes an async snapshot of RAM state (OrderBook + Ledger) and uploads to S3 (e.g., `snapshot_seq_1000000.bin`).
+    3.  **Checkpoint**: ME updates `sys_checkpoints` DB table: `LastSnapshot = 1,000,000`.
+*   **Recovery Flow**:
+    1.  ME boots up.
+    2.  Reads `LastSnapshot` -> 1,000,000.
+    3.  Downloads `snapshot_seq_1000000.bin` from S3 and loads into RAM.
+    4.  Asks Redpanda for logs starting from **1,000,001**.
+    5.  **Result**: Instant startup (seconds) vs Replay (hours).
+
+## 9. Observability & Monitoring (The Dashboard)
+
+### A. Golden Signals (Must Alert)
+1.  **Sequence Lag**:
+    *   *Metric*: `Current_Seq_ID (ME) - Committed_Seq_ID (Settler)`
+    *   *Threshold*: `> 1000` (Warning), `> 10000` (Critical).
+    *   *Meaning*: Settlement is falling behind. Risk of buffer overflow.
+2.  **End-to-End Latency**:
+    *   *Metric*: `Settlement_Time - Order_Creation_Time`
+    *   *Threshold*: `> 10ms` (Warning).
+    *   *Meaning*: System is slow. User experience degrading.
+3.  **Data Integrity Failures**:
+    *   *Metric*: `Checksum_Mismatch_Count` OR `ChainHash_Mismatch_Count`
+    *   *Threshold*: `> 0` (CRITICAL P0).
+    *   *Meaning*: Data corruption or non-deterministic execution. **HALT IMMEDIATELY**.
+4.  **Buffer Saturation**:
+    *   *Metric*: `Ring_Buffer_Usage_Percent`
+    *   *Threshold*: `> 80%` (Warning).
+    *   *Meaning*: Approaching "Stop the World" condition. Scale up Settlers.
+
+### B. Operational Metrics
+1.  **Redpanda Lag**: Consumer Group Lag for Matching Engine.
+2.  **ZeroMQ Drops**: `ZMQ_EVENTS_DROPPED` count (on Market Data channel).
+3.  **Snapshot Age**: Time since last successful snapshot (Alert if > 2 hours).
