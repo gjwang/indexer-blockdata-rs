@@ -67,8 +67,11 @@ fn parse_log_level(level_str: &str) -> LevelFilter {
 ///
 /// # Example
 /// ```no_run
+/// use fetcher::configure::load_service_config;
+/// use fetcher::logger::setup_logger;
 /// let config = load_service_config("settlement")?;
 /// setup_logger(&config)?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn setup_logger(config: &AppConfig) -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level(&config.log_level);
