@@ -16,8 +16,8 @@ USE settlement;
 -- Partition key: trade_date (for time-based partitioning)
 -- Clustering key: output_sequence (for ordering within partition)
 CREATE TABLE IF NOT EXISTS settled_trades (
-    -- Partition key: Date-based partitioning for efficient queries
-    trade_date date,
+    -- Partition key: Date as days since Unix epoch (int for compatibility)
+    trade_date int,
     
     -- Clustering key: Ensures ordering by sequence within each day
     output_sequence bigint,
@@ -44,8 +44,8 @@ CREATE TABLE IF NOT EXISTS settled_trades (
     buyer_refund bigint,
     seller_refund bigint,
     
-    -- Timestamp
-    settled_at timestamp,
+    -- Timestamp as milliseconds since Unix epoch (bigint for compatibility)
+    settled_at bigint,
     
     PRIMARY KEY ((trade_date), output_sequence)
 ) WITH CLUSTERING ORDER BY (output_sequence ASC)
