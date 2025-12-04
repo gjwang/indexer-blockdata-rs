@@ -157,11 +157,11 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 4.8: Monitoring & Metrics
 *   **Goal**: Add observability for settlement database operations.
 *   **Steps**:
-    1.  [ ] **Modify**: Add metrics: `settlement_db_inserts_total`, `settlement_db_latency_ms`, `settlement_db_errors_total`.
-    2.  [ ] **Modify**: Log slow queries (> 100ms).
-    3.  [ ] **Modify**: Add health check endpoint that verifies ScyllaDB connectivity.
-    4.  [ ] **Verify**: Run load test and observe metrics.
-    5.  [ ] **Commit**: `git commit -m "feat: add settlement metrics"`
+    1.  [x] **Modify**: Add metrics: `settlement_db_inserts_total`, `settlement_db_latency_ms`, `settlement_db_errors_total`.
+    2.  [x] **Modify**: Log slow queries (> 100ms).
+    3.  [x] **Modify**: Add health check endpoint (background task) that verifies ScyllaDB connectivity.
+    4.  [x] **Verify**: Run load test and observe metrics.
+    5.  [x] **Commit**: `git commit -m "feat: add settlement metrics"`
 
 ### Task 4.9: Event Sourcing Implementation
 *   **Goal**: Implement complete audit trail for all balance changes.
