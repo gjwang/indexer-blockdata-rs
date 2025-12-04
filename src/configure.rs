@@ -74,28 +74,29 @@ pub fn load_config() -> Result<AppConfig, ConfigError> {
     s.try_deserialize()
 }
 
-/// Load configuration for a specific service
+/// Load configuration for a specific service with a custom config file
 ///
 /// # Arguments
-/// * `service_name` - Name of the service (e.g., "settlement", "matching_engine")
+/// * `config_file` - Name of the service config file (e.g., "settlement_config", "matching_engine_config")
+///                   The `.yaml` extension is added automatically.
 ///
 /// # Configuration Loading Order (later sources override earlier ones):
 /// 1. `config/config.yaml` - Base configuration
 /// 2. `config/{RUN_MODE}.yaml` - Environment-specific config (dev/prod/test)
-/// 3. `config/{service_name}_config.yaml` - Service-specific config (highest priority)
+/// 3. `config/{config_file}.yaml` - Service-specific config (highest priority)
 /// 4. Environment variables with `APP__` prefix
 ///
 /// # Example
 /// ```no_run
 /// // Loads: config.yaml -> dev.yaml -> settlement_config.yaml -> env vars
-/// let config = load_service_config("settlement")?;
+/// let config = load_service_config("settlement_config")?;
 /// ```
 ///
 /// This allows each service to have isolated configuration without affecting others.
-pub fn load_service_config(service_name: &str) -> Result<AppConfig, ConfigError> {
+pub fn load_service_config(config_file: &str) -> Result<AppConfig, ConfigError> {
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "dev".into());
     let env_config_file = format!("config/{}", run_mode);
-    let service_config_file = format!("config/{}_config", service_name);
+    let service_config_file = format!("config/{}", config_file);
 
     let s = Config::builder()
         // 1. Start with "default" configuration
