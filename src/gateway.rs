@@ -16,6 +16,7 @@ use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{ApiResponse, ClientOrder, OrderStatus, UserAccountManager};
 use crate::symbol_manager::SymbolManager;
+use crate::user_account::Balance;
 
 pub trait OrderPublisher: Send + Sync {
     fn publish(
@@ -83,7 +84,7 @@ async fn create_order(
     Ok(Json(ApiResponse::success(response_data)))
 }
 
-//TODO:
+//TODO:re-use this struct from user_account module, but impl convert trait to encapulate the convert logic
 // pub struct Balance {
 //     pub avail: u64,
 //     pub frozen: u64,
@@ -93,7 +94,29 @@ async fn create_order(
 #[derive(Debug, serde::Serialize)]
 struct BalanceResponse {
     asset: String,
-    balance: String,
+    available: String,
+    frozen: String,
+}
+
+trait ToBalanceResponse {
+    fn to_response(&self, asset_name: String, decimals: u32) -> BalanceResponse;
+}
+
+impl ToBalanceResponse for Balance {
+    fn to_response(&self, asset_name: String, decimals: u32) -> BalanceResponse {
+        let format_decimal = |amount: u64| -> String {
+            let divisor = 10u64.pow(decimals);
+            let integer_part = amount / divisor;
+            let fractional_part = amount % divisor;
+            format!("{}.{:0width$}", integer_part, fractional_part, width = decimals as usize)
+        };
+
+        BalanceResponse {
+            asset: asset_name,
+            available: format_decimal(self.avail),
+            frozen: format_decimal(self.frozen),
+        }
+    }
 }
 
 async fn get_balance(
@@ -127,25 +150,13 @@ async fn get_balance(
 
                 let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
 
-                // Convert i64 amount to decimal string
-                let sign = if amount < 0 { "-" } else { "" };
-                let abs_amount = amount.abs() as u64;
-                let divisor = 10u64.pow(decimals);
-                let integer_part = abs_amount / divisor;
-                let fractional_part = abs_amount % divisor;
+                // Construct Balance
+                // Assuming amount is available. Frozen is 0.
+                let avail = if amount < 0 { 0 } else { amount as u64 };
 
-                // Format with leading zeros for fractional part
-                let balance_str = format!(
-                    "{}{}.{:0width$}",
-                    sign,
-                    integer_part,
-                    fractional_part,
-                    width = decimals as usize
-                );
-                // Optional: Trim trailing zeros if desired, but fixed precision is often better for financial apps.
-                // User requested "float_string", usually implies standard decimal notation.
+                let balance = Balance { avail, frozen: 0, version: 0 };
 
-                BalanceResponse { asset: asset_name, balance: balance_str }
+                balance.to_response(asset_name, decimals)
             })
             .collect();
 
