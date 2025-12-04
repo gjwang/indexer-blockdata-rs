@@ -18,6 +18,7 @@ pub struct AssetInfo {
 }
 
 /// Manages symbol-to-ID and ID-to-symbol mappings
+#[derive(Debug, Clone)]
 pub struct SymbolManager {
     pub symbol_to_id: FxHashMap<String, u32>,
     pub id_to_symbol: FxHashMap<u32, String>,
