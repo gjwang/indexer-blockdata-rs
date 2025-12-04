@@ -2,20 +2,20 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
+use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    Router,
     routing::post,
+    Router,
 };
-use axum::extract::Query;
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{
-    ApiResponse, ClientOrder, OrderStatus, u64_to_decimal_string, UserAccountManager,
+    u64_to_decimal_string, ApiResponse, ClientOrder, OrderStatus, UserAccountManager,
 };
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
@@ -26,7 +26,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
 pub struct AppState {
     pub symbol_manager: SymbolManager,
@@ -54,11 +54,17 @@ struct OrderResponseData {
     cid: Option<String>,
 }
 
+#[derive(serde::Deserialize)]
+struct CreateOrderParams {
+    user_id: u64,
+}
+
 async fn create_order(
     Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<CreateOrderParams>,
     Json(client_order): Json<ClientOrder>,
 ) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
-    let user_id = state.user_manager.get_user_id();
+    let user_id = params.user_id;
     let (order_id, internal_order) =
         client_order_convert(&client_order, &state.symbol_manager, &state.snowflake_gen, user_id)?;
 
@@ -103,10 +109,16 @@ impl BalanceResponse {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct UserIdParams {
+    user_id: u64,
+}
+
 async fn get_balance(
     Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<UserIdParams>,
 ) -> Result<Json<ApiResponse<Vec<BalanceResponse>>>, (StatusCode, String)> {
-    let user_id = state.user_manager.get_user_id();
+    let user_id = params.user_id;
 
     if let Some(db) = &state.db {
         let events = db
@@ -159,6 +171,7 @@ async fn get_balance(
 
 #[derive(serde::Deserialize)]
 struct HistoryParams {
+    user_id: u64,
     symbol: String,
     limit: Option<usize>,
 }
@@ -177,7 +190,7 @@ async fn get_trade_history(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<HistoryParams>,
 ) -> Result<Json<ApiResponse<Vec<TradeHistoryResponse>>>, (StatusCode, String)> {
-    let user_id = state.user_manager.get_user_id();
+    let user_id = params.user_id;
     let limit = params.limit.unwrap_or(100);
 
     // Validate symbol
@@ -203,16 +216,16 @@ async fn get_trade_history(
                 if t.base_asset == base && t.quote_asset == quote {
                     let role = if t.buyer_user_id == user_id { "BUYER" } else { "SELLER" };
 
+                    let price_decimals = info.price_decimal;
+                    let qty_decimals = state.symbol_manager.get_asset_decimal(base).unwrap_or(8);
+
                     Some(TradeHistoryResponse {
                         trade_id: t.trade_id.to_string(),
                         symbol: params.symbol.clone(),
-                        price: t.price.to_string(),
-                        quantity: t.quantity.to_string(),
+                        price: u64_to_decimal_string(t.price, price_decimals),
+                        quantity: u64_to_decimal_string(t.quantity, qty_decimals),
                         role: role.to_string(),
-                        time: 0, // settled_at is not in MatchExecData struct?
-                        // Wait, SettlementDb::parse_trade_row ignores settled_at!
-                        // I should update MatchExecData or SettlementDb to return settled_at.
-                        // For now, use 0 or current time?
+                        time: t.settled_at as i64,
                     })
                 } else {
                     None
