@@ -1,11 +1,11 @@
 use fetcher::configure;
-use fetcher::logger::setup_logger;
+use fetcher::logger::setup_logger_for_service;
 use zmq::{Context, SUB};
-use log::{info, error, warn, debug};
+use log::{info, error, debug};
 
 fn main() {
-    // 1. Setup Logger
-    if let Err(e) = setup_logger() {
+    // Setup service-specific logger (logs to log/settlement.log)
+    if let Err(e) = setup_logger_for_service(Some("settlement")) {
         eprintln!("Failed to initialize logger: {}", e);
         return;
     }
