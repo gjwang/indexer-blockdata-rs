@@ -9,9 +9,7 @@ pub struct SledDb {
 
 impl SledDb {
     pub fn new(path: &str) -> Result<Self, sled::Error> {
-        Ok(Self {
-            db: sled::open(path)?,
-        })
+        Ok(Self { db: sled::open(path)? })
     }
 
     pub fn insert(&self, key: &str, value: i64) -> Result<(), Box<dyn std::error::Error>> {

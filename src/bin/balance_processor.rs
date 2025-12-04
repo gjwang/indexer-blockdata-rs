@@ -38,9 +38,7 @@ impl SimulatedFundingAccount {
     }
 
     fn has_balance(&self, asset_id: u32, amount: u64) -> bool {
-        self.balances
-            .get(&asset_id)
-            .map_or(false, |&bal| bal >= amount)
+        self.balances.get(&asset_id).map_or(false, |&bal| bal >= amount)
     }
 
     fn reserve(&mut self, asset_id: u32, amount: u64) -> Result<(), String> {
@@ -50,10 +48,7 @@ impl SimulatedFundingAccount {
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
 
         if *balance < amount {
-            return Err(format!(
-                "Insufficient funding balance: need {}, have {}",
-                amount, balance
-            ));
+            return Err(format!("Insufficient funding balance: need {}, have {}", amount, balance));
         }
 
         *balance -= amount;
@@ -85,10 +80,7 @@ impl BalanceProcessor {
     }
 
     fn current_time_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
     }
 
     fn cleanup_old_requests(&mut self) {
@@ -160,13 +152,7 @@ impl BalanceProcessor {
 
         // 3. Process the request (validation passed)
         match req {
-            BalanceRequest::TransferIn {
-                request_id,
-                user_id,
-                asset_id,
-                amount,
-                timestamp,
-            } => {
+            BalanceRequest::TransferIn { request_id, user_id, asset_id, amount, timestamp } => {
                 println!(
                     "\n📥 Processing Transfer In: {} units of asset {} for user {}",
                     amount, asset_id, user_id
@@ -209,13 +195,7 @@ impl BalanceProcessor {
                 }
             }
 
-            BalanceRequest::TransferOut {
-                request_id,
-                user_id,
-                asset_id,
-                amount,
-                timestamp,
-            } => {
+            BalanceRequest::TransferOut { request_id, user_id, asset_id, amount, timestamp } => {
                 println!(
                     "\n📤 Processing Transfer Out: {} units of asset {} from user {}",
                     amount, asset_id, user_id
@@ -267,7 +247,8 @@ async fn main() {
 
     // Initialize MatchingEngine (shared with matching_engine_server in production)
     let matching_engine = Arc::new(Mutex::new(
-        MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal).expect("Failed to create MatchingEngine"),
+        MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal)
+            .expect("Failed to create MatchingEngine"),
     ));
 
     let mut processor = BalanceProcessor::new(matching_engine.clone());
@@ -282,16 +263,10 @@ async fn main() {
         .create()
         .expect("Consumer creation failed");
 
-    let balance_topic = config
-        .kafka
-        .topics
-        .balance_ops
-        .clone()
-        .unwrap_or_else(|| "balance_ops".to_string());
+    let balance_topic =
+        config.kafka.topics.balance_ops.clone().unwrap_or_else(|| "balance_ops".to_string());
 
-    consumer
-        .subscribe(&[&balance_topic])
-        .expect("Can't subscribe to balance_ops topic");
+    consumer.subscribe(&[&balance_topic]).expect("Can't subscribe to balance_ops topic");
 
     println!("\n--------------------------------------------------");
     println!("Balance Processor Started (Direct ME Integration)");

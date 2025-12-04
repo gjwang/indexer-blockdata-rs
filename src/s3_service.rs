@@ -19,10 +19,7 @@ impl S3Service {
         aws_access_key_id: &str,
         aws_secret_access_key: &str,
     ) -> Result<Self, Box<dyn Error>> {
-        let region = Region::Custom {
-            region: region.to_owned(),
-            endpoint: endpoint.to_owned(),
-        };
+        let region = Region::Custom { region: region.to_owned(), endpoint: endpoint.to_owned() };
 
         let credentials = Credentials::new(
             Some(aws_access_key_id),
@@ -47,10 +44,7 @@ impl S3Service {
         if response.status_code() == 200 {
             println!("File uploaded successfully!");
         } else {
-            println!(
-                "Failed to upload file. Status code: {}",
-                response.status_code()
-            );
+            println!("Failed to upload file. Status code: {}", response.status_code());
         }
 
         Ok(())
@@ -72,10 +66,7 @@ impl S3Service {
             let data = response.bytes();
             Ok(data.clone())
         } else {
-            println!(
-                "Failed to get_object:{object_key} Status code: {}",
-                response.status_code()
-            );
+            println!("Failed to get_object:{object_key} Status code: {}", response.status_code());
             Ok(Bytes::new())
         }
     }

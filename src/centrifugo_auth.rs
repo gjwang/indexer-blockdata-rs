@@ -43,12 +43,8 @@ impl CentrifugoTokenGenerator {
         let ttl = ttl_seconds.unwrap_or(3600); // Default 1 hour
         let expiration = now + ttl;
 
-        let claims = CentrifugoClaims {
-            sub: user_id.to_string(),
-            exp: expiration,
-            iat: now,
-            channels,
-        };
+        let claims =
+            CentrifugoClaims { sub: user_id.to_string(), exp: expiration, iat: now, channels };
 
         let token = encode(
             &Header::default(),
@@ -122,9 +118,7 @@ mod tests {
             "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256".to_string(),
         );
 
-        let token = generator
-            .generate_token_with_default_channels("12345", Some(3600))
-            .unwrap();
+        let token = generator.generate_token_with_default_channels("12345", Some(3600)).unwrap();
         let claims = generator.verify_token(&token).unwrap();
 
         assert_eq!(claims.sub, "12345");

@@ -177,16 +177,10 @@ impl OrderBook {
         if order.quantity > 0 {
             match order.side {
                 Side::Buy => {
-                    self.bids
-                        .entry(order.price)
-                        .or_insert_with(VecDeque::new)
-                        .push_back(order);
+                    self.bids.entry(order.price).or_insert_with(VecDeque::new).push_back(order);
                 }
                 Side::Sell => {
-                    self.asks
-                        .entry(order.price)
-                        .or_insert_with(VecDeque::new)
-                        .push_back(order);
+                    self.asks.entry(order.price).or_insert_with(VecDeque::new).push_back(order);
                 }
             }
         }
@@ -198,23 +192,13 @@ impl OrderBook {
         println!("ASKS:");
         for (price, orders) in self.asks.iter().rev() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
-            println!(
-                "  Price: {} | Qty: {} | Orders: {}",
-                price,
-                total_qty,
-                orders.len()
-            );
+            println!("  Price: {} | Qty: {} | Orders: {}", price, total_qty, orders.len());
         }
         println!("------------------");
         println!("BIDS:");
         for (price, orders) in self.bids.iter().rev() {
             let total_qty: u64 = orders.iter().map(|o| o.quantity).sum();
-            println!(
-                "  Price: {} | Qty: {} | Orders: {}",
-                price,
-                total_qty,
-                orders.len()
-            );
+            println!("  Price: {} | Qty: {} | Orders: {}", price, total_qty, orders.len());
         }
     }
 
@@ -410,8 +394,7 @@ impl MatchingEngine {
         quote_asset: u32,
     ) -> Result<(), String> {
         if symbol_id as usize >= self.order_books.len() {
-            self.order_books
-                .resize_with(symbol_id as usize + 1, || None);
+            self.order_books.resize_with(symbol_id as usize + 1, || None);
         } else if self.order_books[symbol_id as usize].is_some() {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
@@ -435,10 +418,8 @@ impl MatchingEngine {
         let wal_side = side;
 
         // 1. Validate Symbol
-        let (base_asset, quote_asset) = *self
-            .asset_map
-            .get(&symbol_id)
-            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
+        let (base_asset, quote_asset) =
+            *self.asset_map.get(&symbol_id).ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
         if let Some(Some(book)) = self.order_books.get(symbol_id as usize) {
             if book.active_order_ids.contains(&order_id) {
@@ -507,9 +488,7 @@ impl MatchingEngine {
         if let Some(wal) = &mut self.order_wal {
             wal.flush().map_err(|e| OrderError::Other(e.to_string()))?;
         }
-        self.ledger
-            .flush()
-            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        self.ledger.flush().map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         Ok(oid)
     }
@@ -530,9 +509,8 @@ impl MatchingEngine {
         user_id: u64,
         timestamp: u64,
     ) -> Result<u64, OrderError> {
-        let (base_asset, quote_asset) = *asset_map
-            .get(&symbol_id)
-            .ok_or(OrderError::AssetMapNotFound { symbol_id })?;
+        let (base_asset, quote_asset) =
+            *asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -541,35 +519,19 @@ impl MatchingEngine {
         };
 
         ledger
-            .apply(&LedgerCommand::Lock {
-                user_id,
-                asset: lock_asset,
-                amount: lock_amount,
-            })
+            .apply(&LedgerCommand::Lock { user_id, asset: lock_asset, amount: lock_amount })
             .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         let book_opt = order_books
             .get_mut(symbol_id as usize)
             .ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        let book = book_opt
-            .as_mut()
-            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
+        let book = book_opt.as_mut().ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
-        let order = Order {
-            order_id,
-            user_id,
-            symbol_id,
-            side,
-            order_type,
-            price,
-            quantity,
-            timestamp,
-        };
+        let order =
+            Order { order_id, user_id, symbol_id, side, order_type, price, quantity, timestamp };
 
-        let trades = book
-            .add_order(order, trade_id_gen, timestamp)
-            .map_err(OrderError::Other)?;
+        let trades = book.add_order(order, trade_id_gen, timestamp).map_err(OrderError::Other)?;
 
         let mut match_batch = Vec::with_capacity(trades.len());
 
@@ -628,9 +590,7 @@ impl MatchingEngine {
             let (base_asset, quote_asset) = match self.asset_map.get(symbol_id) {
                 Some(&pair) => pair,
                 None => {
-                    results[i] = Err(OrderError::AssetMapNotFound {
-                        symbol_id: *symbol_id,
-                    });
+                    results[i] = Err(OrderError::AssetMapNotFound { symbol_id: *symbol_id });
                     continue;
                 }
             };
@@ -676,7 +636,8 @@ impl MatchingEngine {
         let mut shadow = ShadowLedger::new(&self.ledger);
 
         for i in valid_indices {
-            let (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) = requests[i];
+            let (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) =
+                requests[i];
             match Self::process_order_logic(
                 &mut shadow,
                 &mut self.order_books,
@@ -701,7 +662,7 @@ impl MatchingEngine {
         // 4. Commit Batch (Memory Only) - Return commands for persistence
         let t_commit_start = std::time::Instant::now();
         let mut output_cmds = Vec::new();
-        
+
         if !shadow.pending_commands.is_empty() {
             let (delta, cmds) = shadow.into_delta();
             // Apply to memory immediately so next batch sees correct state
@@ -729,8 +690,7 @@ impl MatchingEngine {
         // 1. Write to WAL
         // 1. Write to WAL
         if let Some(wal) = &mut self.order_wal {
-            wal.log_cancel_order(order_id)
-                .map_err(|e| OrderError::Other(e.to_string()))?;
+            wal.log_cancel_order(order_id).map_err(|e| OrderError::Other(e.to_string()))?;
         }
 
         // 2. Process Logic
@@ -764,10 +724,7 @@ impl MatchingEngine {
 
     pub fn print_order_book(&self, symbol_id: u32) {
         if let Some(Some(book)) = self.order_books.get(symbol_id as usize) {
-            println!(
-                "\n--- Order Book for {} (ID: {}) ---",
-                book.symbol_id, symbol_id
-            );
+            println!("\n--- Order Book for {} (ID: {}) ---", book.symbol_id, symbol_id);
             book.print_book();
             println!("----------------------------------\n");
         } else {
@@ -832,11 +789,7 @@ impl MatchingEngine {
         amount: u64,
     ) -> Result<(), String> {
         self.ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id,
-                asset: asset_id,
-                amount,
-            })
+            .apply(&LedgerCommand::Deposit { user_id, asset: asset_id, amount })
             .map_err(|e| format!("Failed to transfer in to trading account: {}", e))
     }
 
@@ -850,11 +803,7 @@ impl MatchingEngine {
         amount: u64,
     ) -> Result<(), String> {
         self.ledger
-            .apply(&LedgerCommand::Withdraw {
-                user_id,
-                asset: asset_id,
-                amount,
-            })
+            .apply(&LedgerCommand::Withdraw { user_id, asset: asset_id, amount })
             .map_err(|e| format!("Failed to transfer out from trading account: {}", e))
     }
 }
@@ -878,7 +827,7 @@ mod tests {
             engine.register_symbol(1, "BTC_USDT".to_string(), 1, 2).unwrap();
             // Deposit funds
             engine.transfer_in_to_trading_account(101, 2, 100000).unwrap(); // User 101 has 100k USDT
-            engine.transfer_in_to_trading_account(102, 1, 1000).unwrap();   // User 102 has 1000 BTC
+            engine.transfer_in_to_trading_account(102, 1, 1000).unwrap(); // User 102 has 1000 BTC
         }
 
         // Action 1: Place Order

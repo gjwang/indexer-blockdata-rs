@@ -43,14 +43,7 @@ impl ClientOrder {
         quantity: Decimal,
         order_type: OrderType,
     ) -> Result<Self, String> {
-        let order = ClientOrder {
-            cid,
-            symbol,
-            side,
-            price,
-            quantity,
-            order_type,
-        };
+        let order = ClientOrder { cid, symbol, side, price, quantity, order_type };
         order.validate_order()?;
         Ok(order)
     }
@@ -83,8 +76,6 @@ impl ClientOrder {
 
         Ok(())
     }
-
-
 
     /// Convert ClientOrder to internal OrderRequest
     pub fn try_to_internal(
@@ -126,14 +117,7 @@ impl ClientOrder {
         symbol_manager: &SymbolManager,
     ) -> Result<Self, String> {
         match request {
-            OrderRequest::PlaceOrder {
-                symbol_id,
-                side,
-                price,
-                quantity,
-                order_type,
-                ..
-            } => {
+            OrderRequest::PlaceOrder { symbol_id, side, price, quantity, order_type, .. } => {
                 let symbol = symbol_manager
                     .get_symbol(*symbol_id)
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?
@@ -148,9 +132,8 @@ impl ClientOrder {
                 let price_decimal = Decimal::from(*price) / price_divisor;
 
                 // Convert quantity from integer to Decimal
-                let quantity_decimals = symbol_manager
-                    .get_asset_decimal(symbol_info.base_asset_id)
-                    .unwrap_or(8);
+                let quantity_decimals =
+                    symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
                 let quantity_divisor = Decimal::from(10_u64.pow(quantity_decimals));
                 let quantity_decimal = Decimal::from(*quantity) / quantity_divisor;
 
@@ -173,11 +156,8 @@ fn validate_cid(id: &str) -> Result<(), ValidationError> {
     if id.len() < 16 || id.len() > 32 {
         let mut err = ValidationError::new("cid_length");
         err.message = Some(
-            format!(
-                "Client order ID must be between 16 and 32 characters (got {})",
-                id.len()
-            )
-            .into(),
+            format!("Client order ID must be between 16 and 32 characters (got {})", id.len())
+                .into(),
         );
         return Err(err);
     }
@@ -266,9 +246,8 @@ impl ClientOrder {
             .map_err(|_| format!("Price overflow: {}", self.price))?;
 
         // Convert quantity to integer representation (already Decimal, no parsing needed)
-        let quantity_decimals = symbol_manager
-            .get_asset_decimal(symbol_info.base_asset_id)
-            .unwrap_or(8);
+        let quantity_decimals =
+            symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
         let quantity_multiplier = Decimal::from(10_u64.pow(quantity_decimals));
         let quantity = (self.quantity * quantity_multiplier)
             .round()
@@ -290,7 +269,15 @@ impl ClientOrder {
     }
 }
 
-pub fn calculate_checksum(order_id: u64, user_id: u64, symbol_id: u32, side: u8, price: u64, qty: u64, type_id: u8) -> u32 {
+pub fn calculate_checksum(
+    order_id: u64,
+    user_id: u64,
+    symbol_id: u32,
+    side: u8,
+    price: u64,
+    qty: u64,
+    type_id: u8,
+) -> u32 {
     let mut hasher = Hasher::new();
     hasher.update(&order_id.to_le_bytes());
     hasher.update(&user_id.to_le_bytes());

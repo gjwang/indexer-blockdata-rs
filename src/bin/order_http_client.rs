@@ -21,9 +21,9 @@ async fn main() {
 
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
-    let total_count: u64 = 1_000_000;
+    let total_count: u64 = 3_000;
 
-    let concurrency = 500;
+    let concurrency = 2;
     let interval_ms = 0;
 
     let mut handles = Vec::new();

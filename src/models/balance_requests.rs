@@ -64,16 +64,9 @@ impl BalanceRequest {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", content = "data")]
 pub enum DepositSource {
-    Blockchain {
-        chain: String,
-        required_confirmations: u32,
-    },
-    BankTransfer {
-        reference: String,
-    },
-    Internal {
-        from_user_id: u64,
-    },
+    Blockchain { chain: String, required_confirmations: u32 },
+    BankTransfer { reference: String },
+    Internal { from_user_id: u64 },
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

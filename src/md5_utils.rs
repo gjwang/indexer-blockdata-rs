@@ -12,10 +12,7 @@ pub struct Md5Writer<W: Write> {
 
 impl<W: Write> Md5Writer<W> {
     pub fn new(inner: W) -> Self {
-        Self {
-            inner,
-            context: md5::Context::new(),
-        }
+        Self { inner, context: md5::Context::new() }
     }
 
     // 完成计算，返回 MD5 字符串
@@ -43,10 +40,7 @@ pub struct Md5Reader<R: Read> {
 
 impl<R: Read> Md5Reader<R> {
     pub fn new(inner: R) -> Self {
-        Self {
-            inner,
-            context: md5::Context::new(),
-        }
+        Self { inner, context: md5::Context::new() }
     }
 
     pub fn finish(self) -> String {

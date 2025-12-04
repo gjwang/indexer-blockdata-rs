@@ -27,14 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let kafka_broker = args
-        .kafka_broker
-        .clone()
-        .unwrap_or(config.kafka.broker.clone());
-    let kafka_topic = args
-        .kafka_topic
-        .clone()
-        .unwrap_or("user_updates".to_string()); // Default to user_updates topic
+    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka.broker.clone());
+    let kafka_topic = args.kafka_topic.clone().unwrap_or("user_updates".to_string()); // Default to user_updates topic
     let user_id = args.user_id.clone();
 
     println!("=== User Data Generator ===");
@@ -75,11 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 UserUpdate::Order(OrderUpdate {
                     order_id: format!("ord_{}", rng.random_range(1000..9999)),
                     symbol_id: 0, // BTC_USDT
-                    side: if rng.random_bool(0.5) {
-                        "buy".into()
-                    } else {
-                        "sell".into()
-                    },
+                    side: if rng.random_bool(0.5) { "buy".into() } else { "sell".into() },
                     order_type: "limit".into(),
                     status: "new".into(),
                     price,
@@ -105,10 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
 
-        let stream_message = StreamMessage {
-            ts_ms,
-            update: user_update.clone(),
-        };
+        let stream_message = StreamMessage { ts_ms, update: user_update.clone() };
 
         let payload = serde_json::to_string(&stream_message)?;
         let key = user_id.clone();

@@ -40,26 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let centrifugo_url = args
-        .url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:8000/api".to_string());
-    let centrifugo_channel = args
-        .channel
-        .clone()
-        .unwrap_or(config.centrifugo.channel.clone());
-    let kafka_broker = args
-        .kafka_broker
-        .clone()
-        .unwrap_or(config.kafka.broker.clone());
-    let kafka_topic = args
-        .kafka_topic
-        .clone()
-        .unwrap_or(config.kafka.topics.orders.clone());
-    let base_group_id = args
-        .group_id
-        .clone()
-        .unwrap_or(config.kafka.group_id.clone());
+    let centrifugo_url =
+        args.url.clone().unwrap_or_else(|| "http://localhost:8000/api".to_string());
+    let centrifugo_channel = args.channel.clone().unwrap_or(config.centrifugo.channel.clone());
+    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka.broker.clone());
+    let kafka_topic = args.kafka_topic.clone().unwrap_or(config.kafka.topics.orders.clone());
+    let base_group_id = args.group_id.clone().unwrap_or(config.kafka.group_id.clone());
     let api_key = args.api_key.unwrap_or_else(|| {
         std::env::var("CENTRIFUGO_API_KEY")
             .unwrap_or_else(|_| "your_secure_api_key_here_change_this_in_production".to_string())
@@ -116,10 +102,7 @@ async fn run_http_bridge(
     println!("HTTP client configured with connection pooling:");
 
     println!("Centrifugo HTTP API URL: {}", publish_url);
-    println!(
-        "Using API Key: {}...",
-        &api_key.chars().take(10).collect::<String>()
-    );
+    println!("Using API Key: {}...", &api_key.chars().take(10).collect::<String>());
 
     // Connect to Redpanda
     println!("Connecting to Redpanda at {}", kafka_broker);

@@ -18,30 +18,9 @@ impl SimulatedFundingAccount {
     fn new() -> Self {
         let mut balances = HashMap::new();
         // Initialize with large available balances
-        balances.insert(
-            1,
-            Balance {
-                avail: 1_000_000_000_000_000,
-                frozen: 0,
-                version: 0,
-            },
-        ); // BTC
-        balances.insert(
-            2,
-            Balance {
-                avail: 1_000_000_000_000_000,
-                frozen: 0,
-                version: 0,
-            },
-        ); // USDT
-        balances.insert(
-            3,
-            Balance {
-                avail: 1_000_000_000_000_000,
-                frozen: 0,
-                version: 0,
-            },
-        ); // ETH
+        balances.insert(1, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // BTC
+        balances.insert(2, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // USDT
+        balances.insert(3, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // ETH
         Self { balances }
     }
 
@@ -52,9 +31,7 @@ impl SimulatedFundingAccount {
             .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
 
-        balance
-            .frozen(amount)
-            .map_err(|e| format!("Lock failed: {}", e))
+        balance.frozen(amount).map_err(|e| format!("Lock failed: {}", e))
     }
 
     /// Finalize Transfer In: Remove from locked (funds moved to Trading Engine)
@@ -64,9 +41,7 @@ impl SimulatedFundingAccount {
             .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
 
-        balance
-            .spend_frozen(amount)
-            .map_err(|e| format!("Spend failed: {}", e))
+        balance.spend_frozen(amount).map_err(|e| format!("Spend failed: {}", e))
     }
 
     /// Finalize Transfer Out: Add to available (funds received from Trading Engine)
@@ -109,10 +84,7 @@ struct ApiResponse {
 
 /// Get current timestamp in milliseconds
 fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
 }
 
 async fn transfer_in(
@@ -150,9 +122,7 @@ async fn transfer_in(
     state
         .producer
         .send(
-            FutureRecord::to(&state.topic)
-                .payload(&json_payload)
-                .key(&key),
+            FutureRecord::to(&state.topic).payload(&json_payload).key(&key),
             Duration::from_secs(0),
         )
         .await
@@ -162,10 +132,7 @@ async fn transfer_in(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!(
-        "✅ Transfer In request published to Kafka: {}",
-        payload.request_id
-    );
+    println!("✅ Transfer In request published to Kafka: {}", payload.request_id);
 
     // 3. Wait for Settlement (Simulated)
     println!("⏳ Waiting 5s for settlement...");
@@ -217,9 +184,7 @@ async fn transfer_out(
     state
         .producer
         .send(
-            FutureRecord::to(&state.topic)
-                .payload(&json_payload)
-                .key(&key),
+            FutureRecord::to(&state.topic).payload(&json_payload).key(&key),
             Duration::from_secs(0),
         )
         .await
@@ -228,10 +193,7 @@ async fn transfer_out(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!(
-        "✅ Transfer Out request published to Kafka: {}",
-        payload.request_id
-    );
+    println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);
 
     // 2. Wait for Settlement (Simulated)
     println!("⏳ Waiting 5s for settlement...");
@@ -273,13 +235,8 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-    let balance_topic = config
-        .kafka
-        .topics
-        .balance_ops
-        .as_ref()
-        .unwrap_or(&"balance_ops".to_string())
-        .clone();
+    let balance_topic =
+        config.kafka.topics.balance_ops.as_ref().unwrap_or(&"balance_ops".to_string()).clone();
 
     let state = AppState {
         producer,

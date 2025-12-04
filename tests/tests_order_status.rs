@@ -12,9 +12,7 @@ mod tests {
         let mut engine = MatchingEngine::new(&wal_dir, &snap_dir, false).unwrap();
 
         // Register a symbol: BTC_USDT (ID 0), Base Asset 1, Quote Asset 2
-        engine
-            .register_symbol(0, "BTC_USDT".to_string(), 1, 2)
-            .unwrap();
+        engine.register_symbol(0, "BTC_USDT".to_string(), 1, 2).unwrap();
 
         engine
     }
@@ -25,14 +23,7 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Deposit funds for User 1: 500 Asset 2 (Quote)
-        engine
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: 1,
-                asset: 2,
-                amount: 500,
-            })
-            .unwrap();
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 500 }).unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
         // This should fail due to insufficient funds
@@ -56,11 +47,7 @@ mod tests {
         // Deposit funds for User 1: 1000 Asset 2 (Quote)
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: 1,
-                asset: 2,
-                amount: 1000,
-            })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 1000 })
             .unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required

@@ -55,10 +55,7 @@ async fn main() {
         "your_secure_api_key_here_change_this_in_production".to_string(),
     ));
 
-    let state = AppState {
-        token_generator,
-        publisher,
-    };
+    let state = AppState { token_generator, publisher };
 
     // Build router
     let app = Router::new()
@@ -95,11 +92,7 @@ async fn login_handler(
     // Generate access token (in production, use proper JWT with expiration)
     let access_token = format!("access_token_for_{}", user_id);
 
-    Ok(Json(LoginResponse {
-        access_token,
-        user_id: user_id.to_string(),
-        expires_in: 3600,
-    }))
+    Ok(Json(LoginResponse { access_token, user_id: user_id.to_string(), expires_in: 3600 }))
 }
 
 /// Get Centrifugo connection token
@@ -116,10 +109,7 @@ async fn centrifugo_token_handler(
         .generate_token_with_default_channels(user_id, Some(3600))
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
-    Ok(Json(TokenResponse {
-        centrifugo_token: token,
-        expires_in: 3600,
-    }))
+    Ok(Json(TokenResponse { centrifugo_token: token, expires_in: 3600 }))
 }
 
 /// Test endpoint to publish balance update
@@ -143,10 +133,8 @@ async fn test_publish_balance(
     };
 
     let user_update = UserUpdate::Balance(balance);
-    let stream_message = StreamMessage {
-        ts_ms: chrono::Utc::now().timestamp_millis(),
-        update: user_update,
-    };
+    let stream_message =
+        StreamMessage { ts_ms: chrono::Utc::now().timestamp_millis(), update: user_update };
 
     state
         .publisher
@@ -189,10 +177,8 @@ async fn test_publish_order(
     };
 
     let user_update = UserUpdate::Order(order);
-    let stream_message = StreamMessage {
-        ts_ms: chrono::Utc::now().timestamp_millis(),
-        update: user_update,
-    };
+    let stream_message =
+        StreamMessage { ts_ms: chrono::Utc::now().timestamp_millis(), update: user_update };
 
     state
         .publisher

@@ -18,9 +18,7 @@ impl Default for FastUlidGen {
 
 impl FastUlidGen {
     pub fn new() -> Self {
-        Self {
-            generator: ulid::Generator::new(),
-        }
+        Self { generator: ulid::Generator::new() }
     }
 
     #[inline(always)]
@@ -49,10 +47,7 @@ impl Default for FastUlidHalfGen {
 
 impl FastUlidHalfGen {
     pub fn new() -> Self {
-        Self {
-            last_val: 0,
-            rng: rand::rngs::StdRng::from_rng(&mut rand::rng()),
-        }
+        Self { last_val: 0, rng: rand::rngs::StdRng::from_rng(&mut rand::rng()) }
     }
 
     /// Generate a new unique u64 ID.
@@ -333,12 +328,7 @@ mod tests {
 
         for _ in 0..10000 {
             let next = gen.generate();
-            assert!(
-                next > last,
-                "IDs must be strictly increasing. Last: {}, Next: {}",
-                last,
-                next
-            );
+            assert!(next > last, "IDs must be strictly increasing. Last: {}, Next: {}", last, next);
             last = next;
         }
     }
@@ -370,10 +360,7 @@ mod tests {
     fn demo_usage_half_ulid_gen() {
         let mut gen = FastUlidHalfGen::new();
         println!("\n--- FastUlidHalfGen Demo ---");
-        println!(
-            "{:<20} | {:<15} | {:<20}",
-            "u64 (Decimal)", "Base32", "Timestamp (ms)"
-        );
+        println!("{:<20} | {:<15} | {:<20}", "u64 (Decimal)", "Base32", "Timestamp (ms)");
         println!("{:-<20}-+-{:-<15}-+-{:-<20}", "", "", "");
 
         for _ in 0..5 {
@@ -391,10 +378,7 @@ mod tests {
     fn demo_usage_ulid_gen() {
         let mut gen = FastUlidGen::new();
         println!("\n--- FastUlidGen Demo ---");
-        println!(
-            "{:<20} | {:<15} | {:<20}",
-            "u128 (Decimal)", "Base32", "Timestamp (ms)"
-        );
+        println!("{:<20} | {:<15} | {:<20}", "u128 (Decimal)", "Base32", "Timestamp (ms)");
         println!("{:-<20}-+-{:-<15}-+-{:-<20}", "", "", "");
 
         for _ in 0..5 {
@@ -490,10 +474,7 @@ mod tests {
             "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
             "u64 (Decimal)", "Base32", "Machine ID", "Timestamp (ms)", "Sequence"
         );
-        println!(
-            "{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}",
-            "", "", "", "", ""
-        );
+        println!("{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}", "", "", "", "", "");
 
         for _ in 0..5 {
             let id = gen.generate();
@@ -502,10 +483,7 @@ mod tests {
             let seq = SnowflakeGenZero::sequence(id);
             let b32 = SnowflakeGenZero::to_str_base32(id);
 
-            println!(
-                "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
-                id, b32, machine_id, ts, seq
-            );
+            println!("{:<20} | {:<13} | {:<15} | {:<20} | {:<20}", id, b32, machine_id, ts, seq);
         }
         println!("----------------------------\n");
     }
@@ -552,10 +530,7 @@ mod tests {
                 // New millisecond (either wall clock advanced OR we overflowed)
                 assert!(ts > last_ts, "Timestamp must increase");
                 // For ZeroSequence, it must reset to 0
-                assert_eq!(
-                    seq, 0,
-                    "Sequence must reset to 0 on new timestamp for ZeroGen"
-                );
+                assert_eq!(seq, 0, "Sequence must reset to 0 on new timestamp for ZeroGen");
             }
 
             last_id = id;
@@ -605,10 +580,7 @@ mod tests {
             "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
             "u64 (Decimal)", "Base32", "Machine ID", "Timestamp (ms)", "Sequence"
         );
-        println!(
-            "{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}",
-            "", "", "", "", ""
-        );
+        println!("{:-<20}-+-{:-<13}-+-{:-<15}-+-{:-<20}-+-{:-<20}", "", "", "", "", "");
 
         for _ in 0..5 {
             let id = gen.generate();
@@ -617,10 +589,7 @@ mod tests {
             let seq = SnowflakeGenRng::sequence(id); // Reuse helper
             let b32 = SnowflakeGenRng::to_str_base32(id); // Reuse helper
 
-            println!(
-                "{:<20} | {:<13} | {:<15} | {:<20} | {:<20}",
-                id, b32, machine_id, ts, seq
-            );
+            println!("{:<20} | {:<13} | {:<15} | {:<20} | {:<20}", id, b32, machine_id, ts, seq);
         }
         println!("----------------------------\n");
     }

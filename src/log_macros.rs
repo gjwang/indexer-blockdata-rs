@@ -1,5 +1,5 @@
 /// Logging macros with custom target for cleaner log output
-/// 
+///
 /// Instead of showing the full binary name (e.g., "settlement_service"),
 /// these macros use a shorter, cleaner target name (e.g., "settlement").
 

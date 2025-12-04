@@ -34,12 +34,7 @@ mod tests {
         let result = client_order.try_to_internal(&sm, 1001, 1);
         assert!(result.is_ok(), "Error: {:?}", result.err());
         if let Ok(OrderRequest::PlaceOrder {
-            symbol_id,
-            side,
-            price,
-            quantity,
-            order_type,
-            ..
+            symbol_id, side, price, quantity, order_type, ..
         }) = result
         {
             assert_eq!(symbol_id, 1);
@@ -133,10 +128,7 @@ mod tests {
         assert_eq!(client_order.symbol, "BTC_USDT");
         assert_eq!(client_order.side, Side::Sell);
         assert_eq!(client_order.price, Decimal::from_str("3500.75").unwrap());
-        assert_eq!(
-            client_order.quantity,
-            Decimal::from_str("0.12345678").unwrap()
-        );
+        assert_eq!(client_order.quantity, Decimal::from_str("0.12345678").unwrap());
         assert_eq!(client_order.order_type, OrderType::Market);
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);
@@ -164,19 +156,12 @@ mod tests {
     #[test]
     fn test_try_from_internal_invalid_request_type() {
         let sm = setup_symbol_manager();
-        let request = OrderRequest::CancelOrder {
-            order_id: 1001,
-            user_id: 1,
-            symbol_id: 1,
-            checksum: 0,
-        };
+        let request =
+            OrderRequest::CancelOrder { order_id: 1001, user_id: 1, symbol_id: 1, checksum: 0 };
 
         let result = ClientOrder::try_from_internal(&request, &sm);
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err(),
-            "Only PlaceOrder can be converted to ClientOrder"
-        );
+        assert_eq!(result.unwrap_err(), "Only PlaceOrder can be converted to ClientOrder");
     }
 
     #[test]

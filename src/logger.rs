@@ -74,40 +74,38 @@ pub fn setup_logger(config: &AppConfig) -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level(&config.log_level);
 
     // Create console appender
-    let stdout = ConsoleAppender::builder()
-        .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
-        .build();
+    let stdout =
+        ConsoleAppender::builder().encoder(Box::new(PatternEncoder::new(LOG_PATTERN))).build();
 
-    let mut log_config_builder = LogConfig::builder()
-        .appender(Appender::builder().build("stdout", Box::new(stdout)));
+    let mut log_config_builder =
+        LogConfig::builder().appender(Appender::builder().build("stdout", Box::new(stdout)));
 
     let mut root_builder = Root::builder().appender("stdout");
 
     // Conditionally add file appender
     if config.log_to_file {
         let log_file = &config.log_file;
-        
+
         // Ensure log directory exists
         if let Some(parent) = Path::new(log_file).parent() {
             fs::create_dir_all(parent)?;
         }
-        
+
         eprintln!("Logging to file: {} (level: {:?})", log_file, log_level);
-        
+
         let file = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
             .build(log_file)?;
 
-        log_config_builder = log_config_builder
-            .appender(Appender::builder().build("file", Box::new(file)));
-        
+        log_config_builder =
+            log_config_builder.appender(Appender::builder().build("file", Box::new(file)));
+
         root_builder = root_builder.appender("file");
     } else {
         eprintln!("Logging to console only (level: {:?})", log_level);
     }
 
-    let log_config = log_config_builder
-        .build(root_builder.build(log_level))?;
+    let log_config = log_config_builder.build(root_builder.build(log_level))?;
 
     // Initialize the logger
     log4rs::init_config(log_config)?;

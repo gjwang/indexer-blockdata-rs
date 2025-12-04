@@ -22,22 +22,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "endpoint={endpoint}, bucket_name={bucket_name}, aws_access_key_id={aws_access_key_id}"
     );
 
-    let s3_service = S3Service::new(
-        bucket_name,
-        region,
-        endpoint,
-        &aws_access_key_id,
-        &aws_secret_access_key,
-    )?;
+    let s3_service =
+        S3Service::new(bucket_name, region, endpoint, &aws_access_key_id, &aws_secret_access_key)?;
 
     // // File to upload
     let filename = "0.jpeg";
     let file_path = Path::new(filename);
 
     s3_service.upload_file(file_path).await?;
-    s3_service
-        .download_object_to_file(filename, file_path)
-        .await?;
+    s3_service.download_object_to_file(filename, file_path).await?;
 
     Ok(())
 }

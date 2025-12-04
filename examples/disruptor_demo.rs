@@ -12,11 +12,7 @@ struct MarketEvent {
 
 // Factory to initialize the Ring Buffer with empty events
 fn event_factory() -> MarketEvent {
-    MarketEvent {
-        id: 0,
-        price: 0.0,
-        symbol: String::new(),
-    }
+    MarketEvent { id: 0, price: 0.0, symbol: String::new() }
 }
 
 fn main() {
@@ -74,9 +70,6 @@ fn on_event(event: &MarketEvent, sequence: Sequence, end_of_batch: bool) {
     // Simulate processing logic
     // In a real matching engine, this is where matching logic happens
     if event.id % 10 == 0 {
-        println!(
-            "[Consumer] Seq: {}, BatchEnd: {}, Data: {:?}",
-            sequence, end_of_batch, event
-        );
+        println!("[Consumer] Seq: {}, BatchEnd: {}, Data: {:?}", sequence, end_of_batch, event);
     }
 }

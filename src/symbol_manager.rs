@@ -83,8 +83,7 @@ impl SymbolManager {
     }
 
     pub fn add_asset(&mut self, asset_id: u32, decimals: u32) {
-        self.assets
-            .insert(asset_id, AssetInfo { asset_id, decimals });
+        self.assets.insert(asset_id, AssetInfo { asset_id, decimals });
     }
 
     pub fn get_asset_decimal(&self, asset_id: u32) -> Option<u32> {

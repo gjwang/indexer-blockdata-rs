@@ -197,10 +197,7 @@ fn main() -> Result<()> {
     }
 
     let total = 1_000_000;
-    println!(
-        ">>> STARTING MATCHING ENGINE WITH TRADE TRACKING ({} Orders)",
-        total
-    );
+    println!(">>> STARTING MATCHING ENGINE WITH TRADE TRACKING ({} Orders)", total);
 
     let mut engine = MatchingEngine::new(wal_path, snap_dir)?;
     let start = Instant::now();
@@ -256,11 +253,7 @@ fn main() -> Result<()> {
             let t = Instant::now();
             engine.trigger_cow_snapshot();
             // This print proves the Main Thread barely paused
-            println!(
-                "    Forked at Order {}. Main Thread Paused: {:.2?}",
-                i,
-                t.elapsed()
-            );
+            println!("    Forked at Order {}. Main Thread Paused: {:.2?}", i, t.elapsed());
         }
     }
 
@@ -270,10 +263,7 @@ fn main() -> Result<()> {
     println!("    Total Trades: {}", engine.trade_history.len());
     // println!("    Last Match ID: {}", engine.match_sequence);
     println!("    Total Time: {:.2?}", dur);
-    println!(
-        "    Throughput: {:.0} orders/sec",
-        total as f64 / dur.as_secs_f64()
-    );
+    println!("    Throughput: {:.0} orders/sec", total as f64 / dur.as_secs_f64());
 
     // Wait for children to finish (for demo purposes)
     thread::sleep(Duration::from_secs(3));

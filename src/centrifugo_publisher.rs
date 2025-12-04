@@ -22,11 +22,7 @@ impl CentrifugoPublisher {
             .build()
             .unwrap_or_else(|_| Client::new());
 
-        Self {
-            client,
-            api_url,
-            api_key,
-        }
+        Self { client, api_url, api_key }
     }
 
     /// Publish user update to the user's private channel
@@ -98,8 +94,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         balance_data: BalanceUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Balance(balance_data))
-            .await
+        self.publish_user_update(user_id, &UserUpdate::Balance(balance_data)).await
     }
 
     /// Publish order update to a specific user's private channel
@@ -108,8 +103,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         order_data: OrderUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Order(order_data))
-            .await
+        self.publish_user_update(user_id, &UserUpdate::Order(order_data)).await
     }
 
     /// Publish position update to a specific user's private channel
@@ -118,8 +112,7 @@ impl CentrifugoPublisher {
         user_id: &str,
         position_data: PositionUpdate,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.publish_user_update(user_id, &UserUpdate::Position(position_data))
-            .await
+        self.publish_user_update(user_id, &UserUpdate::Position(position_data)).await
     }
 
     /// Generic publish method for any channel and data
@@ -179,12 +172,8 @@ mod tests {
 
     #[test]
     fn test_balance_update_serialization() {
-        let balance = BalanceUpdate {
-            asset: "BTC".to_string(),
-            available: 1.5,
-            locked: 0.2,
-            total: 1.7,
-        };
+        let balance =
+            BalanceUpdate { asset: "BTC".to_string(), available: 1.5, locked: 0.2, total: 1.7 };
 
         let json = serde_json::to_string(&balance).unwrap();
         assert!(json.contains("BTC"));
