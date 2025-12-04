@@ -18,6 +18,29 @@ const INSERT_TRADE_CQL: &str = "
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
+const SELECT_TRADE_BY_ID_CQL: &str = "
+    SELECT 
+        trade_date, output_sequence, trade_id, match_seq,
+        buy_order_id, sell_order_id,
+        buyer_user_id, seller_user_id,
+        price, quantity, base_asset, quote_asset,
+        buyer_refund, seller_refund, settled_at
+    FROM settled_trades 
+    WHERE trade_id = ?
+";
+
+const SELECT_TRADES_BY_SEQ_CQL: &str = "
+    SELECT 
+        trade_date, output_sequence, trade_id, match_seq,
+        buy_order_id, sell_order_id,
+        buyer_user_id, seller_user_id,
+        price, quantity, base_asset, quote_asset,
+        buyer_refund, seller_refund, settled_at
+    FROM settled_trades_by_sequence 
+    WHERE output_sequence >= ? AND output_sequence <= ?
+    ALLOW FILTERING
+";
+
 /// Settlement database client for ScyllaDB
 /// 
 /// Provides a clean abstraction for storing and querying settled trades.
@@ -162,12 +185,18 @@ impl SettlementDb {
     /// 
     /// # Returns
     /// * `Result<Option<MatchExecData>>` - Trade data if found
-    /// 
-    /// Note: This is a simplified version that returns raw query results.
-    /// Full implementation would parse all fields properly.
-    pub async fn get_trade_by_id(&self, _trade_id: u64) -> Result<Option<MatchExecData>> {
-        // TODO: Implement proper row parsing with ScyllaDB value types
-        // For now, this is a placeholder
+    pub async fn get_trade_by_id(&self, trade_id: u64) -> Result<Option<MatchExecData>> {
+        let result = self.session
+            .query(SELECT_TRADE_BY_ID_CQL, (trade_id as i64,))
+            .await
+            .context("Failed to query trade by ID")?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                return Ok(Some(Self::parse_trade_row(row)?));
+            }
+        }
+
         Ok(None)
     }
 
@@ -179,17 +208,25 @@ impl SettlementDb {
     /// 
     /// # Returns
     /// * `Result<Vec<MatchExecData>>` - List of trades in range
-    /// 
-    /// Note: This is a simplified version.
-    /// Full implementation would use the materialized view and parse results.
     pub async fn get_trades_by_sequence_range(
         &self,
-        _start: u64,
-        _end: u64,
+        start: u64,
+        end: u64,
     ) -> Result<Vec<MatchExecData>> {
-        // TODO: Implement proper row parsing with ScyllaDB value types
-        // For now, return empty vector
-        Ok(Vec::new())
+        let result = self.session
+            .query(SELECT_TRADES_BY_SEQ_CQL, (start as i64, end as i64))
+            .await
+            .context("Failed to query trades by sequence range")?;
+
+        let mut trades = Vec::new();
+
+        if let Some(rows) = result.rows {
+            for row in rows {
+                trades.push(Self::parse_trade_row(row)?);
+            }
+        }
+
+        Ok(trades)
     }
 
     /// Health check - verify database connectivity
@@ -203,6 +240,46 @@ impl SettlementDb {
             .context("Health check failed")?;
         
         Ok(true)
+    }
+
+    /// Helper to parse a ScyllaDB row into MatchExecData
+    fn parse_trade_row(row: scylla::frame::response::result::Row) -> Result<MatchExecData> {
+        let (
+            _trade_date,
+            output_sequence,
+            trade_id,
+            match_seq,
+            buy_order_id,
+            sell_order_id,
+            buyer_user_id,
+            seller_user_id,
+            price,
+            quantity,
+            base_asset,
+            quote_asset,
+            buyer_refund,
+            seller_refund,
+            _settled_at,
+        ): (
+            i32, i64, i64, i64, i64, i64, i64, i64,
+            i64, i64, i32, i32, i64, i64, i64
+        ) = row.into_typed().context("Failed to parse row")?;
+
+        Ok(MatchExecData {
+            trade_id: trade_id as u64,
+            buy_order_id: buy_order_id as u64,
+            sell_order_id: sell_order_id as u64,
+            buyer_user_id: buyer_user_id as u64,
+            seller_user_id: seller_user_id as u64,
+            price: price as u64,
+            quantity: quantity as u64,
+            base_asset: base_asset as u32,
+            quote_asset: quote_asset as u32,
+            buyer_refund: buyer_refund as u64,
+            seller_refund: seller_refund as u64,
+            match_seq: match_seq as u64,
+            output_sequence: output_sequence as u64,
+        })
     }
 }
 
