@@ -558,7 +558,20 @@ impl SettlementDb {
                 IF version = ?
             ";
 
-            let result = self.session.query(query, (new_avail, new_ver as i64, now, user_id as i64, asset_id as i32, current_ver as i64)).await?;
+            let result = self
+                .session
+                .query(
+                    query,
+                    (
+                        new_avail,
+                        new_ver as i64,
+                        now,
+                        user_id as i64,
+                        asset_id as i32,
+                        current_ver as i64,
+                    ),
+                )
+                .await?;
 
             if let Some(rows) = result.rows {
                 if let Some(row) = rows.into_iter().next() {

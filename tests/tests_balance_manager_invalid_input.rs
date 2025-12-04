@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use rust_decimal::Decimal;
-use rust_decimal::prelude::FromStr;
 use fetcher::models::balance_manager::BalanceManager;
 use fetcher::symbol_manager::SymbolManager;
+use rust_decimal::prelude::FromStr;
+use rust_decimal::Decimal;
+use std::sync::Arc;
 
 /// Tests for INVALID price inputs - precision violations
 #[test]
@@ -17,11 +17,11 @@ fn test_invalid_price_precision_boundary() {
 
     // Exactly 1 decimal over limit (3 decimals when max is 2)
     let invalid_prices = vec![
-        "0.001",      // 3 decimals
-        "1.001",      // 3 decimals
-        "100.001",    // 3 decimals
-        "50000.501",  // 3 decimals
-        "99999.991",  // 3 decimals
+        "0.001",     // 3 decimals
+        "1.001",     // 3 decimals
+        "100.001",   // 3 decimals
+        "50000.501", // 3 decimals
+        "99999.991", // 3 decimals
     ];
 
     for price_str in invalid_prices {
@@ -44,11 +44,11 @@ fn test_invalid_price_excessive_precision() {
 
     // Way over precision limit
     let invalid_prices = vec![
-        "0.0001",           // 4 decimals
-        "0.00001",          // 5 decimals
-        "1.123456789",      // 9 decimals
-        "50000.123456",     // 6 decimals
-        "99999.999999999",  // 9 decimals
+        "0.0001",          // 4 decimals
+        "0.00001",         // 5 decimals
+        "1.123456789",     // 9 decimals
+        "50000.123456",    // 6 decimals
+        "99999.999999999", // 9 decimals
     ];
 
     for price_str in invalid_prices {
@@ -69,19 +69,17 @@ fn test_invalid_price_negative_values() {
     let bm = BalanceManager::new(Arc::new(sm));
 
     // Test negative values with valid precision (so precision check passes, negative check fails)
-    let invalid_prices = vec![
-        "-0.01",
-        "-1.00",
-        "-100.50",
-        "-50000.00",
-    ];
+    let invalid_prices = vec!["-0.01", "-1.00", "-100.50", "-50000.00"];
 
     for price_str in invalid_prices {
         let price = Decimal::from_str(price_str).unwrap();
         let result = bm.to_internal_price("BTC_USDT", price);
         assert!(result.is_err(), "Negative price {} should be rejected", price_str);
-        assert!(result.unwrap_err().contains("negative"),
-                "Error should mention 'negative' for price {}", price_str);
+        assert!(
+            result.unwrap_err().contains("negative"),
+            "Error should mention 'negative' for price {}",
+            price_str
+        );
     }
 
     // Note: negative with excess precision will fail precision check first
@@ -104,17 +102,20 @@ fn test_invalid_price_overflow_boundary() {
     // With price_decimal=2, max = 184,467,440,737,095,516.15
 
     let overflow_prices = vec![
-        "184467440737095517.00",  // Just over max
-        "200000000000000000.00",  // Way over
-        "999999999999999999.99",  // Extreme
+        "184467440737095517.00", // Just over max
+        "200000000000000000.00", // Way over
+        "999999999999999999.99", // Extreme
     ];
 
     for price_str in overflow_prices {
         let price = Decimal::from_str(price_str).unwrap();
         let result = bm.to_internal_price("BTC_USDT", price);
         assert!(result.is_err(), "Overflow price {} should be rejected", price_str);
-        assert!(result.unwrap_err().contains("overflow"),
-                "Error should mention 'overflow' for price {}", price_str);
+        assert!(
+            result.unwrap_err().contains("overflow"),
+            "Error should mention 'overflow' for price {}",
+            price_str
+        );
     }
 }
 
@@ -129,10 +130,10 @@ fn test_invalid_amount_precision_boundary() {
 
     // Exactly 1 decimal over limit (4 decimals when max is 3)
     let invalid_amounts = vec![
-        "0.0001",     // 4 decimals
-        "1.0001",     // 4 decimals
-        "100.1234",   // 4 decimals
-        "0.9999",     // 4 decimals
+        "0.0001",   // 4 decimals
+        "1.0001",   // 4 decimals
+        "100.1234", // 4 decimals
+        "0.9999",   // 4 decimals
     ];
 
     for amount_str in invalid_amounts {
@@ -152,10 +153,10 @@ fn test_invalid_amount_excessive_precision() {
     let bm = BalanceManager::new(Arc::new(sm));
 
     let invalid_amounts = vec![
-        "0.00001",          // 5 decimals
-        "1.123456",         // 6 decimals
-        "100.12345678",     // 8 decimals
-        "0.999999999",      // 9 decimals
+        "0.00001",      // 5 decimals
+        "1.123456",     // 6 decimals
+        "100.12345678", // 8 decimals
+        "0.999999999",  // 9 decimals
     ];
 
     for amount_str in invalid_amounts {
@@ -174,18 +175,17 @@ fn test_invalid_amount_negative_values() {
     let bm = BalanceManager::new(Arc::new(sm));
 
     // Test negative values with valid precision
-    let invalid_amounts = vec![
-        "-0.001",
-        "-1.0",
-        "-100.5",
-    ];
+    let invalid_amounts = vec!["-0.001", "-1.0", "-100.5"];
 
     for amount_str in invalid_amounts {
         let amount = Decimal::from_str(amount_str).unwrap();
         let result = bm.to_internal_amount("BTC", amount);
         assert!(result.is_err(), "Negative amount {} should be rejected", amount_str);
-        assert!(result.unwrap_err().contains("negative"),
-                "Error should mention 'negative' for amount {}", amount_str);
+        assert!(
+            result.unwrap_err().contains("negative"),
+            "Error should mention 'negative' for amount {}",
+            amount_str
+        );
     }
 
     // Note: negative with excess precision will fail precision check first
@@ -214,8 +214,11 @@ fn test_invalid_amount_overflow_boundary() {
         let amount = Decimal::from_str(amount_str).unwrap();
         let result = bm.to_internal_amount("BTC", amount);
         assert!(result.is_err(), "Overflow amount {} should be rejected", amount_str);
-        assert!(result.unwrap_err().contains("overflow"),
-                "Error should mention 'overflow' for amount {}", amount_str);
+        assert!(
+            result.unwrap_err().contains("overflow"),
+            "Error should mention 'overflow' for amount {}",
+            amount_str
+        );
     }
 }
 
@@ -261,7 +264,7 @@ fn test_invalid_unknown_symbol() {
 #[test]
 fn test_invalid_tiny_values_with_precision() {
     let mut sm = SymbolManager::new();
-    sm.add_asset(1, 8, 2, "USDT");  // display_decimals=2
+    sm.add_asset(1, 8, 2, "USDT"); // display_decimals=2
 
     let bm = BalanceManager::new(Arc::new(sm));
 
@@ -275,7 +278,11 @@ fn test_invalid_tiny_values_with_precision() {
     for amount_str in invalid_amounts {
         let amount = Decimal::from_str(amount_str).unwrap();
         let result = bm.to_internal_amount("USDT", amount);
-        assert!(result.is_err(), "Tiny amount {} with excess precision should be rejected", amount_str);
+        assert!(
+            result.is_err(),
+            "Tiny amount {} with excess precision should be rejected",
+            amount_str
+        );
     }
 }
 
@@ -308,9 +315,9 @@ fn test_invalid_precision_various_configs() {
     sm.add_asset(2, 6, 2, "USDT");
 
     // Different precision configs
-    sm.insert_symbol("SYM1", 1, 1, 2, 2, 0);  // display=0 (integers only)
-    sm.insert_symbol("SYM2", 2, 1, 2, 4, 1);  // display=1
-    sm.insert_symbol("SYM3", 3, 1, 2, 8, 4);  // display=4
+    sm.insert_symbol("SYM1", 1, 1, 2, 2, 0); // display=0 (integers only)
+    sm.insert_symbol("SYM2", 2, 1, 2, 4, 1); // display=1
+    sm.insert_symbol("SYM3", 3, 1, 2, 8, 4); // display=4
 
     let bm = BalanceManager::new(Arc::new(sm));
 

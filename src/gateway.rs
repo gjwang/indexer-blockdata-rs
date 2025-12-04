@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    Router,
     routing::post,
+    Router,
 };
-use axum::extract::Query;
 use rust_decimal::Decimal;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
@@ -18,11 +18,11 @@ use tower_http::cors::CorsLayer;
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
+use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::models::{
-    ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
+    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
     UserAccountManager,
 };
-use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
 
@@ -60,7 +60,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
 
 pub struct SimulatedFundingAccount {
@@ -302,8 +302,13 @@ async fn create_order(
     Json(client_order): Json<ClientOrder>,
 ) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
     let user_id = params.user_id;
-    let (order_id, internal_order) =
-        client_order_convert(&client_order, &state.symbol_manager, &state.balance_manager, &state.snowflake_gen, user_id)?;
+    let (order_id, internal_order) = client_order_convert(
+        &client_order,
+        &state.symbol_manager,
+        &state.balance_manager,
+        &state.snowflake_gen,
+        user_id,
+    )?;
 
     // Send to Kafka
     let payload = serde_json::to_vec(&internal_order).unwrap();

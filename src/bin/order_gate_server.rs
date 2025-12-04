@@ -7,7 +7,7 @@ use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{AppState, create_app, OrderPublisher};
+use fetcher::gateway::{create_app, AppState, OrderPublisher};
 use fetcher::models::{balance_manager, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 
@@ -19,7 +19,7 @@ impl OrderPublisher for KafkaPublisher {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         let producer = self.0.clone();
         Box::pin(async move {
             let record = FutureRecord::to(&topic).payload(&payload).key(&key);
