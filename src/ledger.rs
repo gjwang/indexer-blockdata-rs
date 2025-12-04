@@ -87,6 +87,7 @@ pub struct MatchExecData {
     pub seller_refund: u64,
     pub match_seq: u64,
     pub output_sequence: u64,
+    pub settled_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

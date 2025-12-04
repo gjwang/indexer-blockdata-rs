@@ -477,7 +477,7 @@ impl SettlementDb {
             quote_asset,
             buyer_refund,
             seller_refund,
-            _settled_at,
+            settled_at,
         ): (i32, i64, i64, i64, i64, i64, i64, i64, i64, i64, i32, i32, i64, i64, i64) =
             row.into_typed().context("Failed to parse row")?;
 
@@ -495,6 +495,7 @@ impl SettlementDb {
             seller_refund: seller_refund as u64,
             match_seq: match_seq as u64,
             output_sequence: output_sequence as u64,
+            settled_at: settled_at as u64,
         })
     }
 }

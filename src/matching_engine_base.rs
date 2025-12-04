@@ -562,6 +562,7 @@ impl MatchingEngine {
                     *output_seq += 1;
                     *output_seq
                 },
+                settled_at: 0,
             });
         }
 
