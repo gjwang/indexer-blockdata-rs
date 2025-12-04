@@ -79,11 +79,100 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 3.4: Simple Persistence (CSV)
 *   **Goal**: Persist trades to disk (simulating DB).
 *   **Steps**:
-    1.  [ ] **Modify**: Add `csv` crate dependency.
-    2.  [ ] **Modify**: Create a `TradeWriter` in `settlement_service.rs`.
-    3.  [ ] **Modify**: Append settled trades to `settled_trades.csv`.
-    4.  [ ] **Verify**: Run E2E test and check `settled_trades.csv` content.
-    5.  [ ] **Commit**: `git commit -m "feat: implement settlement csv persistence"`
+    1.  [x] **Modify**: Add `csv` crate dependency.
+    2.  [x] **Modify**: Create a `TradeWriter` in `settlement_service.rs`.
+    3.  [x] **Modify**: Append settled trades to `settled_trades.csv`.
+    4.  [x] **Verify**: Run E2E test and check `settled_trades.csv` content.
+    5.  [x] **Commit**: `git commit -m "feat: implement settlement csv persistence"`
 
-*(Phase 4: Database Integration - Scylla/StarRocks - to follow)*
+## Phase 4: Database Integration (ScyllaDB)
+
+### Task 4.1: ScyllaDB Setup & Configuration
+*   **Goal**: Prepare ScyllaDB environment and configuration.
+*   **Steps**:
+    1.  [x] **Modify**: Add `scylla` crate dependency to `Cargo.toml`.
+    2.  [x] **Modify**: Add ScyllaDB configuration to `config.yaml` (hosts, keyspace, replication).
+    3.  [x] **Create**: `docker-compose.yml` entry for ScyllaDB (single node for dev).
+    4.  [x] **Verify**: Run `docker-compose config` and confirm it's valid.
+    5.  [x] **Commit**: `git commit -m "chore: add scylladb setup and configuration"`
+
+### Task 4.2: Schema Definition & Migration
+*   **Goal**: Create the settlement database schema.
+*   **Steps**:
+    1.  [ ] **Create**: `schema/settlement_schema.cql` with keyspace and table definitions.
+    2.  [ ] **Design**: Table `settled_trades` with columns: trade_id, sequence, buyer_id, seller_id, price, quantity, timestamp, etc.
+    3.  [ ] **Design**: Add appropriate partition key (e.g., by date) and clustering key (sequence).
+    4.  [ ] **Create**: `scripts/init_scylla.sh` to apply schema.
+    5.  [ ] **Verify**: Run script and confirm tables exist using `cqlsh`.
+    6.  [ ] **Commit**: `git commit -m "feat: add scylladb settlement schema"`
+
+### Task 4.3: Database Client Abstraction
+*   **Goal**: Create a clean abstraction for database operations.
+*   **Steps**:
+    1.  [ ] **Create**: `src/db/settlement_db.rs` module.
+    2.  [ ] **Implement**: `SettlementDb` struct with ScyllaDB session.
+    3.  [ ] **Implement**: `async fn connect(config: &DbConfig) -> Result<SettlementDb>`.
+    4.  [ ] **Implement**: `async fn insert_trade(&self, trade: &MatchExecData) -> Result<()>`.
+    5.  [ ] **UnitTest**: Mock test for insert_trade (or integration test with local ScyllaDB).
+    6.  [ ] **Commit**: `git commit -m "feat: implement settlement database client"`
+
+### Task 4.4: Integrate Database into Settlement Service
+*   **Goal**: Replace/augment CSV with ScyllaDB persistence.
+*   **Steps**:
+    1.  [ ] **Modify**: Update `settlement_service.rs` to initialize `SettlementDb`.
+    2.  [ ] **Modify**: Make main loop async (use `tokio::main`).
+    3.  [ ] **Modify**: Call `db.insert_trade(&trade).await` after receiving each trade.
+    4.  [ ] **Modify**: Keep CSV writing as backup/audit trail (dual write).
+    5.  [ ] **Verify**: Run settlement service and confirm trades appear in ScyllaDB.
+    6.  [ ] **Commit**: `git commit -m "feat: integrate scylladb into settlement service"`
+
+### Task 4.5: Batch Insertion Optimization
+*   **Goal**: Improve throughput with batch inserts.
+*   **Steps**:
+    1.  [ ] **Modify**: Implement `async fn insert_batch(&self, trades: &[MatchExecData]) -> Result<()>`.
+    2.  [ ] **Modify**: Buffer trades in settlement service (e.g., 100 trades or 100ms timeout).
+    3.  [ ] **Modify**: Use ScyllaDB prepared statements for batch inserts.
+    4.  [ ] **Verify**: Measure throughput improvement (log batch size and latency).
+    5.  [ ] **Commit**: `git commit -m "feat: implement batch insertion for settlement"`
+
+### Task 4.6: Query Interface & Verification
+*   **Goal**: Add read operations to verify settlement data.
+*   **Steps**:
+    1.  [ ] **Implement**: `async fn get_trade_by_id(&self, trade_id: u64) -> Result<Option<Trade>>`.
+    2.  [ ] **Implement**: `async fn get_trades_by_sequence_range(&self, start: u64, end: u64) -> Result<Vec<Trade>>`.
+    3.  [ ] **Create**: `src/bin/settlement_query_tool.rs` - CLI tool to query trades.
+    4.  [ ] **Verify**: Insert test data, query it back, confirm correctness.
+    5.  [ ] **Commit**: `git commit -m "feat: add settlement query interface"`
+
+### Task 4.7: Error Handling & Retry Logic
+*   **Goal**: Make settlement service resilient to database failures.
+*   **Steps**:
+    1.  [ ] **Modify**: Implement retry logic for transient ScyllaDB errors.
+    2.  [ ] **Modify**: Add exponential backoff for connection failures.
+    3.  [ ] **Modify**: Log failed trades to a dead-letter file for manual recovery.
+    4.  [ ] **Verify**: Simulate ScyllaDB downtime, confirm service recovers gracefully.
+    5.  [ ] **Commit**: `git commit -m "feat: add error handling and retry logic"`
+
+### Task 4.8: Monitoring & Metrics
+*   **Goal**: Add observability for settlement database operations.
+*   **Steps**:
+    1.  [ ] **Modify**: Add metrics: `settlement_db_inserts_total`, `settlement_db_latency_ms`, `settlement_db_errors_total`.
+    2.  [ ] **Modify**: Log slow queries (> 100ms).
+    3.  [ ] **Modify**: Add health check endpoint that verifies ScyllaDB connectivity.
+    4.  [ ] **Verify**: Run load test and observe metrics.
+    5.  [ ] **Commit**: `git commit -m "feat: add settlement database monitoring"`
+
+## Phase 5: Advanced Features (Future)
+
+### Task 5.1: StarRocks Integration (Analytics)
+*   **Goal**: Add real-time analytics database for settlement data.
+*   **Steps**: *(To be defined)*
+
+### Task 5.2: S3 Archival
+*   **Goal**: Archive old settlement data to S3 for compliance.
+*   **Steps**: *(To be defined)*
+
+### Task 5.3: Settlement Reconciliation
+*   **Goal**: Periodic reconciliation between ME state and settlement DB.
+*   **Steps**: *(To be defined)*
 
