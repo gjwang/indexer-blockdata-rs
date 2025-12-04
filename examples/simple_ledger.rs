@@ -55,24 +55,14 @@ pub struct UserAccount {
 
 impl UserAccount {
     pub fn new(user_id: UserId) -> Self {
-        Self {
-            user_id,
-            assets: Vec::with_capacity(8),
-        }
+        Self { user_id, assets: Vec::with_capacity(8) }
     }
     #[inline(always)]
     pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
         if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
             return &mut self.assets[index].1;
         }
-        self.assets.push((
-            asset,
-            Balance {
-                available: 0,
-                frozen: 0,
-                version: 0,
-            },
-        ));
+        self.assets.push((asset, Balance { available: 0, frozen: 0, version: 0 }));
         &mut self.assets.last_mut().unwrap().1
     }
 }
@@ -129,12 +119,8 @@ pub struct WalSegment {
 
 impl WalSegment {
     pub fn create(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let file =
+            OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path)?;
         file.set_len(WAL_MAX_SIZE)?;
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
 
@@ -175,13 +161,7 @@ impl WalSegment {
             cursor += total_len;
         }
 
-        Ok(Self {
-            mmap,
-            cursor,
-            len,
-            md5_ctx,
-            current_path: path.to_path_buf(),
-        })
+        Ok(Self { mmap, cursor, len, md5_ctx, current_path: path.to_path_buf() })
     }
 
     #[inline(always)]
@@ -265,23 +245,16 @@ impl RollingWal {
     }
 
     pub fn append(&mut self, seq: u64, cmd: &LedgerCommand) -> Result<()> {
-        let time_trigger = SystemTime::now()
-            .duration_since(self.last_roll_time)
-            .unwrap_or(Duration::ZERO)
-            >= WAL_ROLL_TIME;
+        let time_trigger =
+            SystemTime::now().duration_since(self.last_roll_time).unwrap_or(Duration::ZERO)
+                >= WAL_ROLL_TIME;
 
         if time_trigger {
             println!("   [WAL] Trigger: Time limit. Rolling...");
             self.rotate(seq)?;
         }
 
-        if self
-            .current_segment
-            .as_mut()
-            .unwrap()
-            .append(seq, cmd)
-            .is_err()
-        {
+        if self.current_segment.as_mut().unwrap().append(seq, cmd).is_err() {
             self.rotate(seq)?;
             self.current_segment.as_mut().unwrap().append(seq, cmd)?;
         }
@@ -372,9 +345,7 @@ impl RollingWal {
         min_seq: u64,
     ) -> Result<impl Iterator<Item = Result<(u64, LedgerCommand)>>> {
         let wals = Self::list_wals(dir)?;
-        let start_idx = wals
-            .partition_point(|(seq, _)| *seq <= min_seq)
-            .saturating_sub(1);
+        let start_idx = wals.partition_point(|(seq, _)| *seq <= min_seq).saturating_sub(1);
 
         let mut chained_iter = Vec::new();
         for (seq, path) in wals.iter().skip(start_idx) {
@@ -417,11 +388,7 @@ impl WalIterator {
         let file = File::open(path)?;
         let mut reader = BufReader::with_capacity(READ_BUFFER_SIZE, file);
         reader.seek(SeekFrom::Start(0))?;
-        Ok(Self {
-            reader,
-            cursor: 0,
-            path: path.to_path_buf(),
-        })
+        Ok(Self { reader, cursor: 0, path: path.to_path_buf() })
     }
 }
 
@@ -568,10 +535,7 @@ impl GlobalLedger {
         thread::spawn(move || {
             let tmp_filename = format!("snapshot_{}.tmp", current_seq);
             let tmp_path = dir.join(&tmp_filename);
-            let snap = Snapshot {
-                last_seq: current_seq,
-                accounts: accounts_copy,
-            };
+            let snap = Snapshot { last_seq: current_seq, accounts: accounts_copy };
 
             // 1. Write and Calculate MD5
             let md5_string = match File::create(&tmp_path) {
@@ -649,15 +613,8 @@ impl GlobalLedger {
         accounts: &mut FxHashMap<UserId, UserAccount>,
         cmd: &LedgerCommand,
     ) -> Result<()> {
-        if let LedgerCommand::Deposit {
-            user_id,
-            asset,
-            amount,
-        } = cmd
-        {
-            let user = accounts
-                .entry(*user_id)
-                .or_insert_with(|| UserAccount::new(*user_id));
+        if let LedgerCommand::Deposit { user_id, asset, amount } = cmd {
+            let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
             let bal = user.get_balance_mut(*asset);
             bal.available += amount;
             bal.version += 1;
@@ -689,11 +646,7 @@ fn main() -> Result<()> {
     let total_ops = 50_100_123;
 
     for i in 0..total_ops {
-        ledger.apply(&LedgerCommand::Deposit {
-            user_id: 1,
-            asset: 1,
-            amount: 1,
-        })?;
+        ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
         if i > 0 && i % 1_000_000 == 0 {
             ledger.trigger_snapshot();
         }
@@ -726,11 +679,7 @@ fn main() -> Result<()> {
         println!("Recovered ledger Ready. Keep Going...");
         let mut ledger = recovered;
         for i in 0..total_ops {
-            ledger.apply(&LedgerCommand::Deposit {
-                user_id: 1,
-                asset: 1,
-                amount: 1,
-            })?;
+            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1 })?;
             if i > 0 && i % 1_000_000 == 0 {
                 ledger.trigger_snapshot();
             }
@@ -746,15 +695,9 @@ fn main() -> Result<()> {
 
         let total_ops = total_ops * 2;
         if recovered.last_seq == total_ops as u64 {
-            println!(
-                "✅ SUCCESS last_seq:{}, total_ops={}",
-                recovered.last_seq, total_ops
-            );
+            println!("✅ SUCCESS last_seq:{}, total_ops={}", recovered.last_seq, total_ops);
         } else {
-            println!(
-                "❌ FAILURE last_seq:{}, total_ops={}",
-                recovered.last_seq, total_ops
-            );
+            println!("❌ FAILURE last_seq:{}, total_ops={}", recovered.last_seq, total_ops);
         }
     }
     Ok(())

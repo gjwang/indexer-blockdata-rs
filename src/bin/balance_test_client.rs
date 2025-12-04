@@ -3,9 +3,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()?;
+    let client = Client::builder().timeout(std::time::Duration::from_secs(10)).build()?;
     let gateway_url = "http://localhost:8083";
 
     println!("=== Transfer Server Test Client ===\n");
@@ -126,12 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .send()
             .await?;
 
-        println!(
-            "  Transfer In {} ({}): {}",
-            i,
-            request_id,
-            response.status()
-        );
+        println!("  Transfer In {} ({}): {}", i, request_id, response.status());
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
     println!();

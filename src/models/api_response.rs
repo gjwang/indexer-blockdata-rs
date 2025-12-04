@@ -9,11 +9,7 @@ pub struct ApiResponse<T> {
 
 impl<T> ApiResponse<T> {
     pub fn success(data: T) -> Self {
-        Self {
-            status: 0,
-            msg: "ok".to_string(),
-            data,
-        }
+        Self { status: 0, msg: "ok".to_string(), data }
     }
 
     pub fn error(status: i32, msg: String, data: T) -> Self {

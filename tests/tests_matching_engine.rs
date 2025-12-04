@@ -12,9 +12,7 @@ mod tests {
         let mut engine = MatchingEngine::new(&wal_dir, &snap_dir, false).unwrap();
 
         // Register a symbol: BTC_USDT (ID 0), Base Asset 1, Quote Asset 2
-        engine
-            .register_symbol(0, "BTC_USDT".to_string(), 1, 2)
-            .unwrap();
+        engine.register_symbol(0, "BTC_USDT".to_string(), 1, 2).unwrap();
 
         engine
     }
@@ -27,19 +25,12 @@ mod tests {
         // Deposit funds for User 1: 1000 Asset 2 (Quote)
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: 1,
-                asset: 2,
-                amount: 1000,
-            })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 1000 })
             .unwrap();
 
         //    // Add order: Buy 50 @ 10 (Cost 500) -> Success
         let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 50, 1, 0);
-        assert!(
-            result.is_ok(),
-            "Order should be accepted with sufficient funds"
-        );
+        assert!(result.is_ok(), "Order should be accepted with sufficient funds");
     }
 
     #[test]
@@ -48,14 +39,7 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Deposit funds for User 1: 500 Asset 2 (Quote)
-        engine
-            .ledger
-            .apply(&LedgerCommand::Deposit {
-                user_id: 1,
-                asset: 2,
-                amount: 500,
-            })
-            .unwrap();
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 500 }).unwrap();
 
         // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
         let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 1, 0);
@@ -64,12 +48,7 @@ mod tests {
         assert!(matches!(err, OrderError::InsufficientFunds { .. }));
 
         match err {
-            OrderError::InsufficientFunds {
-                user_id,
-                asset_id,
-                required,
-                available,
-            } => {
+            OrderError::InsufficientFunds { user_id, asset_id, required, available } => {
                 assert_eq!(user_id, 1);
                 assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);
@@ -88,18 +67,10 @@ mod tests {
 
         // Place Buy Order
         let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 2, 0);
-        assert!(
-            result.is_err(),
-            "Order should be rejected for user with no funds"
-        );
+        assert!(result.is_err(), "Order should be rejected for user with no funds");
 
         match result.unwrap_err() {
-            OrderError::InsufficientFunds {
-                user_id,
-                asset_id,
-                required,
-                available,
-            } => {
+            OrderError::InsufficientFunds { user_id, asset_id, required, available } => {
                 assert_eq!(user_id, 2);
                 assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);

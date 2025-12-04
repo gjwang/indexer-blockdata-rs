@@ -32,10 +32,7 @@ impl Balance {
             return Err("Insufficient funds");
         }
         self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
-        self.frozen = self
-            .frozen
-            .checked_add(amount)
-            .ok_or("Frozen balance overflow")?;
+        self.frozen = self.frozen.checked_add(amount).ok_or("Frozen balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -44,10 +41,7 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self
-            .frozen
-            .checked_sub(amount)
-            .ok_or("Frozen balance underflow")?;
+        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
         self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
@@ -57,10 +51,7 @@ impl Balance {
         if self.frozen < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self
-            .frozen
-            .checked_sub(amount)
-            .ok_or("Frozen balance underflow")?;
+        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -74,33 +65,20 @@ pub struct UserAccount {
 
 impl UserAccount {
     pub fn new(user_id: UserId) -> Self {
-        Self {
-            user_id,
-            assets: Vec::with_capacity(8),
-        }
+        Self { user_id, assets: Vec::with_capacity(8) }
     }
     #[inline(always)]
     pub fn get_balance_mut(&mut self, asset: AssetId) -> &mut Balance {
         if let Some(index) = self.assets.iter().position(|(a, _)| *a == asset) {
             return &mut self.assets[index].1;
         }
-        self.assets.push((
-            asset,
-            Balance {
-                avail: 0,
-                frozen: 0,
-                version: 0,
-            },
-        ));
+        self.assets.push((asset, Balance { avail: 0, frozen: 0, version: 0 }));
         &mut self.assets.last_mut().unwrap().1
     }
 
     #[inline(always)]
     pub fn get_balance(&self, asset: AssetId) -> Option<&Balance> {
-        self.assets
-            .iter()
-            .find(|(a, _)| *a == asset)
-            .map(|(_, b)| b)
+        self.assets.iter().find(|(a, _)| *a == asset).map(|(_, b)| b)
     }
 
     pub fn check_buyer_balance(
@@ -109,9 +87,7 @@ impl UserAccount {
         spend_quote: u64,
         refund_quote: u64,
     ) -> Result<(), &'static str> {
-        let quote_bal = self
-            .get_balance(quote_asset)
-            .ok_or("Quote asset not found")?;
+        let quote_bal = self.get_balance(quote_asset).ok_or("Quote asset not found")?;
 
         // Check if we have enough frozen funds for both the spend and the refund
         // Usually these come from the same frozen bucket.

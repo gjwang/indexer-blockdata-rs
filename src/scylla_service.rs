@@ -19,9 +19,7 @@ impl Default for ScyllaService {
 
 impl ScyllaService {
     pub fn new() -> Self {
-        ScyllaService {
-            session: Arc::new(Mutex::new(None)),
-        }
+        ScyllaService { session: Arc::new(Mutex::new(None)) }
     }
 
     pub async fn connect(&self, node: &str) -> Result<()> {

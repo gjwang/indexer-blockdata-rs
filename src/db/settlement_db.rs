@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
-use crate::configure::ScyllaDbConfig;
-use crate::ledger::{MatchExecData, LedgerEvent};
 use crate::common_utils::{get_current_date, get_current_timestamp_ms};
+use crate::configure::ScyllaDbConfig;
+use crate::ledger::{LedgerEvent, MatchExecData};
 
 // Retry configuration
 const MAX_RETRIES: u32 = 3;
@@ -269,7 +269,8 @@ impl SettlementDb {
                 )
                 .await
                 .map(|_| ())
-        }).await;
+        })
+        .await;
 
         let duration = start.elapsed();
         let duration_ms = duration.as_millis();

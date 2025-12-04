@@ -43,13 +43,9 @@ async fn get_block_data(
     client: &Provider<Http>,
     block_number_begin: u64,
 ) -> Result<Value, Box<dyn std::error::Error>> {
-    let filter = Filter::new()
-        .from_block(block_number_begin)
-        .to_block(block_number_begin);
+    let filter = Filter::new().from_block(block_number_begin).to_block(block_number_begin);
 
-    let block = client
-        .get_block_with_txs(U64::from(block_number_begin))
-        .await?;
+    let block = client.get_block_with_txs(U64::from(block_number_begin)).await?;
     // println!("block= {:?}", block);
     let logs = client.get_logs(&filter).await?;
 
@@ -63,11 +59,7 @@ async fn get_block_data(
     Ok(block_json)
 }
 
-#[cached(
-    time = 10,
-    key = "String",
-    convert = r#"{ "latest_block".to_string() }"#
-)]
+#[cached(time = 10, key = "String", convert = r#"{ "latest_block".to_string() }"#)]
 async fn get_latest_block_number(client: Arc<Provider<Http>>) -> Result<i64, String> {
     let block_number_end = client.get_block_number().await.map_err(|e| e.to_string())?;
     let block_number_end = i64::try_from(block_number_end).map_err(|e| e.to_string())?;
@@ -136,13 +128,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "endpoint={endpoint}, bucket_name={bucket_name}, aws_access_key_id={aws_access_key_id}"
     );
 
-    let s3_service = S3Service::new(
-        bucket_name,
-        region,
-        endpoint,
-        &aws_access_key_id,
-        &aws_secret_access_key,
-    )?;
+    let s3_service =
+        S3Service::new(bucket_name, region, endpoint, &aws_access_key_id, &aws_secret_access_key)?;
 
     loop {
         block_number_begin = kv_db.get("block_number_begin", 0);
@@ -162,10 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if delay_blocks <= 0 {
             let duration = Duration::from_secs(5);
-            info!(
-                "catchup the latest_block_number={block_number_end} sleep {:?}",
-                duration
-            );
+            info!("catchup the latest_block_number={block_number_end} sleep {:?}", duration);
             if is_reverse_indexing {
                 info!("Finished all");
                 return Ok(());
@@ -174,11 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let block_number = if is_reverse_indexing {
-            block_number_end
-        } else {
-            block_number_begin
-        };
+        let block_number = if is_reverse_indexing { block_number_end } else { block_number_begin };
 
         let block_data = get_block_data(&client, block_number_begin as u64).await?;
         // println!("{}", serde_json::to_string_pretty(&block_data)?);

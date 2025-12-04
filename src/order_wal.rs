@@ -121,9 +121,7 @@ impl Wal {
 
         let order_id_ulid = to_fbs_ulid(order_id);
 
-        let args = fbs::CancelArgs {
-            order_id: Some(&order_id_ulid),
-        };
+        let args = fbs::CancelArgs { order_id: Some(&order_id_ulid) };
         let cancel_order = fbs::Cancel::create(&mut builder, &args);
 
         let log_entry_args = fbs::WalFrameArgs {
@@ -202,9 +200,7 @@ impl Wal {
         }
 
         let trades_vec = builder.create_vector(&trade_offsets);
-        let batch_args = fbs::TradeBatchArgs {
-            trades: Some(trades_vec),
-        };
+        let batch_args = fbs::TradeBatchArgs { trades: Some(trades_vec) };
         let batch = fbs::TradeBatch::create(&mut builder, &batch_args);
 
         let log_entry_args = fbs::WalFrameArgs {
@@ -291,9 +287,7 @@ impl Wal {
 
         let order_id_ulid = to_fbs_ulid(order_id);
 
-        let args = fbs::CancelArgs {
-            order_id: Some(&order_id_ulid),
-        };
+        let args = fbs::CancelArgs { order_id: Some(&order_id_ulid) };
         let cancel_order = fbs::Cancel::create(&mut builder, &args);
 
         let log_entry_args = fbs::WalFrameArgs {
@@ -335,9 +329,7 @@ impl Wal {
         }
 
         let trades_vec = builder.create_vector(&trade_offsets);
-        let batch_args = fbs::TradeBatchArgs {
-            trades: Some(trades_vec),
-        };
+        let batch_args = fbs::TradeBatchArgs { trades: Some(trades_vec) };
         let batch = fbs::TradeBatch::create(&mut builder, &batch_args);
 
         let log_entry_args = fbs::WalFrameArgs {
@@ -364,9 +356,7 @@ pub struct WalReader {
 impl WalReader {
     pub fn new(path: &Path) -> Result<Self, std::io::Error> {
         let file = File::open(path)?;
-        Ok(Self {
-            reader: BufReader::new(file),
-        })
+        Ok(Self { reader: BufReader::new(file) })
     }
 
     pub fn read_entry(&mut self) -> Result<Option<LogEntry>, std::io::Error> {

@@ -48,10 +48,7 @@ async fn main() -> anyhow::Result<()> {
                 let payload = format!("msg-{}-{}", i, j);
                 let record = FutureRecord::to(&topic).payload(&payload).key(&key);
 
-                match producer
-                    .send(record, Timeout::After(Duration::from_secs(10)))
-                    .await
-                {
+                match producer.send(record, Timeout::After(Duration::from_secs(10))).await {
                     Ok(_) => {
                         success_count.fetch_add(1, Ordering::Relaxed);
                     }

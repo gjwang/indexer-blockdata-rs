@@ -1,6 +1,7 @@
 pub mod centrifugo_auth;
 pub mod centrifugo_publisher;
 pub mod client_order_convertor;
+pub mod common_utils;
 pub mod compressor;
 pub mod configure;
 pub mod db;

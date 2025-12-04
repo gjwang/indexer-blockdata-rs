@@ -38,29 +38,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let config = configure::load_config().expect("Failed to load config");
 
-    let centrifugo_url = args
-        .centrifugo_url
-        .clone()
-        .unwrap_or_else(|| "http://localhost:8000/api".to_string());
+    let centrifugo_url =
+        args.centrifugo_url.clone().unwrap_or_else(|| "http://localhost:8000/api".to_string());
     let api_key = args.api_key.unwrap_or_else(|| {
         std::env::var("CENTRIFUGO_API_KEY")
             .unwrap_or_else(|_| "your_secure_api_key_here_change_this_in_production".to_string())
     });
-    let kafka_broker = args
-        .kafka_broker
-        .clone()
-        .unwrap_or(config.kafka.broker.clone());
-    let kafka_topic = args
-        .kafka_topic
-        .clone()
-        .unwrap_or("user_updates".to_string());
+    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka.broker.clone());
+    let kafka_topic = args.kafka_topic.clone().unwrap_or("user_updates".to_string());
 
     let group_id = if args.random_group_id {
         format!("centrifugo-bridge-{}", uuid::Uuid::new_v4())
     } else {
-        args.group_id
-            .clone()
-            .unwrap_or("centrifugo-bridge".to_string())
+        args.group_id.clone().unwrap_or("centrifugo-bridge".to_string())
     };
 
     println!("=== Centrifugo Bridge ===");
@@ -81,10 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set("session.timeout.ms", &config.kafka.session_timeout_ms)
         .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
         .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
-        .set(
-            "socket.keepalive.enable",
-            &config.kafka.socket_keepalive_enable,
-        )
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
         .create()?;
 

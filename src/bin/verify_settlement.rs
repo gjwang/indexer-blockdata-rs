@@ -122,12 +122,16 @@ async fn main() {
                 match db.get_trade_by_id(csv_trade.trade_id).await {
                     Ok(Some(db_trade)) => {
                         // Compare fields
-                        if db_trade.price != csv_trade.price ||
-                           db_trade.quantity != csv_trade.quantity ||
-                           db_trade.buyer_user_id != csv_trade.buyer_user_id {
-                               println!("❌ Mismatch for Trade {}: CSV={:?}, DB={:?}", csv_trade.trade_id, csv_trade, db_trade);
-                               mismatch += 1;
-                           }
+                        if db_trade.price != csv_trade.price
+                            || db_trade.quantity != csv_trade.quantity
+                            || db_trade.buyer_user_id != csv_trade.buyer_user_id
+                        {
+                            println!(
+                                "❌ Mismatch for Trade {}: CSV={:?}, DB={:?}",
+                                csv_trade.trade_id, csv_trade, db_trade
+                            );
+                            mismatch += 1;
+                        }
                     }
                     Ok(None) => {
                         println!("❌ Missing Trade {}: {:?}", csv_trade.trade_id, csv_trade);

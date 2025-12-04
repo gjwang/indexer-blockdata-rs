@@ -39,22 +39,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = configure::load_config().expect("Failed to load config");
 
     let centrifugo_url = args.url.clone().unwrap_or(config.centrifugo.url.clone());
-    let centrifugo_channel = args
-        .channel
-        .clone()
-        .unwrap_or(config.centrifugo.channel.clone());
-    let kafka_broker = args
-        .kafka_broker
-        .clone()
-        .unwrap_or(config.kafka.broker.clone());
-    let kafka_topic = args
-        .kafka_topic
-        .clone()
-        .unwrap_or(config.kafka.topics.orders.clone());
-    let base_group_id = args
-        .group_id
-        .clone()
-        .unwrap_or(config.kafka.group_id.clone());
+    let centrifugo_channel = args.channel.clone().unwrap_or(config.centrifugo.channel.clone());
+    let kafka_broker = args.kafka_broker.clone().unwrap_or(config.kafka.broker.clone());
+    let kafka_topic = args.kafka_topic.clone().unwrap_or(config.kafka.topics.orders.clone());
+    let base_group_id = args.group_id.clone().unwrap_or(config.kafka.group_id.clone());
 
     loop {
         println!("Starting bridge...");
@@ -102,11 +90,7 @@ async fn run_bridge(
         exp: now + 10000000000, // Long expiration
     };
     let secret = "my_super_secret_key_which_is_very_long_and_secure_enough_for_hs256"; // TODO: Load from config
-    let token = encode(
-        &Header::default(),
-        &my_claims,
-        &EncodingKey::from_secret(secret.as_ref()),
-    )?;
+    let token = encode(&Header::default(), &my_claims, &EncodingKey::from_secret(secret.as_ref()))?;
     println!("Generated Token: {}", token);
 
     // 2. Connect to Centrifugo
@@ -126,9 +110,7 @@ async fn run_bridge(
             "token": token
         }
     });
-    write
-        .send(Message::Text(connect_msg.to_string().into()))
-        .await?;
+    write.send(Message::Text(connect_msg.to_string().into())).await?;
     println!("Sent connect message to Centrifugo");
 
     // Wait for connect reply (simple check)

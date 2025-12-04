@@ -90,13 +90,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "endpoint={endpoint}, bucket_name={bucket_name}, aws_access_key_id={aws_access_key_id}"
     );
 
-    let s3_service = S3Service::new(
-        bucket_name,
-        region,
-        endpoint,
-        &aws_access_key_id,
-        &aws_secret_access_key,
-    )?;
+    let s3_service =
+        S3Service::new(bucket_name, region, endpoint, &aws_access_key_id, &aws_secret_access_key)?;
 
     loop {
         block_number_begin = kv_db.get(kv_blk_number_begin_key, 0);
@@ -107,10 +102,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if delay_blocks <= 0 {
             let duration = Duration::from_secs(5);
-            info!(
-                "catchup the latest_block_number={block_number_end} sleep {:?}",
-                duration
-            );
+            info!("catchup the latest_block_number={block_number_end} sleep {:?}", duration);
             if is_reverse_indexing {
                 info!("Finished all");
                 return Ok(());
@@ -119,11 +111,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         }
 
-        let block_number = if is_reverse_indexing {
-            block_number_end
-        } else {
-            block_number_begin
-        };
+        let block_number = if is_reverse_indexing { block_number_end } else { block_number_begin };
 
         let key = format!("{block_number}.json.gz");
         let block_data = s3_service.get_object(&key).await;

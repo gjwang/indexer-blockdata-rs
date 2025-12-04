@@ -10,7 +10,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use disruptor::*;
 
-use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData, LedgerEvent};
+use fetcher::ledger::{LedgerCommand, LedgerEvent, LedgerListener, MatchExecData};
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::client_order::calculate_checksum;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
@@ -97,11 +97,7 @@ impl BalanceProcessor {
                         self.request_queue.push_back((request_id, timestamp));
 
                         // Generate command for downstream
-                        cmds.push(LedgerCommand::Deposit {
-                            user_id,
-                            asset: asset_id,
-                            amount,
-                        });
+                        cmds.push(LedgerCommand::Deposit { user_id, asset: asset_id, amount });
                     }
                     Err(e) => {
                         println!("❌ Transfer In failed: {}", e);
@@ -118,11 +114,7 @@ impl BalanceProcessor {
                         self.request_queue.push_back((request_id, timestamp));
 
                         // Generate command for downstream
-                        cmds.push(LedgerCommand::Withdraw {
-                            user_id,
-                            asset: asset_id,
-                            amount,
-                        });
+                        cmds.push(LedgerCommand::Withdraw { user_id, asset: asset_id, amount });
                     }
                     Err(e) => println!("❌ Transfer Out failed: {}", e),
                 }
@@ -503,7 +495,8 @@ async fn main() {
                     match balance_processor.process_balance_request(&mut engine, req.clone()) {
                         Ok(cmds) => {
                             if !cmds.is_empty() {
-                                *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
+                                *event.processing_result.lock().unwrap() =
+                                    Some(std::sync::Arc::new(cmds));
                             }
                         }
                         Err(e) => eprintln!("Balance processing error: {}", e),
@@ -572,7 +565,10 @@ async fn main() {
                             amount: *amount,
                             currency: *asset,
                             related_id: 0,
-                            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+                            created_at: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as i64,
                         };
                         if let Ok(data) = serde_json::to_vec(&event) {
                             let _ = zmq_pub_clone.publish_settlement(&data);
@@ -586,7 +582,10 @@ async fn main() {
                             amount: *amount,
                             currency: *asset,
                             related_id: 0,
-                            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+                            created_at: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as i64,
                         };
                         if let Ok(data) = serde_json::to_vec(&event) {
                             let _ = zmq_pub_clone.publish_settlement(&data);

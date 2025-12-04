@@ -52,11 +52,7 @@ async fn main() -> Result<()> {
 
     let broker = config.kafka.broker;
     let topic = config.kafka.topics.orders;
-    let group_id = format!(
-        "{}-{}",
-        config.kafka.group_id,
-        chrono::Utc::now().timestamp()
-    );
+    let group_id = format!("{}-{}", config.kafka.group_id, chrono::Utc::now().timestamp());
 
     println!("=== Redpanda Latency Test ===");
     println!("Topic: {}", topic);
@@ -141,10 +137,7 @@ async fn send_messages_realtime(
     message_count: usize,
 ) {
     for i in 0..message_count {
-        let msg = DemoMessage {
-            id: i as u32,
-            content: format!("Latency test message {}", i),
-        };
+        let msg = DemoMessage { id: i as u32, content: format!("Latency test message {}", i) };
 
         let payload = serde_json::to_string(&msg).unwrap();
         let key = format!("key-{}", i);
@@ -155,10 +148,7 @@ async fn send_messages_realtime(
         match producer.send(record_msg, Duration::from_secs(10)).await {
             Ok(_) => {
                 let producer_latency = send_start.elapsed();
-                send_times
-                    .lock()
-                    .await
-                    .insert(i as u32, (send_start, producer_latency));
+                send_times.lock().await.insert(i as u32, (send_start, producer_latency));
 
                 if (i + 1) % 20 == 0 {
                     println!("  Sent {}/{} messages", i + 1, message_count);
@@ -286,10 +276,7 @@ fn print_latency_stats(records: &[LatencyRecord], expected_count: usize) {
         if !producer_latencies.is_empty() {
             let producer_stats = calculate_stats(&producer_latencies);
             let avg_network_consumer = e2e_stats.avg.saturating_sub(producer_stats.avg);
-            println!(
-                "\nNetwork + Consumer Latency (approx): {:?}",
-                avg_network_consumer
-            );
+            println!("\nNetwork + Consumer Latency (approx): {:?}", avg_network_consumer);
         }
     }
 

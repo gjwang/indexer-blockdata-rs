@@ -13,9 +13,7 @@ pub fn client_order_convert(
     user_id: u64,
 ) -> Result<(u64, OrderRequest), (StatusCode, String)> {
     // Validate
-    client_order
-        .validate_order()
-        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    client_order.validate_order().map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // Generate internal order ID
     let order_id = {

@@ -29,10 +29,7 @@ async fn main() {
         .set("session.timeout.ms", &config.kafka.session_timeout_ms)
         .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
         .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
-        .set(
-            "socket.keepalive.enable",
-            &config.kafka.socket_keepalive_enable,
-        )
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
         .create()
         .unwrap();

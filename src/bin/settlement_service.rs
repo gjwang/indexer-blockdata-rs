@@ -207,7 +207,8 @@ async fn main() {
             );
         }
         // Try LedgerEvent (Deposit/Withdrawal)
-        else if let Ok(mut event) = serde_json::from_slice::<fetcher::ledger::LedgerEvent>(&data) {
+        else if let Ok(mut event) = serde_json::from_slice::<fetcher::ledger::LedgerEvent>(&data)
+        {
             // Assign a unique sequence ID (using timestamp nanos) since engine sent 0
             event.sequence_id = chrono::Utc::now().timestamp_nanos() as u64;
 
@@ -221,11 +222,10 @@ async fn main() {
                     log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
                 }
             }
-        }
-        else {
+        } else {
             log::error!(target: LOG_TARGET, "Failed to deserialize message (unknown format)");
             if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) {
-                 log::debug!(target: LOG_TARGET, "  Raw Data: {}", json);
+                log::debug!(target: LOG_TARGET, "  Raw Data: {}", json);
             }
         }
     }

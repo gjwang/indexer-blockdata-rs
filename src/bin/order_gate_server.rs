@@ -40,10 +40,7 @@ async fn main() {
         .set("bootstrap.servers", &config.kafka.broker)
         .set("message.timeout.ms", "5000")
         .set("linger.ms", &config.kafka.linger_ms)
-        .set(
-            "socket.keepalive.enable",
-            &config.kafka.socket_keepalive_enable,
-        )
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .create()
         .expect("Producer creation error");
 

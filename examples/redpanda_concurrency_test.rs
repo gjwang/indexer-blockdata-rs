@@ -55,9 +55,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .payload(&payload[..]) // 获取 Arc 内部数据的切片引用
                 .key(&key);
 
-            let _ = producer
-                .send(record, std::time::Duration::from_secs(0))
-                .await;
+            let _ = producer.send(record, std::time::Duration::from_secs(0)).await;
 
             drop(permit);
         });
