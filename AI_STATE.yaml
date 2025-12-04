@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 6: Maintenance & Future Work"
 
 active_task:
-  id: "6.1"
-  name: "Gateway API Extensions"
-  status: "COMPLETED"
-  next_action: "Proceed to next task or perform cleanup"
+  - id: 6.1
+    name: Gateway API Extensions
+    description: Add endpoints for user trade history and balance.
+    status: COMPLETED
 
 phase_6_tasks:
   gateway_api: true

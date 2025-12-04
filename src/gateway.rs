@@ -18,6 +18,7 @@ use tower_http::cors::CorsLayer;
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
+use crate::ledger::MatchExecData;
 use crate::models::{
     ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
     UserAccountManager,
@@ -376,10 +377,32 @@ struct HistoryParams {
 struct DisplayTradeHistoryResponse {
     trade_id: String,
     symbol: String,
-    price: String,
-    quantity: String,
+    price: Decimal,
+    quantity: Decimal,
     role: String,
-    time: i64,
+    time: u64,
+}
+
+impl DisplayTradeHistoryResponse {
+    pub fn new(
+        trade: &MatchExecData,
+        symbol: &str,
+        role: &str,
+        balance_manager: &BalanceManager,
+        base_asset_id: u32,
+    ) -> Option<Self> {
+        let price_decimal = balance_manager.to_client_price(symbol, trade.price)?;
+        let qty_decimal = balance_manager.to_client_amount(base_asset_id, trade.quantity)?;
+
+        Some(Self {
+            trade_id: trade.trade_id.to_string(),
+            symbol: symbol.to_string(),
+            price: price_decimal,
+            quantity: qty_decimal,
+            role: role.to_string(),
+            time: trade.settled_at,
+        })
+    }
 }
 
 async fn get_trade_history(
@@ -412,17 +435,13 @@ async fn get_trade_history(
                 if t.base_asset == base && t.quote_asset == quote {
                     let role = if t.buyer_user_id == user_id { "BUYER" } else { "SELLER" };
 
-                    let price_decimals = info.price_decimal;
-                    let qty_decimals = state.symbol_manager.get_asset_decimal(base).unwrap_or(8);
-
-                    Some(DisplayTradeHistoryResponse {
-                        trade_id: t.trade_id.to_string(),
-                        symbol: params.symbol.clone(),
-                        price: u64_to_decimal_string(t.price, price_decimals),
-                        quantity: u64_to_decimal_string(t.quantity, qty_decimals),
-                        role: role.to_string(),
-                        time: t.settled_at as i64,
-                    })
+                    DisplayTradeHistoryResponse::new(
+                        &t,
+                        &params.symbol,
+                        role,
+                        &state.balance_manager,
+                        base,
+                    )
                 } else {
                     None
                 }
