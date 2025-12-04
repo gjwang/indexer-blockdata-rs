@@ -2,20 +2,20 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
-use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    routing::post,
     Router,
+    routing::post,
 };
+use axum::extract::Query;
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{
-    u64_to_decimal_string, ApiResponse, ClientOrder, OrderStatus, UserAccountManager,
+    ApiResponse, ClientOrder, OrderStatus, u64_to_decimal_string, UserAccountManager,
 };
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
@@ -26,7 +26,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
 }
 pub struct AppState {
     pub symbol_manager: SymbolManager,
@@ -89,7 +89,7 @@ async fn create_order(
 #[derive(Debug, serde::Serialize)]
 struct BalanceResponse {
     asset: String,
-    available: String,
+    avail: String,
     frozen: String,
 }
 
@@ -97,7 +97,7 @@ impl BalanceResponse {
     pub fn from_balance(balance: &Balance, asset_name: String, decimals: u32) -> Self {
         Self {
             asset: asset_name,
-            available: u64_to_decimal_string(balance.avail, decimals),
+            avail: u64_to_decimal_string(balance.avail, decimals),
             frozen: u64_to_decimal_string(balance.frozen, decimals),
         }
     }
@@ -210,9 +210,9 @@ async fn get_trade_history(
                         quantity: t.quantity.to_string(),
                         role: role.to_string(),
                         time: 0, // settled_at is not in MatchExecData struct?
-                                 // Wait, SettlementDb::parse_trade_row ignores settled_at!
-                                 // I should update MatchExecData or SettlementDb to return settled_at.
-                                 // For now, use 0 or current time?
+                        // Wait, SettlementDb::parse_trade_row ignores settled_at!
+                        // I should update MatchExecData or SettlementDb to return settled_at.
+                        // For now, use 0 or current time?
                     })
                 } else {
                     None
