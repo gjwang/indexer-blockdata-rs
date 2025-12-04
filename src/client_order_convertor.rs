@@ -6,9 +6,12 @@ use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{ClientOrder, OrderRequest};
 use crate::symbol_manager::SymbolManager;
 
+use crate::models::balance_manager::BalanceManager;
+
 pub fn client_order_convert(
     client_order: &ClientOrder,
     symbol_manager: &SymbolManager,
+    balance_manager: &BalanceManager,
     snowflake_gen: &Mutex<SnowflakeGenRng>,
     user_id: u64,
 ) -> Result<(u64, OrderRequest), (StatusCode, String)> {
@@ -23,7 +26,7 @@ pub fn client_order_convert(
 
     // Convert to internal
     let internal_order = client_order
-        .try_to_internal(symbol_manager, order_id, user_id)
+        .try_to_internal(symbol_manager, balance_manager, order_id, user_id)
         .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     Ok((order_id, internal_order))
