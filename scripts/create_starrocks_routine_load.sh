@@ -43,7 +43,7 @@ PROPERTIES
 FROM KAFKA
 (
     "kafka_broker_list" = "redpanda:29092",
-    "kafka_topic" = "trades",
+    "kafka_topic" = "trade.history",
     "property.group.id" = "starrocks_trades_group",
     "property.kafka_default_offsets" = "OFFSET_BEGINNING"
 );
