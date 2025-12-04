@@ -10,7 +10,7 @@ use log4rs::{
     encode::pattern::PatternEncoder,
 };
 
-use crate::configure::load_config;
+use crate::configure::AppConfig;
 
 /// Standard log pattern with timestamp, level, target, and message
 const LOG_PATTERN: &str = "{d(%Y-%m-%d %H:%M:%S%.3f)} [{l}] [{t}] - {m}{n}";
@@ -50,50 +50,30 @@ fn parse_log_level(level_str: &str) -> LevelFilter {
 
 /// Setup the logger with console and optional file output
 ///
+/// # Arguments
+/// * `config` - Application configuration containing log settings
+///
 /// # Configuration
 /// - Respects `RUST_LOG` environment variable (standard Rust convention)
 /// - Falls back to `log_level` in config
 /// - Supports levels: trace, debug, info, warn, error, off
 /// - Conditionally logs to file based on `log_to_file` config
+/// - Log file path comes from `config.log_file`
 ///
 /// # Errors
 /// Returns error if:
-/// - Config cannot be loaded
 /// - Log file directory cannot be created
 /// - Log4rs initialization fails
-pub fn setup_logger() -> Result<(), Box<dyn Error>> {
-    setup_logger_for_service(None)
-}
-
-/// Setup the logger for a specific service with its own log file
-///
-/// # Arguments
-/// * `service_name` - Optional service name. If provided, logs to `log/{service_name}.log`
-///                    instead of the default log file from config.
 ///
 /// # Example
 /// ```no_run
-/// // Settlement service logs to log/settlement.log
-/// setup_logger_for_service(Some("settlement"))?;
+/// let config = load_service_config("settlement")?;
+/// setup_logger(&config)?;
 /// ```
-///
-/// # Configuration
-/// - Respects `RUST_LOG` environment variable (standard Rust convention)
-/// - Falls back to `log_level` in config
-/// - Supports levels: trace, debug, info, warn, error, off
-/// - Conditionally logs to file based on `log_to_file` config
-///
-/// # Errors
-/// Returns error if:
-/// - Config cannot be loaded
-/// - Log file directory cannot be created
-/// - Log4rs initialization fails
-pub fn setup_logger_for_service(service_name: Option<&str>) -> Result<(), Box<dyn Error>> {
-    let config = load_config()?;
-    
+pub fn setup_logger(config: &AppConfig) -> Result<(), Box<dyn Error>> {
     let log_level = parse_log_level(&config.log_level);
 
-    // Create console appender with colored output
+    // Create console appender
     let stdout = ConsoleAppender::builder()
         .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
         .build();
@@ -105,15 +85,10 @@ pub fn setup_logger_for_service(service_name: Option<&str>) -> Result<(), Box<dy
 
     // Conditionally add file appender
     if config.log_to_file {
-        // Use service-specific log file if service_name is provided
-        let log_file = if let Some(name) = service_name {
-            format!("log/{}.log", name)
-        } else {
-            config.log_file.clone()
-        };
+        let log_file = &config.log_file;
         
         // Ensure log directory exists
-        if let Some(parent) = Path::new(&log_file).parent() {
+        if let Some(parent) = Path::new(log_file).parent() {
             fs::create_dir_all(parent)?;
         }
         
@@ -121,7 +96,7 @@ pub fn setup_logger_for_service(service_name: Option<&str>) -> Result<(), Box<dy
         
         let file = FileAppender::builder()
             .encoder(Box::new(PatternEncoder::new(LOG_PATTERN)))
-            .build(&log_file)?;
+            .build(log_file)?;
 
         log_config_builder = log_config_builder
             .appender(Appender::builder().build("file", Box::new(file)));
@@ -139,4 +114,3 @@ pub fn setup_logger_for_service(service_name: Option<&str>) -> Result<(), Box<dy
 
     Ok(())
 }
-

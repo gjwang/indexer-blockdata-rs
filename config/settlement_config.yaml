@@ -1,0 +1,7 @@
+log_file: "log/settlement.log"
+log_level: "info"
+log_to_file: true
+
+zeromq:
+  settlement_port: 5557
+  market_data_port: 5558

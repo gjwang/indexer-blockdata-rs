@@ -73,3 +73,41 @@ pub fn load_config() -> Result<AppConfig, ConfigError> {
 
     s.try_deserialize()
 }
+
+/// Load configuration for a specific service
+///
+/// # Arguments
+/// * `service_name` - Name of the service (e.g., "settlement", "matching_engine")
+///
+/// # Configuration Loading Order (later sources override earlier ones):
+/// 1. `config/config.yaml` - Base configuration
+/// 2. `config/{RUN_MODE}.yaml` - Environment-specific config (dev/prod/test)
+/// 3. `config/{service_name}_config.yaml` - Service-specific config (highest priority)
+/// 4. Environment variables with `APP__` prefix
+///
+/// # Example
+/// ```no_run
+/// // Loads: config.yaml -> dev.yaml -> settlement_config.yaml -> env vars
+/// let config = load_service_config("settlement")?;
+/// ```
+///
+/// This allows each service to have isolated configuration without affecting others.
+pub fn load_service_config(service_name: &str) -> Result<AppConfig, ConfigError> {
+    let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "dev".into());
+    let env_config_file = format!("config/{}", run_mode);
+    let service_config_file = format!("config/{}_config", service_name);
+
+    let s = Config::builder()
+        // 1. Start with "default" configuration
+        .add_source(File::with_name("config/config"))
+        // 2. Add in the current environment file (optional)
+        .add_source(File::with_name(&env_config_file).required(false))
+        // 3. Add service-specific config (highest priority for file-based config)
+        .add_source(File::with_name(&service_config_file).required(false))
+        // 4. Add in settings from Environment Variables (ultimate override)
+        //    E.g. APP__KAFKA__BROKER=...
+        .add_source(config::Environment::with_prefix("APP").separator("__"))
+        .build()?;
+
+    s.try_deserialize()
+}
