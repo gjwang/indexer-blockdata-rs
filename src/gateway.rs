@@ -1,17 +1,17 @@
 use std::collections::HashMap;
-use rust_decimal::Decimal;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    routing::post,
     Router,
+    routing::post,
 };
+use axum::extract::Query;
+use rust_decimal::Decimal;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
@@ -19,30 +19,83 @@ use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::models::{
-    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
+    ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
     UserAccountManager,
 };
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
 
-
 #[derive(Debug, serde::Serialize)]
-struct BalanceResponse {
-    asset: String,
-    avail: Decimal,
-    frozen: Decimal,
+pub struct ClientBalance {
+    pub asset: String,
+    pub avail: Decimal,
+    pub frozen: Decimal,
 }
 
-impl BalanceResponse {
-    pub fn from_balance(balance: &Balance, asset_name: String, decimals: u32) -> Self {
+pub struct BalanceManager {
+    symbol_manager: Arc<SymbolManager>,
+}
+
+impl BalanceManager {
+    pub fn new(symbol_manager: Arc<SymbolManager>) -> Self {
+        Self { symbol_manager }
+    }
+
+    pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
+        let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
+        let decimals = self.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
         let divisor = Decimal::from(10_u64.pow(decimals));
-        Self {
+
+        Some(ClientBalance {
             asset: asset_name,
-            avail: Decimal::from(balance.avail) / divisor,
-            frozen: Decimal::from(balance.frozen) / divisor,
-        }
+            avail: Decimal::from(avail) / divisor,
+            frozen: Decimal::from(frozen) / divisor,
+        })
+    }
+
+    pub fn to_internal_amount(&self, asset_name: &str, amount: Decimal) -> Result<(u32, u64), String> {
+        let asset_id = self.symbol_manager.get_asset_id(asset_name)
+            .ok_or_else(|| format!("Unknown asset: {}", asset_name))?;
+
+        let decimals = self.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+        let multiplier = Decimal::from(10_u64.pow(decimals));
+
+        let raw_amount = (amount * multiplier)
+            .round()
+            .to_string()
+            .parse::<u64>()
+            .map_err(|_| "Amount overflow".to_string())?;
+
+        Ok((asset_id, raw_amount))
     }
 }
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TransferInRequestPayload {
+    pub request_id: String,
+    pub user_id: u64,
+    pub asset: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct TransferOutRequestPayload {
+    pub request_id: String,
+    pub user_id: u64,
+    pub asset: String,
+    pub amount: Decimal,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct TransferResponse {
+    pub success: bool,
+    pub message: String,
+    pub request_id: Option<String>,
+}
+
+
+
+
 
 #[derive(serde::Deserialize)]
 struct UserIdParams {
@@ -56,7 +109,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
 }
 
 pub struct SimulatedFundingAccount {
@@ -102,33 +155,9 @@ impl SimulatedFundingAccount {
 }
 
 
-
-
-#[derive(Debug, serde::Deserialize)]
-pub struct TransferInRequestPayload {
-    pub request_id: String,
-    pub user_id: u64,
-    pub asset: String,
-    pub amount: Decimal,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct TransferOutRequestPayload {
-    pub request_id: String,
-    pub user_id: u64,
-    pub asset: String,
-    pub amount: Decimal,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct TransferResponse {
-    pub success: bool,
-    pub message: String,
-    pub request_id: Option<String>,
-}
-
 pub struct AppState {
-    pub symbol_manager: SymbolManager,
+    pub symbol_manager: Arc<SymbolManager>,
+    pub balance_manager: BalanceManager,
     pub producer: Arc<dyn OrderPublisher>,
     pub snowflake_gen: Mutex<SnowflakeGenRng>,
     pub kafka_topic: String,
@@ -162,22 +191,10 @@ async fn transfer_in(
     println!("📥 Transfer In request received: {:?}", payload);
 
     // Resolve Asset ID and Decimals
-    let asset_id = state
-        .symbol_manager
-        .get_asset_id(&payload.asset)
-        .ok_or_else(|| {
-            eprintln!("Unknown asset: {}", payload.asset);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
-    let multiplier = Decimal::from(10_u64.pow(decimals));
-    let raw_amount = (payload.amount * multiplier)
-        .round()
-        .to_string()
-        .parse::<u64>()
-        .map_err(|_| {
-            eprintln!("Amount overflow");
+    let (asset_id, raw_amount) = state.balance_manager
+        .to_internal_amount(&payload.asset, payload.amount)
+        .map_err(|e| {
+            eprintln!("Conversion failed: {}", e);
             StatusCode::BAD_REQUEST
         })?;
 
@@ -251,22 +268,10 @@ async fn transfer_out(
     println!("📤 Transfer Out request received: {:?}", payload);
 
     // Resolve Asset ID and Decimals
-    let asset_id = state
-        .symbol_manager
-        .get_asset_id(&payload.asset)
-        .ok_or_else(|| {
-            eprintln!("Unknown asset: {}", payload.asset);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
-    let multiplier = Decimal::from(10_u64.pow(decimals));
-    let raw_amount = (payload.amount * multiplier)
-        .round()
-        .to_string()
-        .parse::<u64>()
-        .map_err(|_| {
-            eprintln!("Amount overflow");
+    let (asset_id, raw_amount) = state.balance_manager
+        .to_internal_amount(&payload.asset, payload.amount)
+        .map_err(|e| {
+            eprintln!("Conversion failed: {}", e);
             StatusCode::BAD_REQUEST
         })?;
 
@@ -367,7 +372,7 @@ async fn create_order(
 async fn get_balance(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<UserIdParams>,
-) -> Result<Json<ApiResponse<Vec<BalanceResponse>>>, (StatusCode, String)> {
+) -> Result<Json<ApiResponse<Vec<ClientBalance>>>, (StatusCode, String)> {
     let user_id = params.user_id;
 
     if let Some(db) = &state.db {
@@ -388,29 +393,17 @@ async fn get_balance(
 
         let mut response = Vec::new();
         for (asset_id, amount) in balances {
-            let asset_name = state.symbol_manager.get_asset_name(asset_id).ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Asset name not found for ID {}", asset_id),
-                )
-            })?;
-
-            let decimals = state.symbol_manager.get_asset_decimal(asset_id).ok_or_else(|| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Asset decimal not found for ID {}", asset_id),
-                )
-            })?;
-
             let avail = if amount < 0 { 0 } else { amount as u64 };
 
-            let balance = Balance { avail, frozen: 0, version: 0 };
-
-            response.push(BalanceResponse::from_balance(&balance, asset_name, decimals));
+            if let Some(client_balance) = state.balance_manager.to_client_balance(asset_id, avail, 0) {
+                response.push(client_balance);
+            } else {
+                 return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Asset info not found for ID {}", asset_id),
+                ));
+            }
         }
-
-        // Sort by asset name for consistent output
-        response.sort_by(|a, b| a.asset.cmp(&b.asset));
 
         Ok(Json(ApiResponse::success(response)))
     } else {
