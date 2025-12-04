@@ -13,8 +13,8 @@ current_phase: "Phase 5: Advanced Features (Future)"
 active_task:
   id: "5.1"
   name: "StarRocks Integration"
-  status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Design StarRocks schema"
+  status: "IN_PROGRESS" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
+  next_action: "Add StarRocks to docker-compose and design schema"
 
 # Phase 3 Completion Summary
 phase_3_completed:

@@ -40,6 +40,17 @@ services:
       timeout: 10s
       retries: 5
 
+  starrocks:
+    image: starrocks/allinone:latest
+    container_name: starrocks
+    ports:
+      - "9030:9030" # FE MySQL port
+      - "8030:8030" # FE HTTP port
+      - "8040:8040" # BE HTTP port
+    volumes:
+      - starrocks-data:/data/deploy/starrocks/
+
 volumes:
   redpanda-data:
   scylla-data:
+  starrocks-data:
