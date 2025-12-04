@@ -60,4 +60,30 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     3.  [ ] **Verify**: Run ME (Publisher) and Settlement (Subscriber). Confirm messages flow.
     4.  [ ] **Commit**: `git commit -m "feat: create skeleton settlement service"`
 
-*(More phases will be detailed after Phase 3 is complete)*
+### Task 3.2: Typed Deserialization
+*   **Goal**: Convert raw JSON into strong Rust types.
+*   **Steps**:
+    1.  [ ] **Modify**: Define `SettlementEntry` struct in `src/models.rs` (or locally if preferred) to match ME output.
+    2.  [ ] **Modify**: Update `settlement_service.rs` to deserialize into this struct.
+    3.  [ ] **Verify**: Run and confirm structured logging works.
+    4.  [ ] **Commit**: `git commit -m "feat: implement settlement deserialization"`
+
+### Task 3.3: Sequence Verification
+*   **Goal**: Ensure no data loss (Gap Detection).
+*   **Steps**:
+    1.  [ ] **Modify**: Add `next_sequence: u64` state to `settlement_service.rs`.
+    2.  [ ] **Modify**: Implement check: `if msg.sequence != next_sequence { panic/log }`.
+    3.  [ ] **Verify**: Run normal flow (should pass). Manually inject a gap (optional) to test failure.
+    4.  [ ] **Commit**: `git commit -m "feat: implement settlement sequence verification"`
+
+### Task 3.4: Simple Persistence (CSV)
+*   **Goal**: Persist trades to disk (simulating DB).
+*   **Steps**:
+    1.  [ ] **Modify**: Add `csv` crate dependency.
+    2.  [ ] **Modify**: Create a `TradeWriter` in `settlement_service.rs`.
+    3.  [ ] **Modify**: Append settled trades to `settled_trades.csv`.
+    4.  [ ] **Verify**: Run E2E test and check `settled_trades.csv` content.
+    5.  [ ] **Commit**: `git commit -m "feat: implement settlement csv persistence"`
+
+*(Phase 4: Database Integration - Scylla/StarRocks - to follow)*
+

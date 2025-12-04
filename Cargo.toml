@@ -62,6 +62,7 @@ validator = { version = "0.20.0", features = ["derive"] }
 rust_decimal = { version = "1.36", features = ["serde"] }
 zmq = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+csv = "1.4.0"
 
 [build-dependencies]
 flatc-rust = "0.2" # Helper to compile schema
