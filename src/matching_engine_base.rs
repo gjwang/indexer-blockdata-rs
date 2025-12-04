@@ -535,22 +535,34 @@ impl MatchingEngine {
 
         let mut match_batch = Vec::with_capacity(trades.len());
 
-        for trade in &trades {
-            let mut buyer_refund = 0;
-            // Refund excess frozen for Taker Buyer
-            if side == Side::Buy && trade.buy_user_id == user_id {
-                let excess = (price - trade.price) * trade.quantity;
-                if excess > 0 {
-                    buyer_refund = excess;
-                }
-            }
+        // Track temporary version increments within the batch
+        let mut temp_versions: std::collections::HashMap<(u64, u32), u64> = std::collections::HashMap::new();
 
-            // Capture balance versions BEFORE applying the trade
-            // This ensures we have the version at the time of trade execution
-            let buyer_quote_version = ledger.get_balance_version(trade.buy_user_id, quote_asset);
-            let buyer_base_version = ledger.get_balance_version(trade.buy_user_id, base_asset);
-            let seller_base_version = ledger.get_balance_version(trade.sell_user_id, base_asset);
-            let seller_quote_version = ledger.get_balance_version(trade.sell_user_id, quote_asset);
+        for trade in trades {
+            // Helper to get and increment version
+            let mut get_and_inc_version = |user_id: u64, asset_id: u32| -> u64 {
+                let entry = temp_versions.entry((user_id, asset_id)).or_insert_with(|| {
+                    ledger.get_balance_version(user_id, asset_id)
+                });
+                let v = *entry;
+                *entry += 1;
+                v
+            };
+
+            let buyer_quote_version = get_and_inc_version(trade.buy_user_id, quote_asset);
+            let buyer_base_version = get_and_inc_version(trade.buy_user_id, base_asset);
+            let seller_base_version = get_and_inc_version(trade.sell_user_id, base_asset);
+            let seller_quote_version = get_and_inc_version(trade.sell_user_id, quote_asset);
+
+            let buyer_refund = if side == Side::Buy && trade.buy_user_id == user_id {
+                if price > trade.price {
+                    (price - trade.price) * trade.quantity
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
 
             match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,

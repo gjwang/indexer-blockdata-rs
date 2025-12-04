@@ -48,9 +48,13 @@ async fn main() {
                 // pick a symbol (round‑robin)
                 let raw_symbol = symbols[i as usize % symbols.len()];
 
+                // pick a funded user (1001, 1002, 1003)
+                let user_id = 1001 + (rng().random_range(0..3));
+                let url_with_user = format!("{}?user_id={}", api_url, user_id);
+
                 // deterministic price & quantity (same for both sides)
                 let price_step = rng().random_range(1..2) as f64 * 0.5;
-                let price = format!("{:.2}", 1.0 + price_step);
+                let price = format!("{:.2}", 150.0 + price_step); // Use realistic price (around 150)
 
                 // ---- SELL order ------------------------------------------------
                 // 1. Send three small SELL orders
@@ -72,7 +76,7 @@ async fn main() {
                     });
 
                     // send SELL and handle response
-                    match client.post(api_url).json(&sell_payload).send().await {
+                    match client.post(&url_with_user).json(&sell_payload).send().await {
                         Ok(resp) => {
                             let status = resp.status();
                             if !status.is_success() {
@@ -116,7 +120,7 @@ async fn main() {
                 });
 
                 // send BUY and handle response
-                match client.post(api_url).json(&buy_payload).send().await {
+                match client.post(&url_with_user).json(&buy_payload).send().await {
                     Ok(resp) => {
                         let status = resp.status();
                         if !status.is_success() {

@@ -262,7 +262,10 @@ async fn main() {
         println!("Loaded symbol: {}", symbol);
     }
 
-    // Deposit Funds for generic users
+    // NOTE: Automatic deposits disabled - use transfer_in API for proper E2E flow
+    // Users must call /api/v1/transfer_in to initialize their balances
+    // This ensures the full flow: transfer_in -> deposit event -> settlement -> user_balances
+    /*
     println!("=== Depositing Funds ===");
     let amount = 100_000_000_u64;
 
@@ -283,6 +286,7 @@ async fn main() {
         }
     }
     println!("Funds deposited for users 0-5000.");
+    */
 
     // === Kafka Consumer Setup ===
     let consumer_raw: StreamConsumer = ClientConfig::new()
