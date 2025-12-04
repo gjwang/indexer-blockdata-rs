@@ -108,8 +108,10 @@ pub fn load_config() -> Result<AppConfig, ConfigError> {
 ///
 /// # Example
 /// ```no_run
+/// use fetcher::configure::load_service_config;
 /// // Loads: config.yaml -> dev.yaml -> settlement_config.yaml -> env vars
 /// let config = load_service_config("settlement_config")?;
+/// # Ok::<(), config::ConfigError>(())
 /// ```
 ///
 /// This allows each service to have isolated configuration without affecting others.
