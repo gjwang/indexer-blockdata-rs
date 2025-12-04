@@ -13,7 +13,7 @@ current_phase: "Phase 4: Database Integration (ScyllaDB)"
 active_task:
   id: "4.2"
   name: "Schema Definition & Migration"
-  status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
+  status: "IN_PROGRESS" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
   next_action: "Create settlement_schema.cql and init script"
 
 # Phase 3 Completion Summary
