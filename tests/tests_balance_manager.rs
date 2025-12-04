@@ -151,3 +151,230 @@ fn test_unknown_asset() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "Unknown asset: UNKNOWN");
 }
+
+#[test]
+fn test_price_conversion_strict() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    // Symbol: BTC_USDT, price_decimal=2, price_display_decimal=2
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test Case 1: Valid price conversion (exact precision)
+    // 50000.50 -> 5000050
+    let price = Decimal::from_str("50000.50").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Valid price should convert");
+    assert_eq!(internal, 5000050);
+
+    // Test Case 2: Valid price conversion (less than max precision)
+    // 50000.5 -> 5000050
+    let price = Decimal::from_str("50000.5").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Valid price should convert");
+    assert_eq!(internal, 5000050);
+
+    // Test Case 3: Valid price conversion (integer)
+    // 50000 -> 5000000
+    let price = Decimal::from(50000);
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Valid price should convert");
+    assert_eq!(internal, 5000000);
+
+    // Test Case 4: Zero price
+    let price = Decimal::from(0);
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Zero price should convert");
+    assert_eq!(internal, 0);
+
+    // Test Case 5: Very small price (within precision)
+    // 0.01 -> 1
+    let price = Decimal::from_str("0.01").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Small price should convert");
+    assert_eq!(internal, 1);
+
+    // Test Case 6: Maximum precision (2 decimals)
+    // 99999.99 -> 9999999
+    let price = Decimal::from_str("99999.99").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Max precision should convert");
+    assert_eq!(internal, 9999999);
+}
+
+#[test]
+fn test_price_conversion_precision_validation() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    // price_decimal=2, price_display_decimal=2
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test Case 1: Exceeds display precision (3 decimals when max is 2)
+    // 50000.501 -> Error
+    let price = Decimal::from_str("50000.501").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "Price 50000.501 exceeds max precision 2");
+
+    // Test Case 2: Far exceeds display precision
+    // 50000.12345 -> Error
+    let price = Decimal::from_str("50000.12345").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("exceeds max precision"));
+
+    // Test Case 3: Tiny amount with too much precision
+    // 0.001 -> Error (3 decimals when max is 2)
+    let price = Decimal::from_str("0.001").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_price_conversion_different_precisions() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+
+    // Symbol 1: price_decimal=4, price_display_decimal=2
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 4, 2);
+    // Symbol 2: price_decimal=8, price_display_decimal=4
+    sm.insert_symbol("ETH_USDT", 2, 3, 2, 8, 4);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test BTC_USDT (price_decimal=4, display=2)
+    // 1234.56 -> 12345600
+    let price = Decimal::from_str("1234.56").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Should convert");
+    assert_eq!(internal, 12345600);
+
+    // 1234.567 -> Error (3 decimals when display max is 2)
+    let price = Decimal::from_str("1234.567").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+
+    // Test ETH_USDT (price_decimal=8, display=4)
+    // 1234.5678 -> 123456780000
+    let price = Decimal::from_str("1234.5678").unwrap();
+    let internal = bm.to_internal_price("ETH_USDT", price).expect("Should convert");
+    assert_eq!(internal, 123456780000);
+
+    // 1234.56789 -> Error (5 decimals when display max is 4)
+    let price = Decimal::from_str("1234.56789").unwrap();
+    let result = bm.to_internal_price("ETH_USDT", price);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_price_conversion_round_trip() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test Case 1: Round trip with exact precision
+    let original = Decimal::from_str("50000.50").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", original).unwrap();
+    let back = bm.to_client_price("BTC_USDT", internal).unwrap();
+    assert_eq!(back, original);
+
+    // Test Case 2: Round trip with less precision
+    let original = Decimal::from_str("50000.5").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", original).unwrap();
+    let back = bm.to_client_price("BTC_USDT", internal).unwrap();
+    assert_eq!(back, Decimal::from_str("50000.50").unwrap()); // Normalized
+
+    // Test Case 3: Round trip with integer
+    let original = Decimal::from(50000);
+    let internal = bm.to_internal_price("BTC_USDT", original).unwrap();
+    let back = bm.to_client_price("BTC_USDT", internal).unwrap();
+    assert_eq!(back, Decimal::from_str("50000.00").unwrap());
+
+    // Test Case 4: Round trip with zero
+    let original = Decimal::from(0);
+    let internal = bm.to_internal_price("BTC_USDT", original).unwrap();
+    let back = bm.to_client_price("BTC_USDT", internal).unwrap();
+    assert_eq!(back, Decimal::from(0));
+}
+
+#[test]
+fn test_price_conversion_overflow() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    // price_decimal=2
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // u64::MAX is ~18,446,744,073,709,551,615
+    // With price_decimal=2, max representable price is ~184,467,440,737,095,516.15
+
+    // Test valid large price
+    let price = Decimal::from_str("100000000000000.00").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Large price should convert");
+    assert_eq!(internal, 10000000000000000);
+
+    // Test overflow
+    // 200000000000000000.00 -> 20000000000000000000 > u64::MAX
+    let price = Decimal::from_str("200000000000000000.00").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("Price overflow"));
+}
+
+#[test]
+fn test_price_conversion_negative() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Negative price should fail
+    let price = Decimal::from_str("-100.50").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("negative"));
+}
+
+#[test]
+fn test_price_conversion_by_id() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+    sm.insert_symbol("BTC_USDT", 1, 1, 2, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test to_client_price_by_id
+    let internal = 5000050_u64;
+    let client = bm.to_client_price_by_id(1, internal).unwrap();
+    assert_eq!(client, Decimal::from_str("50000.50").unwrap());
+
+    // Test unknown symbol ID
+    let result = bm.to_client_price_by_id(999, internal);
+    assert!(result.is_none());
+}
+
+#[test]
+fn test_price_conversion_unknown_symbol() {
+    let mut sm = SymbolManager::new();
+    sm.add_asset(1, 8, 3, "BTC");
+    sm.add_asset(2, 6, 2, "USDT");
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test to_internal_price with unknown symbol
+    let price = Decimal::from_str("50000.50").unwrap();
+    let result = bm.to_internal_price("UNKNOWN_SYMBOL", price);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "Unknown symbol: UNKNOWN_SYMBOL");
+
+    // Test to_client_price with unknown symbol
+    let result = bm.to_client_price("UNKNOWN_SYMBOL", 5000050);
+    assert!(result.is_none());
+}
