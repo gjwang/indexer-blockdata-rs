@@ -8,13 +8,13 @@ last_updated: "2025-12-04"
 architecture_doc: "PURE_MEMORY_SMR_ARCH.md"
 plan_doc: "IMPLEMENTATION_PLAN.md"
 
-current_phase: "Phase 2: The Output Pipeline"
-
+current_phase: "Phase 3: The Input Pipeline"
+ 
 active_task:
-  id: "2.6"
-  name: "Verify Output Pipeline"
-  status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Proceed to Phase 3"
+  id: "3.1"
+  name: "Implement Sequencer (Kafka Producer Wrapper)"
+  status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
+  next_action: "Create Sequencer struct to wrap Kafka producer"
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
