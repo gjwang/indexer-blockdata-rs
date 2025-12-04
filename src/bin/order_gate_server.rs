@@ -44,6 +44,23 @@ async fn main() {
         .create()
         .expect("Producer creation error");
 
+    // Connect to ScyllaDB
+    let db = if let Some(scylla_config) = &config.scylladb {
+        match fetcher::db::SettlementDb::connect(scylla_config).await {
+            Ok(db) => {
+                println!("✅ Connected to ScyllaDB");
+                Some(Arc::new(db))
+            }
+            Err(e) => {
+                eprintln!("⚠️ Warning: Failed to connect to ScyllaDB: {}", e);
+                None
+            }
+        }
+    } else {
+        println!("⚠️ Warning: ScyllaDB config missing");
+        None
+    };
+
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
     let state = Arc::new(AppState {
@@ -52,6 +69,7 @@ async fn main() {
         snowflake_gen,
         kafka_topic: config.kafka.topics.orders,
         user_manager: UserAccountManager::new(),
+        db,
     });
 
     let app = create_app(state);

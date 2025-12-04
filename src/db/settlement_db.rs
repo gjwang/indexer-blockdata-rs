@@ -55,6 +55,38 @@ const SELECT_TRADES_BY_SEQ_CQL: &str = "
     ALLOW FILTERING
 ";
 
+const SELECT_LEDGER_EVENTS_BY_USER_CQL: &str = "
+    SELECT user_id, sequence_id, event_type, amount, currency, related_id, created_at
+    FROM ledger_events
+    WHERE user_id = ?
+";
+
+const SELECT_TRADES_BY_BUYER_CQL: &str = "
+    SELECT
+        trade_date, output_sequence, trade_id, match_seq,
+        buy_order_id, sell_order_id,
+        buyer_user_id, seller_user_id,
+        price, quantity, base_asset, quote_asset,
+        buyer_refund, seller_refund, settled_at
+    FROM settled_trades
+    WHERE buyer_user_id = ?
+    LIMIT ?
+    ALLOW FILTERING
+";
+
+const SELECT_TRADES_BY_SELLER_CQL: &str = "
+    SELECT
+        trade_date, output_sequence, trade_id, match_seq,
+        buy_order_id, sell_order_id,
+        buyer_user_id, seller_user_id,
+        price, quantity, base_asset, quote_asset,
+        buyer_refund, seller_refund, settled_at
+    FROM settled_trades
+    WHERE seller_user_id = ?
+    LIMIT ?
+    ALLOW FILTERING
+";
+
 /// Settlement database client for ScyllaDB
 ///
 /// Provides a clean abstraction for storing and querying settled trades.
@@ -332,6 +364,84 @@ impl SettlementDb {
             for row in rows {
                 trades.push(Self::parse_trade_row(row)?);
             }
+        }
+
+        Ok(trades)
+    }
+
+    /// Get ledger events by user ID
+    pub async fn get_ledger_events_by_user(&self, user_id: u64) -> Result<Vec<LedgerEvent>> {
+        let result = self
+            .session
+            .query(SELECT_LEDGER_EVENTS_BY_USER_CQL, (user_id as i64,))
+            .await
+            .context("Failed to query ledger events by user")?;
+
+        let mut events = Vec::new();
+
+        if let Some(rows) = result.rows {
+            for row in rows {
+                let (user_id, sequence_id, event_type, amount, currency, related_id, created_at): (
+                    i64,
+                    i64,
+                    String,
+                    i64,
+                    i32,
+                    i64,
+                    i64,
+                ) = row.into_typed().context("Failed to parse ledger event row")?;
+
+                events.push(LedgerEvent {
+                    user_id: user_id as u64,
+                    sequence_id: sequence_id as u64,
+                    event_type,
+                    amount: amount as u64,
+                    currency: currency as u32,
+                    related_id: related_id as u64,
+                    created_at,
+                });
+            }
+        }
+
+        Ok(events)
+    }
+
+    /// Get trades by user ID (both buyer and seller roles)
+    pub async fn get_trades_by_user(&self, user_id: u64, limit: i32) -> Result<Vec<MatchExecData>> {
+        // Query as buyer
+        let buyer_result = self
+            .session
+            .query(SELECT_TRADES_BY_BUYER_CQL, (user_id as i64, limit))
+            .await
+            .context("Failed to query trades by buyer")?;
+
+        // Query as seller
+        let seller_result = self
+            .session
+            .query(SELECT_TRADES_BY_SELLER_CQL, (user_id as i64, limit))
+            .await
+            .context("Failed to query trades by seller")?;
+
+        let mut trades = Vec::new();
+
+        if let Some(rows) = buyer_result.rows {
+            for row in rows {
+                trades.push(Self::parse_trade_row(row)?);
+            }
+        }
+
+        if let Some(rows) = seller_result.rows {
+            for row in rows {
+                trades.push(Self::parse_trade_row(row)?);
+            }
+        }
+
+        // Sort by output_sequence descending (or settled_at)
+        trades.sort_by(|a, b| b.output_sequence.cmp(&a.output_sequence));
+
+        // Truncate to limit
+        if trades.len() > limit as usize {
+            trades.truncate(limit as usize);
         }
 
         Ok(trades)
