@@ -43,10 +43,17 @@ impl BalanceManager {
 
     pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
         let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
+        // decimals: Internal storage scale (e.g., 8 for BTC means 1 BTC = 10^8 units)
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
+
+        // client_precision: Max allowed decimal places for display (e.g., 3 for BTC means display as 1.234)
+        // If not set, defaults to decimals.
         let client_precision = self.symbol_manager.get_asset_precision(asset_id).unwrap_or(decimals);
+
         let divisor = Decimal::from(10_u64.pow(decimals));
 
+        // Convert internal u64 to Decimal and truncate to client_precision for display
+        // Example: internal 123456789 (1.23456789 BTC), precision 3 -> 1.234 BTC
         let avail_dec = (Decimal::from(avail) / divisor)
             .round_dp_with_strategy(client_precision, rust_decimal::RoundingStrategy::ToZero);
         let frozen_dec = (Decimal::from(frozen) / divisor)
@@ -63,15 +70,18 @@ impl BalanceManager {
         let asset_id = self.symbol_manager.get_asset_id(asset_name)
             .ok_or_else(|| format!("Unknown asset: {}", asset_name))?;
 
+        // decimals: Internal storage scale (e.g., 8 for BTC)
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)
             .ok_or_else(|| format!("Decimal not found for asset: {}", asset_name))?;
+
+        // client_precision: Max allowed decimal places for input (e.g., 3 for BTC)
         let client_precision = self.symbol_manager.get_asset_precision(asset_id).unwrap_or(decimals);
 
-        // Validate precision
+        // Validate input precision
+        // Example: if precision is 3, input 1.234 is valid, 1.2345 is invalid.
         if amount.normalize().scale() > client_precision {
             return Err(format!("Amount {} exceeds max precision {}", amount, client_precision));
         }
-
         let multiplier = Decimal::from(10_u64.pow(decimals));
 
         let raw_amount = (amount * multiplier)
