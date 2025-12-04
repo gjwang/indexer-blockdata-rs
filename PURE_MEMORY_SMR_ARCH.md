@@ -61,7 +61,33 @@ The architecture is based on **State Machine Replication (SMR)** with a **Pure I
 *   **Cold/Analytics (History)**: **StarRocks**.
     *   Real-time OLAP.
     *   Handles "Order Status" updates (Mutable Primary Key) efficiently.
+*   **Cold/Analytics (History)**: **StarRocks**.
+    *   Real-time OLAP.
+    *   Handles "Order Status" updates (Mutable Primary Key) efficiently.
     *   Stores Trade History (Immutable).
+
+## 2.1 Event Sourcing Strategy (The Source of Truth)
+For financial integrity, we **DO NOT** rely on the current state of user balances in ScyllaDB as the source of truth. Instead, we use **Event Sourcing**.
+
+### A. The Ledger Events Table
+We maintain a complete, immutable log of all balance-changing events in ScyllaDB.
+
+```sql
+CREATE TABLE ledger_events (
+    user_id bigint,
+    sequence_id bigint,
+    event_type text, -- 'DEPOSIT', 'WITHDRAWAL', 'TRADE_SPEND', 'TRADE_RECEIVE'
+    amount bigint,
+    currency int,
+    related_id bigint, -- trade_id or tx_id
+    PRIMARY KEY (user_id, sequence_id)
+);
+```
+
+### B. Replay & Audit
+*   **Replay**: To verify a user's balance, we replay `SELECT sum(amount) FROM ledger_events WHERE user_id = ?`.
+*   **Audit**: If a user disputes a balance, we provide the full history of events (Deposits + Trades + Withdrawals) that led to the current state.
+*   **Snapshot**: The `user_balances` table is merely a **Snapshot** (cache) of the sum of these events, optimized for fast reads. It can be rebuilt from `ledger_events` at any time.
 
 ## 3. Recovery Strategy
 

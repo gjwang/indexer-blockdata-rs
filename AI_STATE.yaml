@@ -36,6 +36,7 @@ not_implemented:
   - "Query Interface & Verification (Task 4.6)"
   - "Error Handling & Retry Logic (Task 4.7)"
   - "Monitoring & Metrics (Task 4.8)"
+  - "Event Sourcing Implementation (Task 4.9)"
   - "StarRocks Integration (Phase 5)"
   - "S3 Archival (Phase 5)"
   - "Settlement Reconciliation (Phase 5)"
