@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    routing::post,
     Router,
+    routing::post,
 };
+use axum::extract::Query;
 use rust_decimal::Decimal;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
@@ -18,11 +18,11 @@ use tower_http::cors::CorsLayer;
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
-use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::models::{
-    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
+    ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
     UserAccountManager,
 };
+use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
 
@@ -60,7 +60,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
 }
 
 pub struct SimulatedFundingAccount {
@@ -373,7 +373,7 @@ struct HistoryParams {
 }
 
 #[derive(Debug, serde::Serialize)]
-struct TradeHistoryResponse {
+struct DisplayTradeHistoryResponse {
     trade_id: String,
     symbol: String,
     price: String,
@@ -385,7 +385,7 @@ struct TradeHistoryResponse {
 async fn get_trade_history(
     Extension(state): Extension<Arc<AppState>>,
     Query(params): Query<HistoryParams>,
-) -> Result<Json<ApiResponse<Vec<TradeHistoryResponse>>>, (StatusCode, String)> {
+) -> Result<Json<ApiResponse<Vec<DisplayTradeHistoryResponse>>>, (StatusCode, String)> {
     let user_id = params.user_id;
     let limit = params.limit.unwrap_or(100);
 
@@ -400,7 +400,7 @@ async fn get_trade_history(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let response: Vec<TradeHistoryResponse> = trades
+        let response: Vec<DisplayTradeHistoryResponse> = trades
             .into_iter()
             .filter_map(|t| {
                 // Filter by symbol (client side filtering as DB query is by user)
@@ -415,7 +415,7 @@ async fn get_trade_history(
                     let price_decimals = info.price_decimal;
                     let qty_decimals = state.symbol_manager.get_asset_decimal(base).unwrap_or(8);
 
-                    Some(TradeHistoryResponse {
+                    Some(DisplayTradeHistoryResponse {
                         trade_id: t.trade_id.to_string(),
                         symbol: params.symbol.clone(),
                         price: u64_to_decimal_string(t.price, price_decimals),
