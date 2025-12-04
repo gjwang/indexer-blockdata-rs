@@ -23,14 +23,13 @@ pub struct InternalBalance {
 /// and internal integer representations (e.g., 150_000_000 satoshis).
 ///
 /// # Key Features
-/// - **Precision Enforcement**: Ensures client inputs do not exceed `display_decimals`.
+/// - **Precision Enforcement**: Ensures client inputs do not exceed `display_decimals` (for assets) or `price_decimal` (for prices).
 /// - **Safe Arithmetic**: Uses checked operations to prevent overflows.
-/// - **Rounding**: Rounds output values to `display_decimals` for consistent client display.
+/// - **Rounding**: Rounds output values to `display_decimals` or `price_decimal` for consistent client display.
 ///
-/// # Warning
-/// - This manager is designed for **Asset Balances** (quantities).
-/// - Do NOT use this for **Prices** unless the price precision matches the asset's display precision (which is rarely the case).
-/// - Prices usually have their own `price_decimal` configuration in `SymbolManager`.
+/// # Usage
+/// - Use `to_internal_amount` / `to_client_amount` for asset quantities (balances).
+/// - Use `to_internal_price` / `to_client_price` for trading prices.
 pub struct BalanceManager {
     symbol_manager: Arc<SymbolManager>,
 }
