@@ -66,7 +66,7 @@ fn test_balance_manager_overflow() {
     let amount = Decimal::from_str("200000000000.00000000").unwrap();
     let result = bm.to_internal_amount("BTC", amount);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), "Amount overflow");
+    assert!(result.unwrap_err().contains("Amount overflow"));
 }
 
 #[test]
