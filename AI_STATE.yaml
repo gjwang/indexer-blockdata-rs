@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 4: Database Integration (ScyllaDB)"
  
 active_task:
-  id: "4.4"
-  name: "Integrate Database into Settlement Service"
-  status: "IN_PROGRESS" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Update settlement_service.rs to use SettlementDb"
+  id: "4.5"
+  name: "Batch Insertion Optimization"
+  status: "PENDING" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
+  next_action: "Implement buffering and batch insertion in settlement service"
 
 # Phase 3 Completion Summary
 phase_3_completed:
@@ -23,9 +23,19 @@ phase_3_completed:
   - "3.3: Sequence Verification - Gap detection implemented"
   - "3.4: Simple Persistence - CSV writer for settled trades"
 
+# Phase 4 Progress
+phase_4_completed:
+  - "4.1: ScyllaDB Setup - Docker, config, schema ready"
+  - "4.2: Schema Definition - CQL schema and init script created"
+  - "4.3: Database Client - SettlementDb with async operations"
+  - "4.4: Service Integration - Settlement service using ScyllaDB with dual-write"
+
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
-  - "ScyllaDB Integration (Phase 4)"
+  - "Batch Insertion Optimization (Task 4.5)"
+  - "Query Interface & Verification (Task 4.6)"
+  - "Error Handling & Retry Logic (Task 4.7)"
+  - "Monitoring & Metrics (Task 4.8)"
   - "StarRocks Integration (Phase 5)"
   - "S3 Archival (Phase 5)"
   - "Settlement Reconciliation (Phase 5)"
