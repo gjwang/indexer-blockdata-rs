@@ -4,9 +4,9 @@ use zmq::{Context, SUB};
 use log::{info, error, debug};
 
 fn main() {
-    // Load service-specific configuration (config/settlement.yaml)
+    // Load service-specific configuration (config/settlement_config.yaml)
     // This isolates settlement config from other services
-    let config = configure::load_service_config("settlement")
+    let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
 
     // Setup logger using config (log file path comes from config/settlement.yaml)
