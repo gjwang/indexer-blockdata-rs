@@ -34,6 +34,8 @@ pub struct AppConfig {
     pub log_file: String,
     pub centrifugo: CentrifugoConfig,
     pub kafka: KafkaConfig,
+    #[serde(default)]
+    pub enable_local_wal: bool,
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {

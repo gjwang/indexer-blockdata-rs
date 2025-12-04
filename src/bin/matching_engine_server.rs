@@ -246,7 +246,7 @@ async fn main() {
         let _ = fs::remove_dir_all(snap_dir);
     }
 
-    let mut engine = MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create engine");
+    let mut engine = MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal).expect("Failed to create engine");
 
     // === Initialize Symbols & Funds (Hardcoded for Demo) ===
     println!("=== Initializing Engine State ===");
@@ -349,8 +349,12 @@ async fn main() {
 
     // === True Pipeline Architecture with Disruptor ===
     // Extract OrderWal from Engine to give to WAL Writer thread
-    let mut order_wal = engine.take_order_wal().expect("OrderWAL not found");
-    let progress_handle = order_wal.get_progress_handle();
+    let mut order_wal = engine.take_order_wal();
+    let progress_handle = if let Some(wal) = &order_wal {
+        wal.get_progress_handle()
+    } else {
+        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
+    };
 
     // Extract Ledger WAL for Output Processor (Consumer 3)
     let mut ledger_wal = engine.ledger.take_wal().expect("Ledger WAL not found");
@@ -371,58 +375,73 @@ async fn main() {
         }
         batch_count += 1;
 
-        if let Some(ref cmd) = event.command {
-            match cmd {
-                EngineCommand::PlaceOrderBatch(batch) => {
-                    for (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp) in batch {
-                        let wal_side = *side;
-                        if let Err(e) = order_wal.log_place_order_no_flush(
-                            *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
-                        ) {
-                            panic!("CRITICAL: Failed to write to Order WAL: {}. Halting.", e);
+        if let Some(wal) = &mut order_wal {
+            if let Some(ref cmd) = event.command {
+                match cmd {
+                    EngineCommand::PlaceOrderBatch(batch) => {
+                        for (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp) in batch {
+                            let wal_side = *side;
+                            if let Err(e) = wal.log_place_order_no_flush(
+                                *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
+                            ) {
+                                panic!("CRITICAL: Failed to write to Order WAL: {}. Halting.", e);
+                            }
                         }
+                        wal.current_seq = sequence as u64;
                     }
-                    order_wal.current_seq = sequence as u64;
-                }
-                EngineCommand::CancelOrder { order_id, .. } => {
-                    if let Err(e) = order_wal.log_cancel_order_no_flush(*order_id) {
-                        panic!("CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.", e);
+                    EngineCommand::CancelOrder { order_id, .. } => {
+                        if let Err(e) = wal.log_cancel_order_no_flush(*order_id) {
+                            panic!("CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.", e);
+                        }
+                        wal.current_seq = sequence as u64;
                     }
-                    order_wal.current_seq = sequence as u64;
-                }
-                EngineCommand::BalanceRequest(_) => {
-                    order_wal.current_seq = sequence as u64;
+                    EngineCommand::BalanceRequest(_) => {
+                        wal.current_seq = sequence as u64;
+                    }
                 }
             }
-        }
-        
-        // Flush WAL at end of batch and update progress
-        if end_of_batch {
-            let start_flush = std::time::Instant::now();
-            if let Err(e) = order_wal.flush() {
-                panic!("CRITICAL: Failed to flush Order WAL: {}. Halting.", e);
-            }
-            let flush_time = start_flush.elapsed();
             
-            // Only print if there was actual work (batch_count > 0)
-            if batch_count > 0 {
-                 println!("[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}", 
-                     batch_count, batch_start.elapsed(), flush_time);
-            }
-            batch_count = 0;
+            // Flush WAL at end of batch and update progress
+            if end_of_batch {
+                let start_flush = std::time::Instant::now();
+                if let Err(e) = wal.flush() {
+                    panic!("CRITICAL: Failed to flush Order WAL: {}. Halting.", e);
+                }
+                let flush_time = start_flush.elapsed();
+                
+                // Only print if there was actual work (batch_count > 0)
+                if batch_count > 0 {
+                     println!("[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}", 
+                         batch_count, batch_start.elapsed(), flush_time);
+                }
+                batch_count = 0;
 
-            // Commit Offset (if any) - Only after successful flush!
-            if let Some((ref topic, partition, offset)) = event.kafka_offset {
-                 let mut tpl = rdkafka::TopicPartitionList::new();
-                 let _ = tpl.add_partition_offset(topic, partition, rdkafka::Offset::Offset(offset + 1));
-                 if let Err(e) = consumer_for_writer.store_offsets(&tpl) {
-                      eprintln!("Offset Store Error: {}", e);
-                 }
+                progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
+                
+                // Commit Kafka offset only after WAL flush
+                if let Some((_topic, partition, offset)) = &event.kafka_offset {
+                    if let Err(e) = consumer_for_writer.store_offset("latency-test-topic", *partition, *offset) {
+                         eprintln!("Failed to store offset: {}", e);
+                    }
+                }
             }
-            // Progress is updated inside flush() (Wait, flush just flushes disk)
-            // We need to ensure progress is updated?
-            // Ah, order_wal.flush() doesn't update progress_handle?
-            // Let's check order_wal.
+        } else {
+             // No WAL: Just update progress and commit offset immediately
+             if end_of_batch {
+                 progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
+                 if let Some((_topic, partition, offset)) = &event.kafka_offset {
+                    if let Err(e) = consumer_for_writer.store_offset("latency-test-topic", *partition, *offset) {
+                         eprintln!("Failed to store offset: {}", e);
+                    }
+                }
+             }
+        }
+
+        if end_of_batch {
+             // Metrics (Optional)
+             if batch_count >= batch_poll_count {
+                 batch_count = 0;
+             }
         }
     };
     

@@ -1,0 +1,30 @@
+# AI_STATE.yaml
+# CRITICAL: This file tracks the EXACT state of the AI development session.
+# RULE: Before writing any code, UPDATE this file to "IN_PROGRESS".
+# RULE: After finishing a task, UPDATE this file to "COMPLETED".
+
+project: HFT Exchange
+last_updated: "2025-12-04"
+architecture_doc: "PURE_MEMORY_SMR_ARCH.md"
+plan_doc: "IMPLEMENTATION_PLAN.md"
+
+current_phase: "Phase 1: Pure Memory Core"
+
+active_task:
+  id: "1.1"
+  name: "Configurable WAL (Feature Flag)"
+  status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
+  next_action: "Proceed to Task 1.2: Verify Pure Memory Replication"
+
+# CRITICAL: What is NOT done yet (Do not hallucinate!)
+not_implemented:
+  - "ZeroMQ Publisher"
+  - "S3 Uploads"
+  - "Settlement Service"
+  - "XXHash3 State Hashing"
+
+# RESUMPTION PROTOCOL (Run these first!)
+verification_commands:
+  - "git status"
+  - "cat config.yaml"
+  - "cargo check"

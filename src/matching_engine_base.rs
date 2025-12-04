@@ -257,8 +257,12 @@ pub struct MatchingEngine {
 }
 
 impl MatchingEngine {
-    pub fn new(wal_dir: &std::path::Path, snap_dir: &std::path::Path) -> Result<Self, String> {
-        if !wal_dir.exists() {
+    pub fn new(
+        wal_dir: &std::path::Path,
+        snap_dir: &std::path::Path,
+        enable_local_wal: bool,
+    ) -> Result<Self, String> {
+        if enable_local_wal && !wal_dir.exists() {
             std::fs::create_dir_all(wal_dir).map_err(|e| e.to_string())?;
         }
         if !snap_dir.exists() {
@@ -321,21 +325,27 @@ impl MatchingEngine {
         let mut ledger =
             GlobalLedger::new(&ledger_wal_path, &ledger_snap_path).map_err(|e| e.to_string())?;
 
-        // 3. Replay WAL
-        let order_wal = Wal::new(&order_wal_path).map_err(|e| e.to_string())?;
+        // 3. Replay WAL (Only if enabled)
+        let order_wal = if enable_local_wal {
+            Some(Wal::new(&order_wal_path).map_err(|e| e.to_string())?)
+        } else {
+            None
+        };
 
         let mut engine = Self {
             order_books,
             ledger,
             asset_map: FxHashMap::default(),
-            order_wal: Some(order_wal),
+            order_wal,
             snapshot_dir: snap_dir.to_path_buf(),
             trade_id_gen: FastUlidHalfGen::new(),
         };
 
-        // Replay
-        if let Err(e) = engine.replay_wal() {
-            eprintln!("Failed to replay WAL: {}", e);
+        // Replay (Only if WAL exists and was enabled)
+        if enable_local_wal {
+            if let Err(e) = engine.replay_wal() {
+                eprintln!("Failed to replay WAL: {}", e);
+            }
         }
 
         Ok(engine)
