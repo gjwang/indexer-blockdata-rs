@@ -29,14 +29,8 @@ docker-compose up -d
 
 ---
 
-## 🛡️ Code Quality Standards
-
-**CRITICAL RULE**: Before committing any code, you MUST run:
-```bash
-cargo fmt
-cargo check
-```
-This ensures code consistency and prevents build errors.
+## 🛡️ Code Quality
+See [CODE_QUALITY_RULES.md](CODE_QUALITY_RULES.md) for mandatory coding standards and pre-commit rules.
 
 ---
 
