@@ -95,6 +95,10 @@ impl SymbolManager {
         self.assets.get(&asset_id).map(|a| a.decimals)
     }
 
+    pub fn get_asset_id(&self, name: &str) -> Option<u32> {
+        self.assets.values().find(|a| a.name == name).map(|a| a.asset_id)
+    }
+
     /// Load initial state (simulating DB load)
     pub fn load_from_db() -> Self {
         let mut manager = SymbolManager::new();

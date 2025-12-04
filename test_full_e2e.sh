@@ -43,47 +43,41 @@ echo "  4.2 Starting Matching Engine..."
 ME_PID=$!
 sleep 3
 
-echo "  4.3 Starting Transfer Server..."
-./target/debug/transfer_server > /tmp/transfer.log 2>&1 &
-TRANSFER_PID=$!
-sleep 2
-
-echo "  4.4 Starting Order Gateway..."
+echo "  4.3 Starting Order Gateway (includes Transfer API)..."
 ./target/debug/order_gate_server > /tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
-sleep 2
+sleep 5
 
 echo ""
 echo "=== Step 5: Verifying services ==="
-ps -p $SETTLE_PID > /dev/null && echo "  ✅ Settlement" || echo "  ❌ Settlement died"
-ps -p $ME_PID > /dev/null && echo "  ✅ ME" || echo "  ❌ ME died"
-ps -p $TRANSFER_PID > /dev/null && echo "  ✅ Transfer" || echo "  ❌ Transfer died"
-ps -p $GATEWAY_PID > /dev/null && echo "  ✅ Gateway" || echo "  ❌ Gateway died"
+if ps -p $SETTLE_PID > /dev/null; then echo "  ✅ Settlement"; else echo "  ❌ Settlement failed"; exit 1; fi
+if ps -p $ME_PID > /dev/null; then echo "  ✅ ME"; else echo "  ❌ ME failed"; exit 1; fi
+if ps -p $GATEWAY_PID > /dev/null; then echo "  ✅ Gateway"; else echo "  ❌ Gateway failed"; exit 1; fi
 
 echo ""
 echo "=== Step 6: Transfer In (Initialize Balances) ==="
 # Check if port is open
-echo "  Checking if Transfer Server is listening on 8083..."
-lsof -i :8083 || echo "⚠️  Nothing listening on 8083"
+echo "  Checking if Gateway is listening on 3001..."
+lsof -i :3001 || echo "⚠️  Nothing listening on 3001"
 
 # Transfer in for a few test users
 for user_id in 1001 1002 1003; do
     echo "  Transferring to user $user_id..."
 
     # BTC (asset 1)
-    curl -v -X POST http://localhost:8083/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
         -H "Content-Type: application/json" \
-        -d "{\"request_id\": \"req_${user_id}_1\", \"user_id\": $user_id, \"asset_id\": 1, \"amount\": 1000000000000}" 2>&1 | grep -E "(Connected|HTTP)"
+        -d "{\"request_id\": \"req_${user_id}_1\", \"user_id\": $user_id, \"asset\": \"BTC\", \"amount\": \"10000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 
     # USDT (asset 2)
-    curl -v -X POST http://localhost:8083/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
         -H "Content-Type: application/json" \
-        -d "{\"request_id\": \"req_${user_id}_2\", \"user_id\": $user_id, \"asset_id\": 2, \"amount\": 100000000000000}" 2>&1 | grep -E "(Connected|HTTP)"
+        -d "{\"request_id\": \"req_${user_id}_2\", \"user_id\": $user_id, \"asset\": \"USDT\", \"amount\": \"1000000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 
     # ETH (asset 3)
-    curl -v -X POST http://localhost:8083/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
         -H "Content-Type: application/json" \
-        -d "{\"request_id\": \"req_${user_id}_3\", \"user_id\": $user_id, \"asset_id\": 3, \"amount\": 10000000000000}" 2>&1 | grep -E "(Connected|HTTP)"
+        -d "{\"request_id\": \"req_${user_id}_3\", \"user_id\": $user_id, \"asset\": \"ETH\", \"amount\": \"100000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 done
 echo "  ✅ Transfer in completed"
 
