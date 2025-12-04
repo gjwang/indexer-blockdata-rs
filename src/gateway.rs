@@ -47,8 +47,6 @@ impl BalanceManager {
         Self { symbol_manager }
     }
 
-
-
     pub fn to_client_balance_struct(&self, internal: InternalBalance) -> Option<ClientBalance> {
         self.to_client_balance(internal.asset_id, internal.balance.avail, internal.balance.frozen)
     }
@@ -69,27 +67,22 @@ impl BalanceManager {
 
     pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
         let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
-        // decimals: Internal storage scale (e.g., 8 for BTC means 1 BTC = 10^8 units)
-        let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
-
-        // display_decimals: Max allowed decimal places for display (e.g., 3 for BTC means display as 1.234)
-        // If not set, defaults to decimals.
-        let display_decimals = self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
-
-        let divisor = Decimal::from(10_u64.pow(decimals));
-
-        // Convert internal u64 to Decimal and truncate to display_decimals for display
-        // Example: internal 123456789 (1.23456789 BTC), display_decimals 3 -> 1.234 BTC
-        let avail_dec = (Decimal::from(avail) / divisor)
-            .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero);
-        let frozen_dec = (Decimal::from(frozen) / divisor)
-            .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero);
 
         Some(ClientBalance {
             asset: asset_name,
-            avail: avail_dec,
-            frozen: frozen_dec,
+            avail: self.to_client_amount(asset_id, avail)?,
+            frozen: self.to_client_amount(asset_id, frozen)?,
         })
+    }
+
+
+    pub fn to_client_amount(&self, asset_id: u32, amount: u64) -> Option<Decimal> {
+        let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
+        let display_decimals = self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
+        let divisor = Decimal::from(10_u64.pow(decimals));
+
+        Some((Decimal::from(amount) / divisor)
+            .round_dp_with_strategy(display_decimals, rust_decimal::RoundingStrategy::ToZero))
     }
 
     pub fn to_internal_amount(&self, asset_name: &str, amount: Decimal) -> Result<(u32, u64), String> {
