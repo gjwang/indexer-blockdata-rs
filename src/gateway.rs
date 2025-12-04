@@ -341,34 +341,20 @@ async fn get_balance(
     let user_id = params.user_id;
 
     if let Some(db) = &state.db {
-        let events = db
-            .get_ledger_events_by_user(user_id)
+        // Use the materialized view for efficient balance retrieval
+        let balances = db
+            .get_user_all_balances(user_id)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let mut balances = std::collections::HashMap::new();
-        for event in events {
-            let entry = balances.entry(event.currency).or_insert(0i64);
-            match event.event_type.as_str() {
-                "DEPOSIT" | "TRADE_RECEIVE" => *entry += event.amount as i64,
-                "WITHDRAWAL" | "TRADE_SPEND" => *entry -= event.amount as i64,
-                _ => {}
-            }
-        }
-
         let mut response = Vec::new();
-        for (asset_id, amount) in balances {
-            let avail = if amount < 0 { 0 } else { amount as u64 };
-
-            if let Some(client_balance) =
-                state.balance_manager.to_client_balance(asset_id, avail, 0)
-            {
+        for balance in balances {
+            if let Some(client_balance) = state.balance_manager.to_client_balance(
+                balance.asset_id, // Removed incorrect 'as i32' cast
+                balance.available,
+                balance.frozen,
+            ) {
                 response.push(client_balance);
-            } else {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Asset info not found for ID {}", asset_id),
-                ));
             }
         }
 
@@ -478,8 +464,18 @@ async fn get_order_history(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        // Extract unique orders from trades
-        let mut orders_map = std::collections::HashMap::new();
+        // Intermediate struct for aggregation
+        struct OrderAgg {
+            symbol: String,
+            side: String,
+            price: u64,
+            quantity: u64,
+            time: i64,
+            decimals: u32,
+            price_decimals: u32,
+        }
+
+        let mut orders_map: std::collections::HashMap<u64, OrderAgg> = std::collections::HashMap::new();
 
         for t in trades {
             // Filter by symbol
@@ -503,41 +499,53 @@ async fn get_order_history(
 
             // Determine if user was buyer or seller
             if t.buyer_user_id == user_id {
-                // User was buyer
-                let order_id = t.buy_order_id;
-                let entry = orders_map.entry(order_id).or_insert_with(|| OrderHistoryResponse {
-                    order_id: order_id.to_string(),
+                let entry = orders_map.entry(t.buy_order_id).or_insert(OrderAgg {
                     symbol: params.symbol.clone(),
                     side: "BUY".to_string(),
-                    price: u64_to_decimal_string(t.price, price_decimals),
-                    quantity: u64_to_decimal_string(t.quantity, qty_decimals),
-                    status: "FILLED".to_string(),
+                    price: t.price,
+                    quantity: 0,
                     time: t.settled_at as i64,
+                    decimals: qty_decimals,
+                    price_decimals,
                 });
-                // Accumulate quantity if order appears in multiple trades
-                let current_qty: u64 = entry.quantity.replace(".", "").parse().unwrap_or(0);
-                entry.quantity = u64_to_decimal_string(current_qty + t.quantity, qty_decimals);
+                entry.quantity += t.quantity;
+                // Keep the latest time
+                if (t.settled_at as i64) > entry.time {
+                    entry.time = t.settled_at as i64;
+                }
             }
 
             if t.seller_user_id == user_id {
-                // User was seller
-                let order_id = t.sell_order_id;
-                let entry = orders_map.entry(order_id).or_insert_with(|| OrderHistoryResponse {
-                    order_id: order_id.to_string(),
+                let entry = orders_map.entry(t.sell_order_id).or_insert(OrderAgg {
                     symbol: params.symbol.clone(),
                     side: "SELL".to_string(),
-                    price: u64_to_decimal_string(t.price, price_decimals),
-                    quantity: u64_to_decimal_string(t.quantity, qty_decimals),
-                    status: "FILLED".to_string(),
+                    price: t.price,
+                    quantity: 0,
                     time: t.settled_at as i64,
+                    decimals: qty_decimals,
+                    price_decimals,
                 });
-                // Accumulate quantity if order appears in multiple trades
-                let current_qty: u64 = entry.quantity.replace(".", "").parse().unwrap_or(0);
-                entry.quantity = u64_to_decimal_string(current_qty + t.quantity, qty_decimals);
+                entry.quantity += t.quantity;
+                // Keep the latest time
+                if (t.settled_at as i64) > entry.time {
+                    entry.time = t.settled_at as i64;
+                }
             }
         }
 
-        let mut response: Vec<OrderHistoryResponse> = orders_map.into_values().collect();
+        let mut response: Vec<OrderHistoryResponse> = orders_map
+            .into_iter()
+            .map(|(order_id, agg)| OrderHistoryResponse {
+                order_id: order_id.to_string(),
+                symbol: agg.symbol,
+                side: agg.side,
+                price: u64_to_decimal_string(agg.price, agg.price_decimals),
+                quantity: u64_to_decimal_string(agg.quantity, agg.decimals),
+                status: "FILLED".to_string(),
+                time: agg.time,
+            })
+            .collect();
+
         // Sort by time descending (most recent first)
         response.sort_by(|a, b| b.time.cmp(&a.time));
 
