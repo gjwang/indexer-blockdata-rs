@@ -97,3 +97,20 @@ CREATE TABLE IF NOT EXISTS ledger_events (
     PRIMARY KEY (user_id, sequence_id)
 ) WITH CLUSTERING ORDER BY (sequence_id DESC)
   AND comment = 'Immutable log of all balance-changing events';
+
+-- User Balances table (Materialized View of Ledger Events)
+-- This table stores the current balance state for each user's assets
+-- Updated idempotently using balance version from matching engine
+CREATE TABLE IF NOT EXISTS user_balances (
+    user_id bigint,
+    asset_id int,
+    available bigint,
+    frozen bigint,
+    version bigint,  -- Balance version from matching engine (for idempotent updates)
+    updated_at bigint,
+    PRIMARY KEY (user_id, asset_id)
+) WITH comment = 'Current balance state for each user asset, updated idempotently using version';
+
+-- Index for monitoring balance update progress
+CREATE INDEX IF NOT EXISTS idx_balance_version ON user_balances (version);
+
