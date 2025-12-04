@@ -282,7 +282,7 @@ If you find hardcoded values in existing code:
    ```rust
    // Before
    session.prepare("INSERT INTO ...").await?;
-   
+
    // After
    const INSERT_QUERY: &str = "INSERT INTO ...";
    session.prepare(INSERT_QUERY).await?;
@@ -292,10 +292,10 @@ If you find hardcoded values in existing code:
    ```rust
    // Before
    let url = "https://api.example.com";
-   
+
    // After (in config.yaml)
    api_base_url: "https://api.example.com"
-   
+
    // In code
    let url = &config.api_base_url;
    ```
@@ -304,7 +304,7 @@ If you find hardcoded values in existing code:
    ```rust
    // Before
    let key = "secret123";
-   
+
    // After
    let key = std::env::var("API_KEY")
        .expect("API_KEY environment variable not set");
@@ -323,3 +323,14 @@ If you find hardcoded values in existing code:
 - Is this value environment-specific?
 
 If **YES** to any → Extract it!
+
+---
+
+## 9. Pre-Commit Standards
+
+**MANDATORY**: Before committing any code, you MUST run:
+```bash
+cargo fmt
+cargo check
+```
+This ensures code consistency and prevents build errors.
