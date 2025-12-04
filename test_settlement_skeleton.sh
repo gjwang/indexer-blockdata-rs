@@ -32,11 +32,29 @@ cat settlement.log
 echo ""
 
 echo "=== Checking for Sequence Numbers ==="
-if grep -q "output_sequence" settlement.log; then
-    echo "SUCCESS: output_sequence found in logs."
+if grep -q "\[Settlement\] Seq:" settlement.log; then
+    echo "SUCCESS: Settlement Sequence found in logs."
 else
-    echo "WARNING: output_sequence not found in logs."
+    echo "WARNING: Settlement Sequence not found in logs."
+fi
+
+if grep -q "GAP DETECTED" settlement.log; then
+    echo "FAILURE: Sequence Gap Detected!"
+    exit 1
+else
+    echo "SUCCESS: No Sequence Gaps detected."
+fi
+
+echo "=== Checking CSV Persistence ==="
+if [ -f "settled_trades.csv" ]; then
+    echo "SUCCESS: settled_trades.csv created."
+    echo "First 5 lines of CSV:"
+    head -n 5 settled_trades.csv
+else
+    echo "FAILURE: settled_trades.csv NOT found."
+    exit 1
 fi
 
 echo "=== Cleanup ==="
 kill $ME_PID $SET_PID 2>/dev/null || true
+rm -f settled_trades.csv
