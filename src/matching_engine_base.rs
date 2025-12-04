@@ -246,6 +246,8 @@ pub struct EngineSnapshot {
     pub ledger_accounts: FxHashMap<u64, UserAccount>,
     pub ledger_seq: u64,
     pub order_wal_seq: u64,
+    #[serde(default)]
+    pub output_seq: u64,
 }
 
 pub struct MatchingEngine {
@@ -281,6 +283,7 @@ impl MatchingEngine {
         let mut ledger_seq = 0;
         let mut order_wal_seq = 0;
         let mut state_hash = 0;
+        let mut output_seq = 0;
 
         // Find latest snapshot
         let mut max_seq = 0;
@@ -316,6 +319,7 @@ impl MatchingEngine {
             accounts = snap.ledger_accounts;
             ledger_seq = snap.ledger_seq;
             order_wal_seq = snap.order_wal_seq;
+            output_seq = snap.output_seq;
             // TODO: Load state_hash from snapshot if we add it to EngineSnapshot
             println!(
                 "   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}",
@@ -345,7 +349,7 @@ impl MatchingEngine {
             snapshot_dir: snap_dir.to_path_buf(),
             trade_id_gen: FastUlidHalfGen::new(),
             state_hash,
-            output_seq: 0,
+            output_seq,
         };
 
         // Replay (Only if WAL exists and was enabled)
@@ -793,6 +797,7 @@ impl MatchingEngine {
                     ledger_accounts: self.ledger.get_accounts().clone(),
                     ledger_seq: self.ledger.last_seq,
                     order_wal_seq: current_seq,
+                    output_seq: self.output_seq,
                 };
 
                 if let Ok(file) = File::create(&path) {
