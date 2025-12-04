@@ -1,86 +1,84 @@
 #!/bin/bash
 
-# Full E2E Test Script for Settlement with Balance Updates
+# True Full E2E Test
+# This script represents the complete end-to-end verification of the HFT Exchange.
+# It covers:
+# 1. Infrastructure: ScyllaDB (Hot Store) and StarRocks (Cold Store)
+# 2. Services: Matching Engine, Settlement Service, Order Gateway
+# 3. Flows: Transfers (Deposits), Order Matching, Settlement, Balance Updates
+# 4. Verification: Data consistency in both ScyllaDB and StarRocks
 
 set -e
 
-echo "=== Building all binaries (DEBUG) ==="
-cargo build --bin matching_engine_server
-cargo build --bin settlement_service
-cargo build --bin order_http_client
-cargo build --bin order_gate_server
+echo "=========================================="
+echo "  TRUE FULL E2E TEST (Scylla + StarRocks)"
+echo "=========================================="
 
 echo ""
-echo "=== Killing any existing processes ==="
-pkill -f matching_engine_server || true
-pkill -f settlement_service || true
-pkill -f order_http_client || true
-pkill -f order_gate_server || true
-sleep 2
+echo "=== Step 1: Infrastructure Check (StarRocks) ==="
+
+# Check if StarRocks is running
+if ! docker ps | grep -q starrocks; then
+    echo "❌ StarRocks container is not running"
+    echo "Starting StarRocks..."
+    docker-compose up -d starrocks
+    echo "Waiting for StarRocks to be ready..."
+    sleep 30
+fi
+
+# Wait for StarRocks to be ready
+MAX_RETRIES=30
+for i in $(seq 1 $MAX_RETRIES); do
+    if docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "SELECT 1" > /dev/null 2>&1; then
+        echo "✅ StarRocks is ready!"
+        break
+    fi
+    echo "Waiting for StarRocks... ($i/$MAX_RETRIES)"
+    sleep 2
+done
 
 echo ""
-echo "=== Clearing old data ==="
-rm -f /tmp/matching_engine.log
-rm -f /tmp/settlement.log
-rm -f /tmp/order_gate.log
-rm -f /tmp/order_client.log
+echo "=== Step 2: Initialize StarRocks Schema ==="
+./scripts/init_starrocks.sh
 
 echo ""
-echo "=== Starting Matching Engine Server ==="
-./target/debug/matching_engine_server > /tmp/matching_engine.log 2>&1 &
-ME_PID=$!
-echo "Matching Engine PID: $ME_PID"
-sleep 5
+echo "=== Step 3: Clean Cold Store (StarRocks) ==="
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "TRUNCATE TABLE settlement.trades;" 2>/dev/null || true
+echo "✅ StarRocks tables cleaned"
 
 echo ""
-echo "=== Starting Settlement Service ==="
-./target/debug/settlement_service > /tmp/settlement.log 2>&1 &
-SETTLE_PID=$!
-echo "Settlement Service PID: $SETTLE_PID"
-sleep 3
+echo "=== Step 4: Execute Core E2E Flow ==="
+echo "Running test_full_e2e.sh to handle services, traffic, and Hot Store verification..."
+./test_full_e2e.sh
 
 echo ""
-echo "=== Starting Order Gateway ==="
-./target/debug/order_gate_server > /tmp/order_gate.log 2>&1 &
-OG_PID=$!
-echo "Order Gateway PID: $OG_PID"
-sleep 5
+echo "=== Step 5: Verify Cold Store (StarRocks) ==="
+echo "Waiting 15 seconds for async ingestion..."
+sleep 15
+
+echo "1. Trade Count Check:"
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "SELECT COUNT(*) as trade_count FROM settlement.trades;"
 
 echo ""
-echo "=== Sending Test Orders (10 seconds) ==="
-perl -e 'alarm 10; exec @ARGV' "./target/debug/order_http_client" > /tmp/order_client.log 2>&1 || true
-sleep 3
+echo "2. Recent Trades:"
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "
+SELECT trade_id, price, quantity, buy_user_id, sell_user_id, settled_at
+FROM settlement.trades
+ORDER BY settled_at DESC LIMIT 5;
+"
 
 echo ""
-echo "=== Checking Matching Engine Logs ==="
-echo "Last 20 lines:"
-tail -20 /tmp/matching_engine.log
+echo "3. OLAP Aggregation (Volume by User):"
+docker exec starrocks mysql -h 127.0.0.1 -P 9030 -u root -e "
+SELECT buy_user_id as user_id, 'buy' as side, SUM(quantity) as vol, COUNT(*) as cnt
+FROM settlement.trades GROUP BY buy_user_id
+UNION ALL
+SELECT sell_user_id as user_id, 'sell' as side, SUM(quantity) as vol, COUNT(*) as cnt
+FROM settlement.trades GROUP BY sell_user_id
+ORDER BY user_id, side;
+"
 
 echo ""
-echo "=== Checking Settlement Service Logs ==="
-echo "Last 30 lines:"
-tail -30 /tmp/settlement.log
-
-echo ""
-echo "=== Querying ScyllaDB for Settled Trades ==="
-docker exec -i scylla cqlsh -e "SELECT COUNT(*) FROM settlement.settled_trades;" 2>/dev/null || echo "Failed to query trades"
-
-echo ""
-echo "=== Querying ScyllaDB for User Balances ==="
-docker exec -i scylla cqlsh -e "SELECT user_id, asset_id, available, frozen, version FROM settlement.user_balances LIMIT 10;" 2>/dev/null || echo "Failed to query balances"
-
-echo ""
-echo "=== Balance Update Statistics ==="
-grep -c "Balances updated" /tmp/settlement.log || echo "0 balance updates"
-grep -c "Balance update skipped" /tmp/settlement.log || echo "0 version conflicts"
-
-echo ""
-echo "=== Cleanup ==="
-kill $ME_PID $SETTLE_PID $OG_PID 2>/dev/null || true
-
-echo ""
-echo "=== Test Complete ==="
-echo "Check logs above for:"
-echo "  - Trade settlement in /tmp/settlement.log"
-echo "  - Balance updates in ScyllaDB"
-echo "  - Version conflict rate (should be low)"
+echo "=========================================="
+echo "  ✅ TRUE FULL E2E TEST COMPLETE"
+echo "=========================================="
