@@ -83,14 +83,17 @@ async fn create_order(
     Ok(Json(ApiResponse::success(response_data)))
 }
 
+//TODO:
+// pub struct Balance {
+//     pub avail: u64,
+//     pub frozen: u64,
+//     pub version: u64,
+// }
+
 #[derive(Debug, serde::Serialize)]
 struct BalanceResponse {
     asset: String,
-    //FIXME: any balance,amount,frozen, should be float_string
-    //it the decimal format, but our internal use u64, balance_internal_u64=bal_decimal*asset_decimal
-    //user do NOT need to know our internal impl detail, every in order data convert to internal u64 first
-    //and convert to decimal format before send to user
-    balance: i64,
+    balance: String,
 }
 
 async fn get_balance(
@@ -121,7 +124,28 @@ async fn get_balance(
                     .symbol_manager
                     .get_asset_name(asset_id)
                     .unwrap_or_else(|| format!("UNKNOWN_{}", asset_id));
-                BalanceResponse { asset: asset_name, balance: amount }
+
+                let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+
+                // Convert i64 amount to decimal string
+                let sign = if amount < 0 { "-" } else { "" };
+                let abs_amount = amount.abs() as u64;
+                let divisor = 10u64.pow(decimals);
+                let integer_part = abs_amount / divisor;
+                let fractional_part = abs_amount % divisor;
+
+                // Format with leading zeros for fractional part
+                let balance_str = format!(
+                    "{}{}.{:0width$}",
+                    sign,
+                    integer_part,
+                    fractional_part,
+                    width = decimals as usize
+                );
+                // Optional: Trim trailing zeros if desired, but fixed precision is often better for financial apps.
+                // User requested "float_string", usually implies standard decimal notation.
+
+                BalanceResponse { asset: asset_name, balance: balance_str }
             })
             .collect();
 
