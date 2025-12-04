@@ -11,18 +11,21 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 5: Advanced Features (Future)"
 
 active_task:
-  id: "6.1"
-  name: "Gateway API Extensions"
-  status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "None"
+  id: "5.2"
+  name: "StarRocks Data Ingestion - Schema Alignment"
+  status: "IN_PROGRESS"
+  next_action: "Align ME trade output format with StarRocks schema"
 
 phase_6_tasks:
   gateway_api: true
 
 phase_5_completed:
-  starrocks_integration: true
+  starrocks_setup: true  # Docker, schema, scripts ready
   automated_reconciliation: true
   verification: true
+
+phase_5_in_progress:
+  starrocks_ingestion: "IN_PROGRESS - Schema mismatch between ME output and StarRocks needs fixing"
 
 # Phase 3 Completion Summary
 phase_3_completed:
@@ -48,9 +51,8 @@ phase_4_completed:
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
-  - "StarRocks Integration (Phase 5)"
+  - "StarRocks Routine Load (needs ME trade format to match StarRocks schema)"
   - "S3 Archival (Phase 5)"
-  - "Settlement Reconciliation (Phase 5)"
 
 # RESUMPTION PROTOCOL (Run these first!)
 verification_commands:

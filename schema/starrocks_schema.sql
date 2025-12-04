@@ -2,17 +2,17 @@ CREATE DATABASE IF NOT EXISTS settlement;
 
 USE settlement;
 
--- Trades table (OLAP optimized)
+-- Trades table (OLAP optimized) - Aligned with ME output
 CREATE TABLE IF NOT EXISTS trades (
     trade_date DATE NOT NULL,
     trade_id BIGINT NOT NULL,
     match_seq BIGINT NOT NULL,
-    base_asset INT NOT NULL,
-    quote_asset INT NOT NULL,
-    price DECIMAL(18, 8) NOT NULL,
-    quantity DECIMAL(18, 8) NOT NULL,
-    buyer_user_id BIGINT NOT NULL,
-    seller_user_id BIGINT NOT NULL,
+    buy_order_id BIGINT NOT NULL,
+    sell_order_id BIGINT NOT NULL,
+    buy_user_id BIGINT NOT NULL,
+    sell_user_id BIGINT NOT NULL,
+    price BIGINT NOT NULL,
+    quantity BIGINT NOT NULL,
     settled_at DATETIME NOT NULL
 )
 ENGINE=OLAP
