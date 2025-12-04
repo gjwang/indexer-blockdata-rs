@@ -17,3 +17,4 @@ pub mod scylla_service;
 pub mod simple_kv_storage;
 pub mod symbol_manager;
 pub mod user_account;
+pub mod zmq_publisher;

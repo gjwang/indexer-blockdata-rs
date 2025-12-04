@@ -30,12 +30,19 @@ pub struct CentrifugoConfig {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ZmqConfig {
+    pub settlement_port: u16,
+    pub market_data_port: u16,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub log_file: String,
     pub centrifugo: CentrifugoConfig,
     pub kafka: KafkaConfig,
     #[serde(default)]
     pub enable_local_wal: bool,
+    pub zeromq: Option<ZmqConfig>,
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {
