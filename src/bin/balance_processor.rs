@@ -267,7 +267,7 @@ async fn main() {
 
     // Initialize MatchingEngine (shared with matching_engine_server in production)
     let matching_engine = Arc::new(Mutex::new(
-        MatchingEngine::new(wal_dir, snap_dir).expect("Failed to create MatchingEngine"),
+        MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal).expect("Failed to create MatchingEngine"),
     ));
 
     let mut processor = BalanceProcessor::new(matching_engine.clone());

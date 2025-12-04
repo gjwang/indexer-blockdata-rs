@@ -8,13 +8,13 @@ last_updated: "2025-12-04"
 architecture_doc: "PURE_MEMORY_SMR_ARCH.md"
 plan_doc: "IMPLEMENTATION_PLAN.md"
 
-current_phase: "Phase 1: Pure Memory Core"
+current_phase: "Phase 2: The Output Pipeline"
 
 active_task:
-  id: "1.2"
-  name: "Verify Pure Memory Replication"
+  id: "2.1"
+  name: "Add Dependencies (ZeroMQ & XXHash)"
   status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Proceed to Phase 2: The Output Pipeline"
+  next_action: "Proceed to Task 2.2: Implement State Hashing"
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
