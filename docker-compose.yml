@@ -29,19 +29,19 @@ services:
     container_name: scylla
     command: --smp 1 --memory 512M --overprovisioned 1 --api-address 0.0.0.0
     ports:
-      - "9042:9042"  # CQL native transport
-      - "9160:9160"  # Thrift (legacy)
+      - "9042:9042" # CQL native transport
+      - "9160:9160" # Thrift (legacy)
       - "10000:10000" # REST API
     volumes:
       - scylla-data:/var/lib/scylla
     healthcheck:
-      test: ["CMD-SHELL", "cqlsh -e 'describe cluster'"]
+      test: [ "CMD-SHELL", "cqlsh -e 'describe cluster'" ]
       interval: 30s
       timeout: 10s
       retries: 5
 
   starrocks:
-    image: starrocks/allinone-ubuntu:latest
+    image: starrocks/allin1-ubuntu:latest
     container_name: starrocks
     ports:
       - "9030:9030" # FE MySQL port
