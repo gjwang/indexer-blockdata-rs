@@ -13,6 +13,7 @@ pub struct SymbolInfo {
 pub struct AssetInfo {
     pub asset_id: u32,
     pub decimals: u32,
+    pub display_decimals: u32, // Max allowed decimals for display/input
     pub name: String,
 }
 
@@ -83,8 +84,8 @@ impl SymbolManager {
         self.symbol_info.get(&id)
     }
 
-    pub fn add_asset(&mut self, asset_id: u32, decimals: u32, name: &str) {
-        self.assets.insert(asset_id, AssetInfo { asset_id, decimals, name: name.to_string() });
+    pub fn add_asset(&mut self, asset_id: u32, decimals: u32, display_decimals: u32, name: &str) {
+        self.assets.insert(asset_id, AssetInfo { asset_id, decimals, display_decimals, name: name.to_string() });
     }
 
     pub fn get_asset_name(&self, asset_id: u32) -> Option<String> {
@@ -93,6 +94,10 @@ impl SymbolManager {
 
     pub fn get_asset_decimal(&self, asset_id: u32) -> Option<u32> {
         self.assets.get(&asset_id).map(|a| a.decimals)
+    }
+
+    pub fn get_asset_display_decimals(&self, asset_id: u32) -> Option<u32> {
+        self.assets.get(&asset_id).map(|a| a.display_decimals)
     }
 
     pub fn get_asset_id(&self, name: &str) -> Option<u32> {
@@ -104,9 +109,9 @@ impl SymbolManager {
         let mut manager = SymbolManager::new();
         //TODO: refactor: we do NOT need quantity decimal any more,juse use get_asset_decimal
         // Add Assets
-        manager.add_asset(1, 8, "BTC"); // BTC
-        manager.add_asset(2, 8, "USDT"); // USDT
-        manager.add_asset(3, 8, "ETH"); // ETH
+        manager.add_asset(1, 8, 3, "BTC"); // BTC: 8 decimals, 3 precision
+        manager.add_asset(2, 8, 2, "USDT"); // USDT: 8 decimals, 2 precision
+        manager.add_asset(3, 8, 4, "ETH"); // ETH: 8 decimals, 4 precision
 
         // BTC_USDT: Base 1 (BTC), Quote 2 (USDT), Price Decimal 2
         manager.insert_symbol("BTC_USDT", 0, 1, 2, 2);
