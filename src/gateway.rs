@@ -14,7 +14,9 @@ use tower_http::cors::CorsLayer;
 use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
-use crate::models::{ApiResponse, ClientOrder, OrderStatus, UserAccountManager};
+use crate::models::{
+    u64_to_decimal_string, ApiResponse, ClientOrder, OrderStatus, UserAccountManager,
+};
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
 
@@ -97,17 +99,10 @@ trait ToBalanceResponse {
 
 impl ToBalanceResponse for Balance {
     fn to_response(&self, asset_name: String, decimals: u32) -> BalanceResponse {
-        let format_decimal = |amount: u64| -> String {
-            let divisor = 10u64.pow(decimals);
-            let integer_part = amount / divisor;
-            let fractional_part = amount % divisor;
-            format!("{}.{:0width$}", integer_part, fractional_part, width = decimals as usize)
-        };
-
         BalanceResponse {
             asset: asset_name,
-            available: format_decimal(self.avail),
-            frozen: format_decimal(self.frozen),
+            available: u64_to_decimal_string(self.avail, decimals),
+            frozen: u64_to_decimal_string(self.frozen, decimals),
         }
     }
 }

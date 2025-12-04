@@ -1,3 +1,4 @@
+use rust_decimal::Decimal;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
@@ -135,4 +136,8 @@ impl From<String> for OrderError {
     fn from(err: String) -> Self {
         OrderError::Other(err)
     }
+}
+
+pub fn u64_to_decimal_string(amount: u64, decimals: u32) -> String {
+    Decimal::from_i128_with_scale(amount as i128, decimals).to_string()
 }
