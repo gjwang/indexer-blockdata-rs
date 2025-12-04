@@ -21,12 +21,12 @@ phase_6_tasks:
 
 phase_5_completed:
   starrocks_setup: true  # Docker, schema, scripts ready
-  starrocks_bridge: true  # Bridge service created, compiles, runs
+  starrocks_direct_integration: true  # Integrated into Settlement Service (Arch compliant)
   automated_reconciliation: true
   verification: true
 
 phase_5_in_progress:
-  starrocks_data_verification: "Bridge service running but needs debugging for successful data loads"
+  starrocks_data_verification: "Settlement Service now writes directly to StarRocks. Need to verify data flow."
 
 # Phase 3 Completion Summary
 phase_3_completed:

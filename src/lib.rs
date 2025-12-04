@@ -20,5 +20,6 @@ pub mod s3_service;
 pub mod scylla_service;
 pub mod simple_kv_storage;
 pub mod symbol_manager;
+pub mod starrocks_client;
 pub mod user_account;
 pub mod zmq_publisher;
