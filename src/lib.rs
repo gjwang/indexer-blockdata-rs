@@ -3,6 +3,7 @@ pub mod centrifugo_publisher;
 pub mod client_order_convertor;
 pub mod compressor;
 pub mod configure;
+pub mod db;
 pub mod fast_ulid;
 pub mod gateway;
 
