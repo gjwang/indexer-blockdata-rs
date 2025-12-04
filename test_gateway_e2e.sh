@@ -4,7 +4,7 @@ BASE_URL="http://localhost:3001"
 
 echo "Testing Gateway API..."
 
-USER_ID=123
+USER_ID=1001
 
 echo "1. Get Balance"
 curl -s "$BASE_URL/api/user/balance?user_id=$USER_ID"

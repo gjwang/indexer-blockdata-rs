@@ -239,10 +239,100 @@ async fn get_trade_history(
     }
 }
 
+#[derive(Debug, serde::Serialize)]
+struct OrderHistoryResponse {
+    order_id: String,
+    symbol: String,
+    side: String,
+    price: String,
+    quantity: String,
+    status: String,
+    time: i64,
+}
+
 async fn get_order_history(
-    Extension(_state): Extension<Arc<AppState>>,
-    Query(_params): Query<HistoryParams>,
-) -> Result<Json<ApiResponse<Vec<String>>>, (StatusCode, String)> {
-    // Not implemented yet (requires order persistence)
-    Ok(Json(ApiResponse::success(vec![])))
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<ApiResponse<Vec<OrderHistoryResponse>>>, (StatusCode, String)> {
+    let user_id = params.user_id;
+    let limit = params.limit.unwrap_or(100);
+
+    // Validate symbol
+    if state.symbol_manager.get_symbol_id(&params.symbol).is_none() {
+        return Ok(Json(ApiResponse::success(vec![])));
+    }
+
+    if let Some(db) = &state.db {
+        let trades = db
+            .get_trades_by_user(user_id, limit as i32)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        // Extract unique orders from trades
+        let mut orders_map = std::collections::HashMap::new();
+
+        for t in trades {
+            // Filter by symbol
+            let pair_id = match state.symbol_manager.get_symbol_id(&params.symbol) {
+                Some(id) => id,
+                None => continue,
+            };
+            let info = match state.symbol_manager.get_symbol_info_by_id(pair_id) {
+                Some(i) => i,
+                None => continue,
+            };
+            let base = info.base_asset_id;
+            let quote = info.quote_asset_id;
+
+            if t.base_asset != base || t.quote_asset != quote {
+                continue;
+            }
+
+            let price_decimals = info.price_decimal;
+            let qty_decimals = state.symbol_manager.get_asset_decimal(base).unwrap_or(8);
+
+            // Determine if user was buyer or seller
+            if t.buyer_user_id == user_id {
+                // User was buyer
+                let order_id = t.buy_order_id;
+                let entry = orders_map.entry(order_id).or_insert_with(|| OrderHistoryResponse {
+                    order_id: order_id.to_string(),
+                    symbol: params.symbol.clone(),
+                    side: "BUY".to_string(),
+                    price: u64_to_decimal_string(t.price, price_decimals),
+                    quantity: u64_to_decimal_string(t.quantity, qty_decimals),
+                    status: "FILLED".to_string(),
+                    time: t.settled_at as i64,
+                });
+                // Accumulate quantity if order appears in multiple trades
+                let current_qty: u64 = entry.quantity.replace(".", "").parse().unwrap_or(0);
+                entry.quantity = u64_to_decimal_string(current_qty + t.quantity, qty_decimals);
+            }
+
+            if t.seller_user_id == user_id {
+                // User was seller
+                let order_id = t.sell_order_id;
+                let entry = orders_map.entry(order_id).or_insert_with(|| OrderHistoryResponse {
+                    order_id: order_id.to_string(),
+                    symbol: params.symbol.clone(),
+                    side: "SELL".to_string(),
+                    price: u64_to_decimal_string(t.price, price_decimals),
+                    quantity: u64_to_decimal_string(t.quantity, qty_decimals),
+                    status: "FILLED".to_string(),
+                    time: t.settled_at as i64,
+                });
+                // Accumulate quantity if order appears in multiple trades
+                let current_qty: u64 = entry.quantity.replace(".", "").parse().unwrap_or(0);
+                entry.quantity = u64_to_decimal_string(current_qty + t.quantity, qty_decimals);
+            }
+        }
+
+        let mut response: Vec<OrderHistoryResponse> = orders_map.into_values().collect();
+        // Sort by time descending (most recent first)
+        response.sort_by(|a, b| b.time.cmp(&a.time));
+
+        Ok(Json(ApiResponse::success(response)))
+    } else {
+        Ok(Json(ApiResponse::success(vec![])))
+    }
 }
