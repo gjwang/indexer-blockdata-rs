@@ -44,12 +44,18 @@ impl BalanceManager {
     pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
         let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
+        let precision = self.symbol_manager.get_asset_precision(asset_id).unwrap_or(decimals);
         let divisor = Decimal::from(10_u64.pow(decimals));
+
+        let avail_dec = (Decimal::from(avail) / divisor)
+            .round_dp_with_strategy(precision, rust_decimal::RoundingStrategy::ToZero);
+        let frozen_dec = (Decimal::from(frozen) / divisor)
+            .round_dp_with_strategy(precision, rust_decimal::RoundingStrategy::ToZero);
 
         Some(ClientBalance {
             asset: asset_name,
-            avail: Decimal::from(avail) / divisor,
-            frozen: Decimal::from(frozen) / divisor,
+            avail: avail_dec,
+            frozen: frozen_dec,
         })
     }
 
@@ -59,9 +65,13 @@ impl BalanceManager {
 
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)
             .ok_or_else(|| format!("Decimal not found for asset: {}", asset_name))?;
+        let precision = self.symbol_manager.get_asset_precision(asset_id).unwrap_or(decimals);
+
+        // Truncate to precision first
+        let amount_truncated = amount.round_dp_with_strategy(precision, rust_decimal::RoundingStrategy::ToZero);
         let multiplier = Decimal::from(10_u64.pow(decimals));
 
-        let raw_amount = (amount * multiplier)
+        let raw_amount = (amount_truncated * multiplier)
             .round()
             .to_string()
             .parse::<u64>()
