@@ -536,14 +536,22 @@ async fn main() {
         };
         if let Some(cmds) = cmds_arc {
             for cmd in cmds.iter() {
-                if let LedgerCommand::Match(match_data) = cmd {
-                     // Serialize match_data
-                     if let Ok(data) = serde_json::to_vec(match_data) {
-                         // Fast Path: Market Data
-                         let _ = zmq_pub_clone.publish_market_data(&data);
-                         // Critical Path: Settlement
-                         let _ = zmq_pub_clone.publish_settlement(&data);
-                     }
+                match cmd {
+                    LedgerCommand::MatchExec(match_data) => {
+                         if let Ok(data) = serde_json::to_vec(match_data) {
+                             let _ = zmq_pub_clone.publish_market_data(&data);
+                             let _ = zmq_pub_clone.publish_settlement(&data);
+                         }
+                    }
+                    LedgerCommand::MatchExecBatch(batch) => {
+                        for match_data in batch {
+                             if let Ok(data) = serde_json::to_vec(match_data) {
+                                 let _ = zmq_pub_clone.publish_market_data(&data);
+                                 let _ = zmq_pub_clone.publish_settlement(&data);
+                             }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

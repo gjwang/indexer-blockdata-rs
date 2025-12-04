@@ -256,6 +256,7 @@ pub struct MatchingEngine {
     pub snapshot_dir: std::path::PathBuf,
     pub trade_id_gen: FastUlidHalfGen,
     pub state_hash: u64,
+    pub output_seq: u64,
 }
 
 impl MatchingEngine {
@@ -344,6 +345,7 @@ impl MatchingEngine {
             snapshot_dir: snap_dir.to_path_buf(),
             trade_id_gen: FastUlidHalfGen::new(),
             state_hash,
+            output_seq: 0,
         };
 
         // Replay (Only if WAL exists and was enabled)
@@ -475,6 +477,7 @@ impl MatchingEngine {
             &mut self.order_books,
             &self.asset_map,
             &mut self.trade_id_gen,
+            &mut self.output_seq,
             symbol_id,
             order_id,
             side,
@@ -513,6 +516,7 @@ impl MatchingEngine {
         order_books: &mut Vec<Option<OrderBook>>,
         asset_map: &FxHashMap<u32, (u32, u32)>,
         trade_id_gen: &mut FastUlidHalfGen,
+        output_seq: &mut u64,
         symbol_id: u32,
         order_id: u64,
         side: Side,
@@ -588,6 +592,10 @@ impl MatchingEngine {
                 buyer_refund,
                 seller_refund: 0,
                 match_seq: trade.match_seq,
+                output_sequence: {
+                    *output_seq += 1;
+                    *output_seq
+                },
             });
         }
 
@@ -670,6 +678,7 @@ impl MatchingEngine {
                 &mut self.order_books,
                 &self.asset_map,
                 &mut self.trade_id_gen,
+                &mut self.output_seq,
                 symbol_id,
                 order_id,
                 side,

@@ -6,6 +6,11 @@ pub struct ZmqPublisher {
     market_data_pub: Socket,
 }
 
+// SAFETY: ZMQ sockets are not thread-safe, but we are using this publisher
+// in a single-threaded Disruptor consumer. We ensure exclusive access by design.
+unsafe impl Send for ZmqPublisher {}
+unsafe impl Sync for ZmqPublisher {}
+
 impl ZmqPublisher {
     pub fn new(settlement_port: u16, market_data_port: u16) -> Result<Self, zmq::Error> {
         let context = Context::new();
