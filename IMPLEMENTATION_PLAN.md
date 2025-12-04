@@ -6,6 +6,8 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 
 **🛠️ CODING STANDARDS**:
 *   **Common Utils**: Use `src/common_utils.rs` for shared logic (time, formatting, etc.) to avoid duplication.
+*   **Pre-Commit**: Always run `cargo fmt` and `cargo check` before committing changes.
+*   **Test Scripts**: Use Python 3 for complex test scenarios (e.g., data injection, orchestration). Save them in `scripts/` or `tests/`.
 
 ## Phase 1: Pure Memory Core (The Cleanup)
 
