@@ -39,8 +39,10 @@ The architecture is based on **State Machine Replication (SMR)** with a **Pure I
     5.  **Buffer**: Retains last ~100k trades in a Ring Buffer for fast re-transmission.
 *   **Flow Control**: If the Ring Buffer (Path A) fills, the Engine **HALTS**. Path B drops are ignored.
 *   **Data Integrity**:
-    *   **Order Checksum**: Every order includes a CRC32 checksum (calculated at Gateway) to detect corruption in transit/storage.
-    *   **State Hash**: Every output includes a `ChainHash` (Merkle Root) to verify replica consistency.
+    *   **Order Checksum**: **CRC32** (Standard). Calculated at Gateway. Fast, hardware-accelerated, and interoperable across languages.
+        *   *Reason*: Compatibility with non-Rust gateways (Java/Go) and standard network protocols.
+    *   **State Hash**: **XXHash3 (64-bit)**. Calculated at ME. Extremely fast and collision-resistant for verifying replica consistency over long chains.
+        *   *Reason*: Superior speed/safety ratio compared to CRC32 (unsafe for state) or BLAKE3 (overkill).
 
 ### D. Settlement Service (The Verifier & Private Gateway)
 *   **Role**: Persists trades, updates balances, and pushes **Private User Notifications**.
@@ -154,6 +156,11 @@ graph TD
     *   *Concept*: Gateway buffers orders for a tiny window (e.g., 50µs or 10 orders) and writes them as a single "Batch Message" to Redpanda.
     *   *Benefit*: Increases Redpanda throughput by 10x (e.g., 50k -> 500k TPS) by reducing syscalls and network overhead.
     *   *Trade-off*: Adds small latency (~50µs) to the first order in the batch. Ideal for high-load periods.
+5.  **Remote S3 Snapshots (Stateless ME)**:
+    *   *Concept*: Instead of saving snapshots to Local Disk, upload them to **S3/MinIO**.
+    *   *Benefit*: Makes the ME truly "Stateless". A new ME instance can start on any machine, download the snapshot from S3, and resume.
+    *   *Note*: This applies to the **Matching Engine** (large state). The **Settlement Service** simply stores its `Last_Seq_ID` in **ScyllaDB** (tiny state, frequent updates).
+    *   *Current State*: We use Local Disk Snapshots for simplicity and speed.
 
 ### B. Known Concerns & Risks
 1.  **Redpanda Tail Latency**:
