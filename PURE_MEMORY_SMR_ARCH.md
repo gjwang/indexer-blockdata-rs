@@ -246,3 +246,15 @@ graph TD
 1.  **Redpanda Lag**: Consumer Group Lag for Matching Engine.
 2.  **ZeroMQ Drops**: `ZMQ_EVENTS_DROPPED` count (on Market Data channel).
 3.  **Snapshot Age**: Time since last successful snapshot (Alert if > 2 hours).
+
+## 10. Security & Compliance (Financial Grade)
+
+### A. Network Security
+*   **ZeroMQ Risk**: ZeroMQ (PUB/SUB) has no built-in authentication by default.
+*   **Mandate**: All ME-to-Settlement traffic MUST run inside a **Private VPC** (Virtual Private Cloud).
+*   **Firewall**: Block port 5557/5558 from public internet. Only allow whitelisted internal IPs.
+
+### B. Audit & Immutability
+*   **WORM Storage**: Configure S3 Bucket for Redpanda Tiered Storage with **Object Lock (WORM)** enabled.
+    *   *Benefit*: Prevents "History Rewriting" attacks. Even root cannot delete old trade logs for N years.
+*   **Checksum Verification**: The Settlement Service MUST verify the `Order Checksum` before writing to the DB to prove the data wasn't tampered with in transit.
