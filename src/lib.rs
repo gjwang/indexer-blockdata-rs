@@ -15,6 +15,7 @@ pub mod matching_engine_base;
 pub mod md5_utils;
 pub mod models;
 pub mod order_wal;
+pub mod reconciliation;
 pub mod s3_service;
 pub mod scylla_service;
 pub mod simple_kv_storage;

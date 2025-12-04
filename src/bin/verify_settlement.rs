@@ -98,65 +98,20 @@ async fn main() {
             Err(e) => println!("❌ Health check error: {}", e),
         },
         Commands::Reconcile { file } => {
-            println!("Reconciling against file: {}", file);
-            let mut rdr = csv::ReaderBuilder::new()
-                .has_headers(false) // settled_trades.csv has no headers
-                .from_path(file)
-                .expect("Failed to open CSV");
+            match fetcher::reconciliation::reconcile_csv(&db, &file).await {
+                Ok(stats) => {
+                    println!("\n=== Reconciliation Complete ===");
+                    println!("Total Processed: {}", stats.total);
+                    println!("Missing: {}", stats.missing);
+                    println!("Mismatch: {}", stats.mismatch);
 
-            let mut total = 0;
-            let mut missing = 0;
-            let mut mismatch = 0;
-
-            println!("Starting reconciliation...");
-            for result in rdr.deserialize() {
-                let csv_trade: fetcher::ledger::MatchExecData = match result {
-                    Ok(t) => t,
-                    Err(e) => {
-                        eprintln!("Failed to parse CSV record: {}", e);
-                        continue;
-                    }
-                };
-                total += 1;
-
-                match db.get_trade_by_id(csv_trade.trade_id).await {
-                    Ok(Some(db_trade)) => {
-                        // Compare fields
-                        if db_trade.price != csv_trade.price
-                            || db_trade.quantity != csv_trade.quantity
-                            || db_trade.buyer_user_id != csv_trade.buyer_user_id
-                        {
-                            println!(
-                                "❌ Mismatch for Trade {}: CSV={:?}, DB={:?}",
-                                csv_trade.trade_id, csv_trade, db_trade
-                            );
-                            mismatch += 1;
-                        }
-                    }
-                    Ok(None) => {
-                        println!("❌ Missing Trade {}: {:?}", csv_trade.trade_id, csv_trade);
-                        missing += 1;
-                    }
-                    Err(e) => {
-                        eprintln!("Error querying trade {}: {}", csv_trade.trade_id, e);
+                    if stats.missing == 0 && stats.mismatch == 0 {
+                        println!("✅ Data is CONSISTENT");
+                    } else {
+                        println!("❌ Data INCONSISTENT");
                     }
                 }
-
-                if total % 100 == 0 {
-                    use std::io::Write;
-                    print!(".");
-                    std::io::stdout().flush().unwrap();
-                }
-            }
-            println!("\n=== Reconciliation Complete ===");
-            println!("Total Processed: {}", total);
-            println!("Missing: {}", missing);
-            println!("Mismatch: {}", mismatch);
-
-            if missing == 0 && mismatch == 0 {
-                println!("✅ Data is CONSISTENT");
-            } else {
-                println!("❌ Data INCONSISTENT");
+                Err(e) => eprintln!("Reconciliation failed: {}", e),
             }
         }
     }
