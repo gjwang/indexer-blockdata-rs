@@ -90,6 +90,11 @@ echo "=== Step 8: Verifying initial balances ==="
 docker exec -i scylla cqlsh -e "SELECT user_id, asset_id, available, version FROM settlement.user_balances WHERE user_id IN (1001, 1002, 1003) ALLOW FILTERING;" 2>/dev/null
 
 echo ""
+echo "=== Step 8.5: Verify Balance API Response ==="
+curl -s "http://localhost:3001/api/user/balance?user_id=1001"
+echo ""
+
+echo ""
 echo "=== Step 9: Sending test orders (5 seconds) ==="
 ./target/debug/order_http_client > /tmp/client.log 2>&1 &
 CLIENT_PID=$!

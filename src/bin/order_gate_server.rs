@@ -65,8 +65,12 @@ async fn main() {
     let funding_account = Arc::new(Mutex::new(fetcher::gateway::SimulatedFundingAccount::new()));
     let balance_topic = config.kafka.topics.balance_ops.as_ref().unwrap_or(&"balance_ops".to_string()).clone();
 
+    let symbol_manager = Arc::new(symbol_manager);
+    let balance_manager = fetcher::gateway::BalanceManager::new(symbol_manager.clone());
+
     let state = Arc::new(AppState {
         symbol_manager,
+        balance_manager,
         producer: Arc::new(KafkaPublisher(producer)),
         snowflake_gen,
         kafka_topic: config.kafka.topics.orders,
