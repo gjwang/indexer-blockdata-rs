@@ -9,7 +9,7 @@ mod tests {
         let wal_dir = temp_dir.path().join("wal");
         let snap_dir = temp_dir.path().join("snap");
 
-        let mut engine = MatchingEngine::new(&wal_dir, &snap_dir).unwrap();
+        let mut engine = MatchingEngine::new(&wal_dir, &snap_dir, false).unwrap();
 
         // Register a symbol: BTC_USDT (ID 0), Base Asset 1, Quote Asset 2
         engine
@@ -35,7 +35,7 @@ mod tests {
             .unwrap();
 
         //    // Add order: Buy 50 @ 10 (Cost 500) -> Success
-        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 50, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 50, 1, 0);
         assert!(
             result.is_ok(),
             "Order should be accepted with sufficient funds"
@@ -58,7 +58,7 @@ mod tests {
             .unwrap();
 
         // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
-        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 1, 0);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(err, OrderError::InsufficientFunds { .. }));
@@ -87,7 +87,7 @@ mod tests {
         // User 2 has no account/funds
 
         // Place Buy Order
-        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 2);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 2, 0);
         assert!(
             result.is_err(),
             "Order should be rejected for user with no funds"
@@ -115,7 +115,7 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Add order with invalid symbol_id 999
-        let result = engine.add_order(999, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
+        let result = engine.add_order(999, 1, Side::Buy, OrderType::Limit, 100, 10, 1, 0);
         let err = result.unwrap_err();
         assert!(matches!(err, OrderError::InvalidSymbol { symbol_id: 999 }));
 

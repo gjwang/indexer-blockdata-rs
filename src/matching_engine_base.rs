@@ -12,6 +12,7 @@ use crate::ledger::{GlobalLedger, Ledger, LedgerCommand, MatchExecData, ShadowLe
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
+use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
@@ -254,6 +255,7 @@ pub struct MatchingEngine {
     pub order_wal: Option<Wal>,
     pub snapshot_dir: std::path::PathBuf,
     pub trade_id_gen: FastUlidHalfGen,
+    pub state_hash: u64,
 }
 
 impl MatchingEngine {
@@ -277,6 +279,7 @@ impl MatchingEngine {
         let mut accounts = FxHashMap::default();
         let mut ledger_seq = 0;
         let mut order_wal_seq = 0;
+        let mut state_hash = 0;
 
         // Find latest snapshot
         let mut max_seq = 0;
@@ -312,6 +315,7 @@ impl MatchingEngine {
             accounts = snap.ledger_accounts;
             ledger_seq = snap.ledger_seq;
             order_wal_seq = snap.order_wal_seq;
+            // TODO: Load state_hash from snapshot if we add it to EngineSnapshot
             println!(
                 "   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}",
                 order_wal_seq, ledger_seq
@@ -339,6 +343,7 @@ impl MatchingEngine {
             order_wal,
             snapshot_dir: snap_dir.to_path_buf(),
             trade_id_gen: FastUlidHalfGen::new(),
+            state_hash,
         };
 
         // Replay (Only if WAL exists and was enabled)
@@ -349,6 +354,10 @@ impl MatchingEngine {
         }
 
         Ok(engine)
+    }
+
+    pub fn update_hash(&mut self, data: &[u8]) {
+        self.state_hash = xxhash_rust::xxh3::xxh3_64_with_seed(data, self.state_hash);
     }
 
     pub fn take_order_wal(&mut self) -> Option<Wal> {
@@ -475,6 +484,16 @@ impl MatchingEngine {
             user_id,
             timestamp,
         )?;
+
+        // Update State Hash (Incremental)
+        let mut hash_data = Vec::with_capacity(40);
+        hash_data.extend_from_slice(&order_id.to_le_bytes());
+        hash_data.extend_from_slice(&symbol_id.to_le_bytes());
+        hash_data.push(side as u8);
+        hash_data.extend_from_slice(&price.to_le_bytes());
+        hash_data.extend_from_slice(&quantity.to_le_bytes());
+        hash_data.extend_from_slice(&user_id.to_le_bytes());
+        self.update_hash(&hash_data);
 
         // 3. Flush WALs
         // 3. Flush WALs
@@ -702,7 +721,16 @@ impl MatchingEngine {
         }
 
         // 2. Process Logic
-        self.process_cancel(symbol_id, order_id)
+        self.process_cancel(symbol_id, order_id)?;
+
+        // Update State Hash
+        let mut hash_data = Vec::with_capacity(16);
+        hash_data.extend_from_slice(&symbol_id.to_le_bytes());
+        hash_data.extend_from_slice(&order_id.to_le_bytes());
+        hash_data.push(0xFF); // Marker for Cancel
+        self.update_hash(&hash_data);
+
+        Ok(())
     }
 
     /// Internal Logic: Process Cancel (No Input WAL write)
@@ -814,5 +842,51 @@ impl MatchingEngine {
                 amount,
             })
             .map_err(|e| format!("Failed to transfer out from trading account: {}", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_state_hash_determinism() {
+        let wal_dir = std::path::Path::new("test_wal_hash");
+        let snap_dir = std::path::Path::new("test_snap_hash");
+        let _ = std::fs::remove_dir_all(wal_dir);
+        let _ = std::fs::remove_dir_all(snap_dir);
+
+        let mut engine1 = MatchingEngine::new(wal_dir, snap_dir, false).unwrap();
+        let mut engine2 = MatchingEngine::new(wal_dir, snap_dir, false).unwrap();
+
+        // Setup
+        for engine in [&mut engine1, &mut engine2] {
+            engine.register_symbol(1, "BTC_USDT".to_string(), 1, 2).unwrap();
+            // Deposit funds
+            engine.transfer_in_to_trading_account(101, 2, 100000).unwrap(); // User 101 has 100k USDT
+            engine.transfer_in_to_trading_account(102, 1, 1000).unwrap();   // User 102 has 1000 BTC
+        }
+
+        // Action 1: Place Order
+        let _ = engine1.add_order(1, 1001, Side::Buy, OrderType::Limit, 50000, 1, 101, 1000);
+        let _ = engine2.add_order(1, 1001, Side::Buy, OrderType::Limit, 50000, 1, 101, 1000);
+
+        assert_eq!(engine1.state_hash, engine2.state_hash, "Hashes should match after same order");
+        assert_ne!(engine1.state_hash, 0, "Hash should not be zero");
+
+        // Action 2: Place Matching Order
+        let _ = engine1.add_order(1, 1002, Side::Sell, OrderType::Limit, 50000, 1, 102, 2000);
+        let _ = engine2.add_order(1, 1002, Side::Sell, OrderType::Limit, 50000, 1, 102, 2000);
+
+        assert_eq!(engine1.state_hash, engine2.state_hash, "Hashes should match after trade");
+
+        // Action 3: Cancel Order (that doesn't exist, should fail and NOT update hash)
+        let hash_before = engine1.state_hash;
+        let _ = engine1.cancel_order(1, 9999); // Fail
+        assert_eq!(engine1.state_hash, hash_before, "Hash should not change on failure");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(wal_dir);
+        let _ = std::fs::remove_dir_all(snap_dir);
     }
 }

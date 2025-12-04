@@ -9,7 +9,7 @@ mod tests {
         let wal_dir = temp_dir.path().join("wal");
         let snap_dir = temp_dir.path().join("snap");
 
-        let mut engine = MatchingEngine::new(&wal_dir, &snap_dir).unwrap();
+        let mut engine = MatchingEngine::new(&wal_dir, &snap_dir, false).unwrap();
 
         // Register a symbol: BTC_USDT (ID 0), Base Asset 1, Quote Asset 2
         engine
@@ -36,7 +36,7 @@ mod tests {
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
         // This should fail due to insufficient funds
-        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1, 0);
 
         match result {
             Err(OrderError::InsufficientFunds { .. }) => {
@@ -64,7 +64,7 @@ mod tests {
             .unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
-        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1);
+        let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 100, 10, 1, 0);
 
         assert!(result.is_ok());
         // In a real system, we would check the OrderBook or Event Log for "New" status
