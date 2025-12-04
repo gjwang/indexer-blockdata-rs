@@ -2,8 +2,8 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
 
-use crate::models::{OrderRequest, OrderType, Side};
 use crate::models::balance_manager::BalanceManager;
+use crate::models::{OrderRequest, OrderType, Side};
 use crate::symbol_manager::SymbolManager;
 use crc32fast::Hasher;
 
@@ -131,11 +131,13 @@ impl ClientOrder {
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?;
 
                 // Convert price from integer to Decimal
-                let price_decimal = balance_manager.to_client_price_by_id(*symbol_id, *price)
+                let price_decimal = balance_manager
+                    .to_client_price_by_id(*symbol_id, *price)
                     .ok_or("Failed to convert price")?;
 
                 // Convert quantity from integer to Decimal (Base Asset)
-                let quantity_decimal = balance_manager.to_client_amount(symbol_info.base_asset_id, *quantity)
+                let quantity_decimal = balance_manager
+                    .to_client_amount(symbol_info.base_asset_id, *quantity)
                     .ok_or("Failed to convert quantity")?;
 
                 Ok(ClientOrder {
@@ -243,10 +245,12 @@ impl ClientOrder {
         let price = balance_manager.to_internal_price(&self.symbol, self.price)?;
 
         // Convert quantity to integer representation (Base Asset)
-        let base_asset_name = symbol_manager.get_asset_name(symbol_info.base_asset_id)
+        let base_asset_name = symbol_manager
+            .get_asset_name(symbol_info.base_asset_id)
             .ok_or_else(|| format!("Unknown base asset ID: {}", symbol_info.base_asset_id))?;
         let (_, quantity) = balance_manager.to_internal_amount(&base_asset_name, self.quantity)?;
-        let quantity_decimals = symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
+        let quantity_decimals =
+            symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
 
         Ok(ClientRawOrder {
             user_id,

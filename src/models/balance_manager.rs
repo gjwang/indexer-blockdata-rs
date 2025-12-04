@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
@@ -18,7 +18,6 @@ pub struct InternalBalance {
     pub asset_id: u32,
     pub balance: Balance,
 }
-
 
 /// BalanceManager handles the conversion between client-facing decimal amounts (e.g., "1.5 BTC")
 /// and internal integer representations (e.g., 150_000_000 satoshis).
@@ -127,15 +126,13 @@ impl BalanceManager {
         if amount.normalize().scale() > display_decimals {
             return Err(format!("Amount {} exceeds max precision {}", amount, display_decimals));
         }
-        let multiplier = Decimal::from(
-            10_u64.checked_pow(decimals).ok_or("Decimals too large, overflow")?,
-        );
+        let multiplier =
+            Decimal::from(10_u64.checked_pow(decimals).ok_or("Decimals too large, overflow")?);
 
         let result = (amount * multiplier).round();
 
-        let raw_amount = result
-            .to_u64()
-            .ok_or_else(|| format!("Amount overflow or negative: {}", result))?;
+        let raw_amount =
+            result.to_u64().ok_or_else(|| format!("Amount overflow or negative: {}", result))?;
 
         Ok((asset_id, raw_amount))
     }
@@ -167,15 +164,12 @@ impl BalanceManager {
             return Err(format!("Price {} exceeds max precision {}", price, display_decimals));
         }
 
-        let multiplier = Decimal::from(
-            10_u64.checked_pow(decimals).ok_or("Price decimals overflow")?,
-        );
+        let multiplier =
+            Decimal::from(10_u64.checked_pow(decimals).ok_or("Price decimals overflow")?);
 
         let result = (price * multiplier).round();
 
-        result
-            .to_u64()
-            .ok_or_else(|| format!("Price overflow or negative: {}", result))
+        result.to_u64().ok_or_else(|| format!("Price overflow or negative: {}", result))
     }
 
     /// Converts an internal integer price to a client-facing Decimal.

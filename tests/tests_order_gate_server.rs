@@ -11,9 +11,9 @@ use rust_decimal::Decimal;
 use tower::util::ServiceExt;
 
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{AppState, create_app, OrderPublisher, SimulatedFundingAccount};
-use fetcher::models::{ClientOrder, OrderType, Side, UserAccountManager};
+use fetcher::gateway::{create_app, AppState, OrderPublisher, SimulatedFundingAccount};
 use fetcher::models::balance_manager::BalanceManager;
+use fetcher::models::{ClientOrder, OrderType, Side, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 
 struct MockPublisher;
@@ -24,7 +24,7 @@ impl OrderPublisher for MockPublisher {
         _topic: String,
         _key: String,
         _payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
         Box::pin(async { Ok(()) })
     }
 }

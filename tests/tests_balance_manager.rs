@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use rust_decimal::Decimal;
-use rust_decimal::prelude::FromStr;
 use fetcher::models::balance_manager::{BalanceManager, ClientBalance, InternalBalance};
 use fetcher::symbol_manager::SymbolManager;
 use fetcher::user_account::Balance;
+use rust_decimal::prelude::FromStr;
+use rust_decimal::Decimal;
+use std::sync::Arc;
 
 #[test]
 fn test_balance_manager_conversion_precision() {
