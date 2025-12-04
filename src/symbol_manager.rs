@@ -7,6 +7,7 @@ pub struct SymbolInfo {
     pub base_asset_id: u32,
     pub quote_asset_id: u32,
     pub price_decimal: u32,
+    pub price_display_decimal: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -43,7 +44,7 @@ impl SymbolManager {
     }
 
     pub fn insert(&mut self, symbol: &str, id: u32, base_asset_id: u32, quote_asset_id: u32) {
-        self.insert_symbol(symbol, id, base_asset_id, quote_asset_id, 2); // Default: 2 for price
+        self.insert_symbol(symbol, id, base_asset_id, quote_asset_id, 2, 2); // Default: 2 for price
     }
 
     pub fn insert_symbol(
@@ -53,6 +54,7 @@ impl SymbolManager {
         base_asset_id: u32,
         quote_asset_id: u32,
         price_decimal: u32,
+        price_display_decimal: u32,
     ) {
         self.symbol_to_id.insert(symbol.to_string(), id);
         self.id_to_symbol.insert(id, symbol.to_string());
@@ -64,6 +66,7 @@ impl SymbolManager {
                 base_asset_id,
                 quote_asset_id,
                 price_decimal,
+                price_display_decimal,
             },
         );
     }
@@ -118,9 +121,9 @@ impl SymbolManager {
         manager.add_asset(3, 8, 4, "ETH"); // ETH: 8 decimals, 4 precision
 
         // BTC_USDT: Base 1 (BTC), Quote 2 (USDT), Price Decimal 2
-        manager.insert_symbol("BTC_USDT", 0, 1, 2, 2);
+        manager.insert_symbol("BTC_USDT", 0, 1, 2, 2, 2);
         // ETH_USDT: Base 3 (ETH), Quote 2 (USDT), Price Decimal 2
-        manager.insert_symbol("ETH_USDT", 1, 3, 2, 2);
+        manager.insert_symbol("ETH_USDT", 1, 3, 2, 2, 2);
 
         manager
     }
