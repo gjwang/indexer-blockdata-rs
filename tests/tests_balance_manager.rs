@@ -111,6 +111,37 @@ fn test_balance_manager_decimals_overflow() {
 }
 
 #[test]
+fn test_balance_manager_price_conversion() {
+    let mut sm = SymbolManager::new();
+    // Asset 1: BTC, decimals=8, display=3
+    sm.add_asset(1, 8, 3, "BTC");
+    // Asset 2: USDT, decimals=6, display=2
+    sm.add_asset(2, 6, 2, "USDT");
+    // Symbol: BTC_USDT, price_decimal=2
+    sm.insert("BTC_USDT", 1, 2, 2);
+
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    // Test to_internal_price
+    // 50000.50 -> 5000050
+    let price = Decimal::from_str("50000.50").unwrap();
+    let internal = bm.to_internal_price("BTC_USDT", price).expect("Price conversion failed");
+    assert_eq!(internal, 5000050);
+
+    // Test precision check
+    // 50000.501 -> Error (precision 2)
+    let price_invalid = Decimal::from_str("50000.501").unwrap();
+    let result = bm.to_internal_price("BTC_USDT", price_invalid);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("exceeds max precision"));
+
+    // Test to_client_price
+    // 5000050 -> 50000.50
+    let client_price = bm.to_client_price("BTC_USDT", 5000050).unwrap();
+    assert_eq!(client_price, Decimal::from_str("50000.50").unwrap());
+}
+
+#[test]
 fn test_unknown_asset() {
     let sm = SymbolManager::new();
     let bm = BalanceManager::new(Arc::new(sm));

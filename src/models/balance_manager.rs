@@ -139,4 +139,49 @@ impl BalanceManager {
 
         Ok((asset_id, raw_amount))
     }
+
+    /// Converts a client-facing Decimal price to an internal integer representation.
+    pub fn to_internal_price(&self, symbol: &str, price: Decimal) -> Result<u64, String> {
+        let symbol_info = self
+            .symbol_manager
+            .get_symbol_info(symbol)
+            .ok_or_else(|| format!("Unknown symbol: {}", symbol))?;
+
+        let decimals = symbol_info.price_decimal;
+
+        // Validate precision
+        if price.normalize().scale() > decimals {
+            return Err(format!("Price {} exceeds max precision {}", price, decimals));
+        }
+
+        let multiplier = Decimal::from(
+            10_u64.checked_pow(decimals).ok_or("Price decimals overflow")?,
+        );
+
+        (price * multiplier)
+            .round()
+            .to_string()
+            .parse::<u64>()
+            .map_err(|_| "Price overflow".to_string())
+    }
+
+    /// Converts an internal integer price to a client-facing Decimal.
+    pub fn to_client_price(&self, symbol: &str, price: u64) -> Option<Decimal> {
+        let symbol_info = self.symbol_manager.get_symbol_info(symbol)?;
+        let decimals = symbol_info.price_decimal;
+
+        let divisor = Decimal::from(10_u64.checked_pow(decimals)?);
+
+        Some(Decimal::from(price) / divisor)
+    }
+
+    /// Converts an internal integer price to a client-facing Decimal using symbol ID.
+    pub fn to_client_price_by_id(&self, symbol_id: u32, price: u64) -> Option<Decimal> {
+        let symbol_info = self.symbol_manager.get_symbol_info_by_id(symbol_id)?;
+        let decimals = symbol_info.price_decimal;
+
+        let divisor = Decimal::from(10_u64.checked_pow(decimals)?);
+
+        Some(Decimal::from(price) / divisor)
+    }
 }
