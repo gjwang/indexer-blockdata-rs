@@ -1,13 +1,16 @@
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{create_app, AppState, OrderPublisher, BalanceManager, SimulatedFundingAccount};
-use fetcher::models::UserAccountManager;
-use fetcher::symbol_manager::SymbolManager;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
+
+use fetcher::fast_ulid::SnowflakeGenRng;
+use fetcher::gateway::{AppState, create_app, OrderPublisher, SimulatedFundingAccount};
+use fetcher::models::balance_manager::BalanceManager;
+use fetcher::models::UserAccountManager;
+use fetcher::symbol_manager::SymbolManager;
 
 // Mock Publisher
 struct MockPublisher;
@@ -17,7 +20,7 @@ impl OrderPublisher for MockPublisher {
         _topic: String,
         _key: String,
         _payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>> {
         Box::pin(async { Ok(()) })
     }
 }
