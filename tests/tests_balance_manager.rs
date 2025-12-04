@@ -95,6 +95,22 @@ fn test_balance_manager_struct_conversion() {
 }
 
 #[test]
+fn test_balance_manager_decimals_overflow() {
+    let mut sm = SymbolManager::new();
+    // Decimals 20 -> 10^20 overflows u64
+    sm.add_asset(1, 20, 20, "HUGE");
+    let bm = BalanceManager::new(Arc::new(sm));
+
+    let amount = Decimal::from(1);
+    let result = bm.to_internal_amount("HUGE", amount);
+    // This should currently panic or return error if I fix it.
+    // If it panics, the test runner catches it?
+    // I want to assert it returns Err, not panic.
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "Decimals too large, overflow");
+}
+
+#[test]
 fn test_unknown_asset() {
     let sm = SymbolManager::new();
     let bm = BalanceManager::new(Arc::new(sm));

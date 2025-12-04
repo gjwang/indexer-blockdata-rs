@@ -61,7 +61,7 @@ impl BalanceManager {
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
         let display_decimals =
             self.symbol_manager.get_asset_display_decimals(asset_id).unwrap_or(decimals);
-        let divisor = Decimal::from(10_u64.pow(decimals));
+        let divisor = Decimal::from(10_u64.checked_pow(decimals)?);
 
         Some(
             (Decimal::from(amount) / divisor)
@@ -94,7 +94,9 @@ impl BalanceManager {
         if amount.normalize().scale() > display_decimals {
             return Err(format!("Amount {} exceeds max precision {}", amount, display_decimals));
         }
-        let multiplier = Decimal::from(10_u64.pow(decimals));
+        let multiplier = Decimal::from(
+            10_u64.checked_pow(decimals).ok_or("Decimals too large, overflow")?,
+        );
 
         let raw_amount = (amount * multiplier)
             .round()
