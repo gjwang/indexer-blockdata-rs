@@ -84,13 +84,6 @@ async fn create_order(
     Ok(Json(ApiResponse::success(response_data)))
 }
 
-//TODO:re-use this struct from user_account module, but impl convert trait to encapulate the convert logic
-// pub struct Balance {
-//     pub avail: u64,
-//     pub frozen: u64,
-//     pub version: u64,
-// }
-
 #[derive(Debug, serde::Serialize)]
 struct BalanceResponse {
     asset: String,
@@ -140,25 +133,31 @@ async fn get_balance(
             }
         }
 
-        let response: Vec<BalanceResponse> = balances
-            .into_iter()
-            .map(|(asset_id, amount)| {
-                let asset_name = state
-                    .symbol_manager
-                    .get_asset_name(asset_id)
-                    .unwrap_or_else(|| format!("UNKNOWN_{}", asset_id));
+        let mut response = Vec::new();
+        for (asset_id, amount) in balances {
+            let asset_name = state.symbol_manager.get_asset_name(asset_id).ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Asset name not found for ID {}", asset_id),
+                )
+            })?;
 
-                let decimals = state.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+            let decimals = state.symbol_manager.get_asset_decimal(asset_id).ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Asset decimal not found for ID {}", asset_id),
+                )
+            })?;
 
-                // Construct Balance
-                // Assuming amount is available. Frozen is 0.
-                let avail = if amount < 0 { 0 } else { amount as u64 };
+            let avail = if amount < 0 { 0 } else { amount as u64 };
 
-                let balance = Balance { avail, frozen: 0, version: 0 };
+            let balance = Balance { avail, frozen: 0, version: 0 };
 
-                balance.to_response(asset_name, decimals)
-            })
-            .collect();
+            response.push(balance.to_response(asset_name, decimals));
+        }
+
+        // Sort by asset name for consistent output
+        response.sort_by(|a, b| a.asset.cmp(&b.asset));
 
         Ok(Json(ApiResponse::success(response)))
     } else {
