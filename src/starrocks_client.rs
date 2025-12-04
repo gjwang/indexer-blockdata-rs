@@ -66,7 +66,8 @@ impl StarRocksClient {
         }
 
         let label_num = self.label_counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let label = format!("settlement_{}", label_num);
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let label = format!("settlement_{}_{}", timestamp, label_num);
 
         // Convert to JSON Array
         let payload = serde_json::to_string(&trades)?;
