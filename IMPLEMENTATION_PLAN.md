@@ -139,11 +139,11 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 4.6: Query Interface & Verification
 *   **Goal**: Add read operations to verify settlement data.
 *   **Steps**:
-    1.  [ ] **Implement**: `async fn get_trade_by_id(&self, trade_id: u64) -> Result<Option<Trade>>`.
-    2.  [ ] **Implement**: `async fn get_trades_by_sequence_range(&self, start: u64, end: u64) -> Result<Vec<Trade>>`.
-    3.  [ ] **Create**: `src/bin/settlement_query_tool.rs` - CLI tool to query trades.
-    4.  [ ] **Verify**: Insert test data, query it back, confirm correctness.
-    5.  [ ] **Commit**: `git commit -m "feat: add settlement query interface"`
+    1.  [x] **Implement**: `get_trade_by_id` in `SettlementDb`.
+    2.  [x] **Implement**: `get_trades_by_sequence_range` in `SettlementDb`.
+    3.  [x] **Create**: `verify_settlement` CLI tool for verification.
+    4.  [x] **Verify**: Run verification tool against populated DB.
+    5.  [x] **Commit**: `git commit -m "feat: add settlement query interface and verification tool"`
 
 ### Task 4.7: Error Handling & Retry Logic
 *   **Goal**: Make settlement service resilient to database failures.
