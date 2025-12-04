@@ -8,6 +8,7 @@ use tokio::time::sleep;
 
 use crate::configure::ScyllaDbConfig;
 use crate::ledger::{MatchExecData, LedgerEvent};
+use crate::common_utils::{get_current_date, get_current_timestamp_ms};
 
 // Retry configuration
 const MAX_RETRIES: u32 = 3;
@@ -146,8 +147,8 @@ impl SettlementDb {
     pub async fn insert_trade(&self, trade: &MatchExecData) -> Result<()> {
         let start = std::time::Instant::now();
 
-        let trade_date = crate::common_utils::get_current_date();
-        let settled_at = Utc::now().timestamp_millis();
+        let trade_date = get_current_date();
+        let settled_at = get_current_timestamp_ms();
 
         let result = Self::retry_with_backoff(|| async {
             self.session
@@ -203,8 +204,8 @@ impl SettlementDb {
 
         let start = std::time::Instant::now();
 
-        let trade_date = crate::common_utils::get_current_date();
-        let settled_at = Utc::now().timestamp_millis();
+        let trade_date = get_current_date();
+        let settled_at = get_current_timestamp_ms();
 
         // Execute all inserts (ScyllaDB will batch them automatically)
         for trade in trades {
