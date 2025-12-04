@@ -26,12 +26,18 @@ fn main() {
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
 
-    //todo: print boot params before loop start
+    // Print boot parameters
+    info!("=== Settlement Service Boot Parameters ===");
+    info!("  ZMQ Endpoint:     {}", endpoint);
+    info!("  Log File:         {}", config.log_file);
+    info!("  Log Level:        {}", config.log_level);
+    info!("  Log to File:      {}", config.log_to_file);
+    info!("===========================================");
 
     info!("Settlement Service started.");
     info!("Listening on {}", endpoint);
 
-    // 4. Event Loop
+    // Event Loop
     info!("Waiting for trades...");
     let mut next_sequence: u64 = 0;
     
