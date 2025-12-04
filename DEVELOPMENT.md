@@ -29,6 +29,17 @@ docker-compose up -d
 
 ---
 
+## 🛡️ Code Quality Standards
+
+**CRITICAL RULE**: Before committing any code, you MUST run:
+```bash
+cargo fmt
+cargo check
+```
+This ensures code consistency and prevents build errors.
+
+---
+
 ## Docker Compose Services
 
 ### Current Services
@@ -388,19 +399,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
-      
+
       - name: Start services
         run: docker-compose up -d
-      
+
       - name: Wait for services
         run: sleep 30
-      
+
       - name: Initialize
         run: ./scripts/init_scylla.sh
-      
+
       - name: Run tests
         run: cargo test
-      
+
       - name: Cleanup
         run: docker-compose down -v
 ```

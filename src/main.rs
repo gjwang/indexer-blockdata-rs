@@ -77,7 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_reverse_indexing = args.is_reverse_indexing;
     println!("block_number_begin={block_number_begin} block_number_end={_block_number_end} is_reverse_indexing={is_reverse_indexing}");
 
-    logger::setup_logger().expect("Failed to set up logger");
+    let config = configure::load_config().expect("Failed to load config");
+    logger::setup_logger(&config).expect("Failed to set up logger");
 
     // Get the INFURA_API_KEY from the environment
     let infura_api_key = env::var("INFURA_API_KEY").expect("INFURA_API_KEY must be set");
