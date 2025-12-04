@@ -88,6 +88,11 @@ pub struct MatchExecData {
     pub match_seq: u64,
     pub output_sequence: u64,
     pub settled_at: u64,
+    // Balance versions from matching engine (for idempotent settlement)
+    pub buyer_quote_version: u64,  // buyer's quote_asset balance version
+    pub buyer_base_version: u64,   // buyer's base_asset balance version
+    pub seller_base_version: u64,  // seller's base_asset balance version
+    pub seller_quote_version: u64, // seller's quote_asset balance version
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -454,6 +459,7 @@ impl Iterator for WalIterator {
 
 pub trait Ledger {
     fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64;
+    fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64;
     fn apply(&mut self, cmd: &LedgerCommand) -> Result<()>;
 }
 
@@ -493,6 +499,18 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 .unwrap_or(0);
         }
         self.real_ledger.get_balance(user_id, asset_id)
+    }
+
+    fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        if let Some(account) = self.delta_accounts.get(&user_id) {
+            return account
+                .assets
+                .iter()
+                .find(|(a, _)| *a == asset_id)
+                .map(|(_, b)| b.version)
+                .unwrap_or(0);
+        }
+        self.real_ledger.get_balance_version(user_id, asset_id)
     }
 
     fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
@@ -770,6 +788,14 @@ impl Ledger for GlobalLedger {
             .get(&user_id)
             .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
             .map(|(_, b)| b.avail)
+            .unwrap_or(0)
+    }
+
+    fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        self.accounts
+            .get(&user_id)
+            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
+            .map(|(_, b)| b.version)
             .unwrap_or(0)
     }
 
@@ -1332,6 +1358,11 @@ mod tests {
             seller_refund: 0,
             match_seq: 1,
             output_sequence: 1,
+            settled_at: 0,
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
         };
 
         ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
@@ -1431,6 +1462,11 @@ mod tests {
             seller_refund: 0,
             match_seq: 1,
             output_sequence: 1,
+            settled_at: 0,
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
         };
 
         let result = ledger.apply(&LedgerCommand::MatchExec(match_data));
@@ -1710,6 +1746,11 @@ mod tests {
             seller_refund: 10,   // Refund unused base
             match_seq: 1,
             output_sequence: 1,
+            settled_at: 0,
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
         };
 
         ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
@@ -1870,6 +1911,11 @@ mod tests {
             seller_refund: 0,
             match_seq: 1,
             output_sequence: 1,
+            settled_at: 0,
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
         };
 
         let cmds = vec![LedgerCommand::MatchExec(match_data)];

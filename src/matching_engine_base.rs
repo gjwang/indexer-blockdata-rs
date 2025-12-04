@@ -545,6 +545,13 @@ impl MatchingEngine {
                 }
             }
 
+            // Capture balance versions BEFORE applying the trade
+            // This ensures we have the version at the time of trade execution
+            let buyer_quote_version = ledger.get_balance_version(trade.buy_user_id, quote_asset);
+            let buyer_base_version = ledger.get_balance_version(trade.buy_user_id, base_asset);
+            let seller_base_version = ledger.get_balance_version(trade.sell_user_id, base_asset);
+            let seller_quote_version = ledger.get_balance_version(trade.sell_user_id, quote_asset);
+
             match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,
                 buy_order_id: trade.buy_order_id,
@@ -563,6 +570,11 @@ impl MatchingEngine {
                     *output_seq
                 },
                 settled_at: 0,
+                // Balance versions from matching engine
+                buyer_quote_version,
+                buyer_base_version,
+                seller_base_version,
+                seller_quote_version,
             });
         }
 
