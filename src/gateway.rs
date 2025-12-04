@@ -212,7 +212,7 @@ pub struct AppState {
     pub kafka_topic: String,
     pub balance_topic: String,
     pub user_manager: UserAccountManager,
-    pub db: Option<Arc<SettlementDb>>,
+    pub db: Option<SettlementDb>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
 }
 
@@ -346,6 +346,19 @@ async fn transfer_out(
             eprintln!("Failed to send transfer_out to Kafka: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
+
+    // Update Balance in DB
+    if let Some(db) = &state.db {
+        db.update_balance(payload.user_id, asset_id, -(raw_amount as i64), 0, 0) // 0 for version, 0 for frozen
+            .await
+            .map_err(|e| {
+                eprintln!("DB Error: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+    } else {
+        eprintln!("DB not initialized");
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
 
     println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);
 

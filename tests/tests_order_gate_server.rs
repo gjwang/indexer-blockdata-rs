@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{create_app, AppState, OrderPublisher};
+use fetcher::gateway::{create_app, AppState, OrderPublisher, BalanceManager, SimulatedFundingAccount};
 
 use fetcher::models::{ClientOrder, OrderType, Side, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
@@ -30,17 +30,21 @@ impl OrderPublisher for MockPublisher {
 #[tokio::test]
 async fn test_create_order_api_success() {
     let mut sm = SymbolManager::new();
-    sm.add_asset(1, 8); // BTC
-    sm.add_asset(2, 8); // USDT
+    sm.add_asset(1, 8, 3, "BTC"); // BTC
+    sm.add_asset(2, 8, 2, "USDT"); // USDT
     sm.insert("BTC_USDT", 1, 1, 2);
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
     let state = Arc::new(AppState {
-        symbol_manager: sm,
+        symbol_manager: Arc::new(sm.clone()),
+        balance_manager: BalanceManager::new(Arc::new(sm)),
         producer: Arc::new(MockPublisher),
         snowflake_gen,
         kafka_topic: "test_topic".to_string(),
+        balance_topic: "test_balance_topic".to_string(),
         user_manager: UserAccountManager::new(),
+        db: None,
+        funding_account: Arc::new(Mutex::new(SimulatedFundingAccount::new())),
     });
 
     let app = create_app(state);
@@ -58,7 +62,7 @@ async fn test_create_order_api_success() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/orders")
+                .uri("/api/orders?user_id=1")
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_string(&client_order).unwrap()))
                 .unwrap(),
@@ -66,7 +70,13 @@ async fn test_create_order_api_success() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    if status != StatusCode::OK {
+        let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        println!("Response body: {:?}", String::from_utf8_lossy(&body_bytes));
+        panic!("Status not OK: {}", status);
+    }
+    assert_eq!(status, StatusCode::OK);
 
     let body_bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
     let body_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();

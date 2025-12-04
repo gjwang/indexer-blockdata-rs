@@ -77,7 +77,7 @@ async fn main() {
         kafka_topic: config.kafka.topics.orders,
         balance_topic,
         user_manager: UserAccountManager::new(),
-        db,
+        db: db.map(|d| (*d).clone()),
         funding_account,
     });
 

@@ -11,9 +11,9 @@ mod tests {
 
     fn setup_symbol_manager() -> SymbolManager {
         let mut sm = SymbolManager::new();
-        sm.add_asset(1, 8); // BTC
-        sm.add_asset(2, 8); // USDT
-        sm.add_asset(3, 8); // ETH
+        sm.add_asset(1, 8, 3, "BTC"); // BTC
+        sm.add_asset(2, 8, 2, "USDT"); // USDT
+        sm.add_asset(3, 8, 4, "ETH"); // ETH
         sm.insert("BTC_USDT", 1, 1, 2);
         sm.insert("ETH_USDT", 2, 3, 2);
         sm
@@ -384,8 +384,8 @@ mod tests {
     #[test]
     fn test_process_order_success() {
         let mut sm = SymbolManager::new();
-        sm.add_asset(1, 8); // BTC
-        sm.add_asset(2, 8); // USDT
+        sm.add_asset(1, 8, 3, "BTC"); // BTC
+        sm.add_asset(2, 8, 2, "USDT"); // USDT
         sm.insert("BTC_USDT", 1, 1, 2);
         let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 

@@ -90,6 +90,7 @@ const SELECT_TRADES_BY_SELLER_CQL: &str = "
 /// Settlement database client for ScyllaDB
 ///
 /// Provides a clean abstraction for storing and querying settled trades.
+#[derive(Clone)]
 pub struct SettlementDb {
     session: Arc<Session>,
     keyspace: String,
@@ -524,6 +525,54 @@ impl SettlementDb {
     /// * `Ok(true)` - Update successful
     /// * `Ok(false)` - Version conflict (already updated)
     /// * `Err(_)` - Database error
+    pub async fn update_balance(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        delta: i64,
+        _frozen_delta: i64,
+        _version: u64,
+    ) -> Result<()> {
+        for _ in 0..10 {
+            let current = self.get_user_balance(user_id, asset_id).await?;
+            let (current_avail, current_ver) = match current {
+                Some(b) => (b.available as i64, b.version),
+                None => {
+                    self.init_balance_if_not_exists(user_id, asset_id).await?;
+                    (0, 0)
+                }
+            };
+
+            let new_avail = current_avail + delta;
+            if new_avail < 0 {
+                anyhow::bail!("Insufficient balance");
+            }
+
+            let new_ver = current_ver + 1;
+            let now = get_current_timestamp_ms();
+
+            let query = "
+                UPDATE user_balances
+                SET available = ?, version = ?, updated_at = ?
+                WHERE user_id = ? AND asset_id = ?
+                IF version = ?
+            ";
+
+            let result = self.session.query(query, (new_avail, new_ver as i64, now, user_id as i64, asset_id as i32, current_ver as i64)).await?;
+
+            if let Some(rows) = result.rows {
+                if let Some(row) = rows.into_iter().next() {
+                    if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                        if applied {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+        anyhow::bail!("Failed to update balance after retries");
+    }
+
     pub async fn update_balance_with_version(
         &self,
         user_id: u64,
@@ -536,6 +585,7 @@ impl SettlementDb {
 
         let (current_available, current_version) = match current {
             Some(balance) => {
+                //TODO: maybe bad idea to allow gaps for non-persisted events like Locks
                 // Verify version matches or is older (allowing gaps for non-persisted events like Locks)
                 if balance.version >= expected_version {
                     log::debug!(
