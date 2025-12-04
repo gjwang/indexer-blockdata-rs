@@ -21,7 +21,7 @@ async fn main() {
 
     // Get ZMQ configuration
     let zmq_config = config.zeromq.expect("ZMQ config missing");
-    
+
     // Get ScyllaDB configuration
     let scylla_config = config.scylladb.expect("ScyllaDB config missing");
 
@@ -61,7 +61,9 @@ async fn main() {
             match db_clone.health_check().await {
                 Ok(true) => log::debug!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection active"),
                 Ok(false) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection lost!"),
-                Err(e) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB health check error: {}", e),
+                Err(e) => {
+                    log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB health check error: {}", e)
+                }
             }
         }
     });
@@ -69,7 +71,7 @@ async fn main() {
     // Setup ZMQ Subscriber
     let context = Context::new();
     let subscriber = context.socket(SUB).expect("Failed to create SUB socket");
-    
+
     let endpoint = format!("tcp://localhost:{}", zmq_config.settlement_port);
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
@@ -92,7 +94,7 @@ async fn main() {
     let mut next_sequence: u64 = 0;
     let mut total_settled: u64 = 0;
     let mut total_errors: u64 = 0;
-    
+
     // Open CSV Writer in Append Mode (keep as backup/audit trail)
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -100,7 +102,7 @@ async fn main() {
         .append(true)
         .open("settled_trades.csv")
         .expect("Failed to open settled_trades.csv");
-        
+
     let mut wtr = csv::WriterBuilder::new()
         .has_headers(false) // Don't write headers on append
         .from_writer(file);
@@ -117,7 +119,7 @@ async fn main() {
                 continue;
             }
         };
-        
+
         let data = match subscriber.recv_bytes(0) {
             Ok(d) => d,
             Err(e) => {
@@ -126,92 +128,104 @@ async fn main() {
             }
         };
 
-        // Deserialize into MatchExecData
-        match serde_json::from_slice::<fetcher::ledger::MatchExecData>(&data) {
-            Ok(trade) => {
-                let seq = trade.output_sequence;
-                
-                // Sequence validation
-                if next_sequence == 0 {
-                    // First message, initialize sequence
-                    next_sequence = seq + 1;
-                    log::info!(target: LOG_TARGET, "Initialized sequence tracking at {}", seq);
-                } else if seq != next_sequence {
-                    log::error!(
-                        target: LOG_TARGET, 
-                        "CRITICAL: GAP DETECTED! Expected: {}, Got: {}. Gap size: {}", 
-                        next_sequence, 
-                        seq,
-                        seq as i64 - next_sequence as i64
-                    );
-                    // In production, we would request replay here
-                    next_sequence = seq + 1;
-                } else {
-                    next_sequence += 1;
-                }
+        // Try MatchExecData (Trade)
+        if let Ok(trade) = serde_json::from_slice::<fetcher::ledger::MatchExecData>(&data) {
+            let seq = trade.output_sequence;
 
-                //TODO: add profiling here
-
-                // Persist to ScyllaDB (primary storage)
-                match settlement_db.insert_trade(&trade).await {
-                    Ok(()) => {
-                        total_settled += 1;
-                        if total_settled % 100 == 0 {
-                            log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
-                            log::info!(target: LOG_TARGET, "[METRIC] settlement_db_inserts_total={}", total_settled);
-                        }
-                    }
-                    Err(e) => {
-                        total_errors += 1;
-                        log::error!(target: LOG_TARGET, "Failed to insert trade to ScyllaDB: {}", e);
-                        log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
-                        
-                        // Log to failed_trades.json for manual recovery
-                        let failed_file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create(true)
-                            .append(true)
-                            .open("failed_trades.json");
-                            
-                        match failed_file {
-                            Ok(mut f) => {
-                                if let Ok(json) = serde_json::to_string(&trade) {
-                                    use std::io::Write;
-                                    let _ = writeln!(f, "{}", json);
-                                }
-                            }
-                            Err(io_err) => {
-                                log::error!(target: LOG_TARGET, "Failed to write to failed_trades.json: {}", io_err);
-                            }
-                        }
-                    }
-                }
-                
-                // Persist to CSV (backup/audit trail)
-                if let Err(e) = wtr.serialize(&trade) {
-                    log::error!(target: LOG_TARGET, "Failed to write to CSV: {}", e);
-                }
-                if let Err(e) = wtr.flush() {
-                    log::error!(target: LOG_TARGET, "Failed to flush CSV: {}", e);
-                }
-
-                // Log trade details
-                log::info!(
+            // Sequence validation
+            if next_sequence == 0 {
+                // First message, initialize sequence
+                next_sequence = seq + 1;
+                log::info!(target: LOG_TARGET, "Initialized sequence tracking at {}", seq);
+            } else if seq != next_sequence {
+                log::error!(
                     target: LOG_TARGET,
-                    "Seq: {}, TradeID: {}, Price: {}, Qty: {}, Buyer: {}, Seller: {}",
-                    trade.output_sequence,
-                    trade.trade_id,
-                    trade.price,
-                    trade.quantity,
-                    trade.buyer_user_id,
-                    trade.seller_user_id
+                    "CRITICAL: GAP DETECTED! Expected: {}, Got: {}. Gap size: {}",
+                    next_sequence,
+                    seq,
+                    seq as i64 - next_sequence as i64
                 );
+                // In production, we would request replay here
+                next_sequence = seq + 1;
+            } else {
+                next_sequence += 1;
             }
-            Err(e) => {
-                log::error!(target: LOG_TARGET, "Failed to deserialize: {}", e);
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) {
-                     log::debug!(target: LOG_TARGET, "  Raw Data: {}", json);
+
+            // Persist to ScyllaDB (primary storage)
+            match settlement_db.insert_trade(&trade).await {
+                Ok(()) => {
+                    total_settled += 1;
+                    if total_settled % 100 == 0 {
+                        log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
+                        log::info!(target: LOG_TARGET, "[METRIC] settlement_db_inserts_total={}", total_settled);
+                    }
                 }
+                Err(e) => {
+                    total_errors += 1;
+                    log::error!(target: LOG_TARGET, "Failed to insert trade to ScyllaDB: {}", e);
+                    log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
+
+                    // Log to failed_trades.json for manual recovery
+                    let failed_file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .append(true)
+                        .open("failed_trades.json");
+
+                    match failed_file {
+                        Ok(mut f) => {
+                            if let Ok(json) = serde_json::to_string(&trade) {
+                                use std::io::Write;
+                                let _ = writeln!(f, "{}", json);
+                            }
+                        }
+                        Err(io_err) => {
+                            log::error!(target: LOG_TARGET, "Failed to write to failed_trades.json: {}", io_err);
+                        }
+                    }
+                }
+            }
+
+            // Persist to CSV (backup/audit trail)
+            if let Err(e) = wtr.serialize(&trade) {
+                log::error!(target: LOG_TARGET, "Failed to write to CSV: {}", e);
+            }
+            if let Err(e) = wtr.flush() {
+                log::error!(target: LOG_TARGET, "Failed to flush CSV: {}", e);
+            }
+
+            // Log trade details
+            log::info!(
+                target: LOG_TARGET,
+                "Seq: {}, TradeID: {}, Price: {}, Qty: {}, Buyer: {}, Seller: {}",
+                trade.output_sequence,
+                trade.trade_id,
+                trade.price,
+                trade.quantity,
+                trade.buyer_user_id,
+                trade.seller_user_id
+            );
+        }
+        // Try LedgerEvent (Deposit/Withdrawal)
+        else if let Ok(mut event) = serde_json::from_slice::<fetcher::ledger::LedgerEvent>(&data) {
+            // Assign a unique sequence ID (using timestamp nanos) since engine sent 0
+            event.sequence_id = chrono::Utc::now().timestamp_nanos() as u64;
+
+            match settlement_db.insert_ledger_event(&event).await {
+                Ok(()) => {
+                    log::info!(target: LOG_TARGET, "Settled Event: {} for User {}", event.event_type, event.user_id);
+                }
+                Err(e) => {
+                    total_errors += 1;
+                    log::error!(target: LOG_TARGET, "Failed to insert event to ScyllaDB: {}", e);
+                    log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
+                }
+            }
+        }
+        else {
+            log::error!(target: LOG_TARGET, "Failed to deserialize message (unknown format)");
+            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&data) {
+                 log::debug!(target: LOG_TARGET, "  Raw Data: {}", json);
             }
         }
     }

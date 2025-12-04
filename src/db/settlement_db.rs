@@ -1,13 +1,13 @@
 use anyhow::{Context, Result};
-use scylla::{Session, SessionBuilder};
-use scylla::prepared_statement::PreparedStatement;
-use std::sync::Arc;
 use chrono::Utc;
+use scylla::prepared_statement::PreparedStatement;
+use scylla::{Session, SessionBuilder};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
 
 use crate::configure::ScyllaDbConfig;
-use crate::ledger::MatchExecData;
+use crate::ledger::{MatchExecData, LedgerEvent};
 
 // Retry configuration
 const MAX_RETRIES: u32 = 3;
@@ -25,46 +25,53 @@ const INSERT_TRADE_CQL: &str = "
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
+const INSERT_LEDGER_EVENT_CQL: &str = "
+    INSERT INTO ledger_events (
+        user_id, sequence_id, event_type, amount, currency, related_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+";
+
 const SELECT_TRADE_BY_ID_CQL: &str = "
-    SELECT 
+    SELECT
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
         price, quantity, base_asset, quote_asset,
         buyer_refund, seller_refund, settled_at
-    FROM settled_trades 
+    FROM settled_trades
     WHERE trade_id = ?
 ";
 
 const SELECT_TRADES_BY_SEQ_CQL: &str = "
-    SELECT 
+    SELECT
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
         price, quantity, base_asset, quote_asset,
         buyer_refund, seller_refund, settled_at
-    FROM settled_trades_by_sequence 
+    FROM settled_trades_by_sequence
     WHERE output_sequence >= ? AND output_sequence <= ?
     ALLOW FILTERING
 ";
 
 /// Settlement database client for ScyllaDB
-/// 
+///
 /// Provides a clean abstraction for storing and querying settled trades.
 pub struct SettlementDb {
     session: Arc<Session>,
     keyspace: String,
-    
+
     // Prepared statements for performance
     insert_trade_stmt: PreparedStatement,
+    insert_ledger_event_stmt: PreparedStatement,
 }
 
 impl SettlementDb {
     /// Connect to ScyllaDB and prepare statements
-    /// 
+    ///
     /// # Arguments
     /// * `config` - ScyllaDB configuration
-    /// 
+    ///
     /// # Returns
     /// * `Result<SettlementDb>` - Connected database client
     pub async fn connect(config: &ScyllaDbConfig) -> Result<Self> {
@@ -77,7 +84,7 @@ impl SettlementDb {
             .context("Failed to connect to ScyllaDB")?;
 
         let session = Arc::new(session);
-        
+
         // Use the settlement keyspace
         session
             .query(format!("USE {}", config.keyspace), &[])
@@ -88,17 +95,23 @@ impl SettlementDb {
         let insert_trade_stmt = session
             .prepare(INSERT_TRADE_CQL)
             .await
-            .context("Failed to prepare insert statement")?;
+            .context("Failed to prepare insert trade statement")?;
+
+        let insert_ledger_event_stmt = session
+            .prepare(INSERT_LEDGER_EVENT_CQL)
+            .await
+            .context("Failed to prepare insert ledger event statement")?;
 
         Ok(Self {
             session,
             keyspace: config.keyspace.clone(),
             insert_trade_stmt,
+            insert_ledger_event_stmt,
         })
     }
 
     /// Execute an async operation with exponential backoff retry
-    async fn retry_with_backoff<F, Fut, T, E>(operation: F) -> Result<T> 
+    async fn retry_with_backoff<F, Fut, T, E>(operation: F) -> Result<T>
     where
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<T, E>>,
@@ -123,12 +136,11 @@ impl SettlementDb {
         }
     }
 
-
     /// Insert a single trade into the database with retry logic
-    /// 
+    ///
     /// # Arguments
     /// * `trade` - Trade data from matching engine
-    /// 
+    ///
     /// # Returns
     /// * `Result<()>` - Success or error
     pub async fn insert_trade(&self, trade: &MatchExecData) -> Result<()> {
@@ -136,7 +148,7 @@ impl SettlementDb {
 
         // Get current date as days since Unix epoch (for partitioning)
         let now_ts = Utc::now().timestamp();
-        let trade_date = (now_ts / 86400) as i32;  // Days since Unix epoch
+        let trade_date = (now_ts / 86400) as i32; // Days since Unix epoch
         let settled_at = Utc::now().timestamp_millis();
 
         let result = Self::retry_with_backoff(|| async {
@@ -163,7 +175,8 @@ impl SettlementDb {
                 )
                 .await
                 .map(|_| ())
-        }).await;
+        })
+        .await;
 
         let duration = start.elapsed();
         let duration_ms = duration.as_millis();
@@ -179,10 +192,10 @@ impl SettlementDb {
     }
 
     /// Insert multiple trades in a batch (more efficient)
-    /// 
+    ///
     /// # Arguments
     /// * `trades` - Slice of trades to insert
-    /// 
+    ///
     /// # Returns
     /// * `Result<()>` - Success or error
     pub async fn insert_batch(&self, trades: &[MatchExecData]) -> Result<()> {
@@ -222,7 +235,8 @@ impl SettlementDb {
                     )
                     .await
                     .map(|_| ())
-            }).await?;
+            })
+            .await?;
         }
 
         let duration = start.elapsed();
@@ -237,15 +251,50 @@ impl SettlementDb {
         Ok(())
     }
 
+    /// Insert a ledger event into the database
+    pub async fn insert_ledger_event(&self, event: &LedgerEvent) -> Result<()> {
+        let start = std::time::Instant::now();
+
+        let result = Self::retry_with_backoff(|| async {
+            self.session
+                .execute(
+                    &self.insert_ledger_event_stmt,
+                    (
+                        event.user_id as i64,
+                        event.sequence_id as i64,
+                        &event.event_type,
+                        event.amount as i64,
+                        event.currency as i32,
+                        event.related_id as i64,
+                        event.created_at,
+                    ),
+                )
+                .await
+                .map(|_| ())
+        }).await;
+
+        let duration = start.elapsed();
+        let duration_ms = duration.as_millis();
+
+        if duration_ms > SLOW_QUERY_THRESHOLD_MS {
+            log::warn!("Slow insert_ledger_event: {}ms", duration_ms);
+        }
+
+        log::debug!("[METRIC] settlement_db_event_insert_latency_ms={}", duration_ms);
+
+        result
+    }
+
     /// Get a trade by its trade ID
-    /// 
+    ///
     /// # Arguments
     /// * `trade_id` - Trade ID to look up
-    /// 
+    ///
     /// # Returns
     /// * `Result<Option<MatchExecData>>` - Trade data if found
     pub async fn get_trade_by_id(&self, trade_id: u64) -> Result<Option<MatchExecData>> {
-        let result = self.session
+        let result = self
+            .session
             .query(SELECT_TRADE_BY_ID_CQL, (trade_id as i64,))
             .await
             .context("Failed to query trade by ID")?;
@@ -260,11 +309,11 @@ impl SettlementDb {
     }
 
     /// Get trades by sequence range
-    /// 
+    ///
     /// # Arguments
     /// * `start` - Start sequence (inclusive)
     /// * `end` - End sequence (inclusive)
-    /// 
+    ///
     /// # Returns
     /// * `Result<Vec<MatchExecData>>` - List of trades in range
     pub async fn get_trades_by_sequence_range(
@@ -272,7 +321,8 @@ impl SettlementDb {
         start: u64,
         end: u64,
     ) -> Result<Vec<MatchExecData>> {
-        let result = self.session
+        let result = self
+            .session
             .query(SELECT_TRADES_BY_SEQ_CQL, (start as i64, end as i64))
             .await
             .context("Failed to query trades by sequence range")?;
@@ -289,7 +339,7 @@ impl SettlementDb {
     }
 
     /// Health check - verify database connectivity
-    /// 
+    ///
     /// # Returns
     /// * `Result<bool>` - True if connected and healthy
     pub async fn health_check(&self) -> Result<bool> {
@@ -297,7 +347,7 @@ impl SettlementDb {
             .query("SELECT now() FROM system.local", &[])
             .await
             .context("Health check failed")?;
-        
+
         Ok(true)
     }
 
@@ -319,10 +369,8 @@ impl SettlementDb {
             buyer_refund,
             seller_refund,
             _settled_at,
-        ): (
-            i32, i64, i64, i64, i64, i64, i64, i64,
-            i64, i64, i32, i32, i64, i64, i64
-        ) = row.into_typed().context("Failed to parse row")?;
+        ): (i32, i64, i64, i64, i64, i64, i64, i64, i64, i64, i32, i32, i64, i64, i64) =
+            row.into_typed().context("Failed to parse row")?;
 
         Ok(MatchExecData {
             trade_id: trade_id as u64,
@@ -380,9 +428,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_logic() {
+        use std::fmt;
         use std::sync::atomic::{AtomicU32, Ordering};
         use std::sync::Arc;
-        use std::fmt;
 
         #[derive(Debug)]
         struct MockError;
@@ -394,15 +442,13 @@ mod tests {
         impl std::error::Error for MockError {}
 
         // Test case 1: Succeeds immediately
-        let result = SettlementDb::retry_with_backoff(|| async {
-            Ok::<_, MockError>(())
-        }).await;
+        let result = SettlementDb::retry_with_backoff(|| async { Ok::<_, MockError>(()) }).await;
         assert!(result.is_ok());
 
         // Test case 2: Fails twice then succeeds
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-        
+
         let result = SettlementDb::retry_with_backoff(|| async {
             let count = counter_clone.fetch_add(1, Ordering::SeqCst);
             if count < 2 {
@@ -410,20 +456,22 @@ mod tests {
             } else {
                 Ok(())
             }
-        }).await;
-        
+        })
+        .await;
+
         assert!(result.is_ok());
         assert_eq!(counter.load(Ordering::SeqCst), 3); // 0 (fail), 1 (fail), 2 (success)
 
         // Test case 3: Fails more than MAX_RETRIES (3)
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
-        
+
         let result = SettlementDb::retry_with_backoff(|| async {
             counter_clone.fetch_add(1, Ordering::SeqCst);
             Err::<(), _>(MockError)
-        }).await;
-        
+        })
+        .await;
+
         assert!(result.is_err());
         // Should try 1 initial + 3 retries = 4 attempts
         assert_eq!(counter.load(Ordering::SeqCst), 4);

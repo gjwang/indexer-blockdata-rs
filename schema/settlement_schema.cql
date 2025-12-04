@@ -18,35 +18,35 @@ USE settlement;
 CREATE TABLE IF NOT EXISTS settled_trades (
     -- Partition key: Date as days since Unix epoch (int for compatibility)
     trade_date int,
-    
+
     -- Clustering key: Ensures ordering by sequence within each day
     output_sequence bigint,
-    
+
     -- Trade identification
     trade_id bigint,
     match_seq bigint,
-    
+
     -- Order references
     buy_order_id bigint,
     sell_order_id bigint,
-    
+
     -- Parties involved
     buyer_user_id bigint,
     seller_user_id bigint,
-    
+
     -- Trade details
     price bigint,
     quantity bigint,
     base_asset int,
     quote_asset int,
-    
+
     -- Refunds (if any)
     buyer_refund bigint,
     seller_refund bigint,
-    
+
     -- Timestamp as milliseconds since Unix epoch (bigint for compatibility)
     settled_at bigint,
-    
+
     PRIMARY KEY ((trade_date), output_sequence)
 ) WITH CLUSTERING ORDER BY (output_sequence ASC)
   AND compaction = {
@@ -83,3 +83,17 @@ CREATE TABLE IF NOT EXISTS settlement_state (
     last_update_time timestamp,
     PRIMARY KEY (service_id)
 ) WITH comment = 'Tracks the last processed sequence for settlement service recovery';
+
+-- Ledger Events table for Event Sourcing (Audit Trail)
+-- Stores all balance-changing events (Deposits, Withdrawals, Trades)
+CREATE TABLE IF NOT EXISTS ledger_events (
+    user_id bigint,
+    sequence_id bigint,
+    event_type text, -- 'DEPOSIT', 'WITHDRAWAL', 'TRADE_SPEND', 'TRADE_RECEIVE'
+    amount bigint,
+    currency int,
+    related_id bigint, -- trade_id or tx_id
+    created_at bigint,
+    PRIMARY KEY (user_id, sequence_id)
+) WITH CLUSTERING ORDER BY (sequence_id DESC)
+  AND comment = 'Immutable log of all balance-changing events';

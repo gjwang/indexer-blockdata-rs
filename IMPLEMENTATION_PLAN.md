@@ -166,11 +166,11 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 4.9: Event Sourcing Implementation
 *   **Goal**: Implement complete audit trail for all balance changes.
 *   **Steps**:
-    1.  [ ] **Schema**: Add `ledger_events` table to `settlement_schema.cql`.
-    2.  [ ] **Modify**: Update `SettlementDb` to support `insert_ledger_event`.
-    3.  [ ] **Modify**: Update `settlement_service.rs` to handle Deposit/Withdrawal messages.
-    4.  [ ] **Verify**: Verify deposits/withdrawals are persisted to ScyllaDB.
-    5.  [ ] **Commit**: `git commit -m "feat: implement event sourcing for settlement"`
+    1.  [x] **Schema**: Add `ledger_events` table to `settlement_schema.cql`.
+    2.  [x] **Modify**: Update `SettlementDb` to support `insert_ledger_event`.
+    3.  [x] **Modify**: Update `settlement_service.rs` to handle Deposit/Withdrawal messages.
+    4.  [x] **Verify**: Verify deposits/withdrawals are persisted to ScyllaDB.
+    5.  [x] **Commit**: `git commit -m "feat: implement event sourcing for ledger events"`
 
 ## Phase 5: Advanced Features (Future)
 

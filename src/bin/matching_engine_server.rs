@@ -10,10 +10,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use disruptor::*;
 
-use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData};
+use fetcher::ledger::{LedgerCommand, LedgerListener, MatchExecData, LedgerEvent};
 use fetcher::matching_engine_base::MatchingEngine;
-use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::models::client_order::calculate_checksum;
+use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 use fetcher::zmq_publisher::ZmqPublisher;
 
@@ -44,17 +44,11 @@ struct BalanceProcessor {
 
 impl BalanceProcessor {
     fn new() -> Self {
-        Self {
-            recent_requests: HashMap::new(),
-            request_queue: VecDeque::new(),
-        }
+        Self { recent_requests: HashMap::new(), request_queue: VecDeque::new() }
     }
 
     fn current_time_ms(&self) -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
     }
 
     fn cleanup_old_requests(&mut self) {
@@ -73,35 +67,27 @@ impl BalanceProcessor {
         &mut self,
         engine: &mut MatchingEngine,
         req: BalanceRequest,
-    ) -> Result<(), anyhow::Error> {
+    ) -> Result<Vec<LedgerCommand>, anyhow::Error> {
         let current_time = self.current_time_ms();
         let request_id = req.request_id().to_string();
+        let mut cmds = Vec::new();
 
         // 1. Validate timestamp
         if !req.is_within_time_window(current_time) {
             println!("❌ REJECTED: Request outside time window: {}", request_id);
-            return Ok(());
+            return Ok(cmds);
         }
 
         // 2. Check duplicate
         if self.recent_requests.contains_key(&request_id) {
             println!("❌ REJECTED: Duplicate request: {}", request_id);
-            return Ok(());
+            return Ok(cmds);
         }
 
         // 3. Process
         match req {
-            BalanceRequest::TransferIn {
-                user_id,
-                asset_id,
-                amount,
-                timestamp,
-                ..
-            } => {
-                println!(
-                    "📥 Transfer In: {} asset {} -> user {}",
-                    amount, asset_id, user_id
-                );
+            BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
+                println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
 
                 // Direct call, no lock needed!
                 match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
@@ -109,36 +95,41 @@ impl BalanceProcessor {
                         println!("✅ Transfer In success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
+
+                        // Generate command for downstream
+                        cmds.push(LedgerCommand::Deposit {
+                            user_id,
+                            asset: asset_id,
+                            amount,
+                        });
                     }
                     Err(e) => {
                         println!("❌ Transfer In failed: {}", e);
                     }
                 }
             }
-            BalanceRequest::TransferOut {
-                user_id,
-                asset_id,
-                amount,
-                timestamp,
-                ..
-            } => {
-                println!(
-                    "📤 Transfer Out: {} asset {} <- user {}",
-                    amount, asset_id, user_id
-                );
+            BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
+                println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
                 // Direct call, no lock needed!
                 match engine.transfer_out_from_trading_account(user_id, asset_id, amount) {
                     Ok(()) => {
                         println!("✅ Transfer Out success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
+
+                        // Generate command for downstream
+                        cmds.push(LedgerCommand::Withdraw {
+                            user_id,
+                            asset: asset_id,
+                            amount,
+                        });
                     }
                     Err(e) => println!("❌ Transfer Out failed: {}", e),
                 }
             }
         }
         self.cleanup_old_requests();
-        Ok(())
+        Ok(cmds)
     }
 }
 
@@ -149,7 +140,11 @@ struct RedpandaTradeProducer {
 }
 
 impl RedpandaTradeProducer {
-    fn new(producer: FutureProducer, topic: String, runtime_handle: tokio::runtime::Handle) -> Self {
+    fn new(
+        producer: FutureProducer,
+        topic: String,
+        runtime_handle: tokio::runtime::Handle,
+    ) -> Self {
         Self { producer, topic, runtime_handle }
     }
 
@@ -208,14 +203,17 @@ impl LedgerListener for RedpandaTradeProducer {
             let producer = self.producer.clone();
             let topic = self.topic.clone();
             let count = all_trades.len();
-            
+
             // Use the runtime handle to SPAWN the task (Fire-and-Forget)
             // This returns immediately and doesn't block the matcher thread
             self.runtime_handle.spawn(async move {
-                match producer.send(
-                    FutureRecord::to(&topic).payload(&payload).key(key),
-                    std::time::Duration::from_secs(0), // No wait for queue full
-                ).await {
+                match producer
+                    .send(
+                        FutureRecord::to(&topic).payload(&payload).key(key),
+                        std::time::Duration::from_secs(0), // No wait for queue full
+                    )
+                    .await
+                {
                     Ok(_) => {
                         // println!("[Trade Publisher] Published {} trades to {}", count, topic);
                     }
@@ -232,16 +230,14 @@ impl LedgerListener for RedpandaTradeProducer {
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
-    
+
     // Initialize ZMQ Publisher
     let zmq_config = config.zeromq.as_ref().expect("ZMQ config missing");
     let zmq_publisher = std::sync::Arc::new(
-        ZmqPublisher::new(
-            zmq_config.settlement_port,
-            zmq_config.market_data_port
-        ).expect("Failed to bind ZMQ sockets")
+        ZmqPublisher::new(zmq_config.settlement_port, zmq_config.market_data_port)
+            .expect("Failed to bind ZMQ sockets"),
     );
-    
+
     let wal_dir_str = std::env::var("APP_WAL_DIR").unwrap_or_else(|_| "me_wal_data".to_string());
     let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
     let wal_dir = Path::new(&wal_dir_str);
@@ -256,7 +252,8 @@ async fn main() {
         let _ = fs::remove_dir_all(snap_dir);
     }
 
-    let mut engine = MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal).expect("Failed to create engine");
+    let mut engine = MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal)
+        .expect("Failed to create engine");
 
     // === Initialize Symbols & Funds (Hardcoded for Demo) ===
     println!("=== Initializing Engine State ===");
@@ -269,9 +266,7 @@ async fn main() {
             "ETH_USDT" => (3, 2),
             _ => (100, 2),
         };
-        engine
-            .register_symbol(symbol_id, symbol.clone(), base, quote)
-            .unwrap();
+        engine.register_symbol(symbol_id, symbol.clone(), base, quote).unwrap();
         println!("Loaded symbol: {}", symbol);
     }
 
@@ -307,10 +302,7 @@ async fn main() {
         .set("heartbeat.interval.ms", &config.kafka.heartbeat_interval_ms)
         .set("fetch.wait.max.ms", &config.kafka.fetch_wait_max_ms)
         .set("max.poll.interval.ms", &config.kafka.max_poll_interval_ms)
-        .set(
-            "socket.keepalive.enable",
-            &config.kafka.socket_keepalive_enable,
-        )
+        .set("socket.keepalive.enable", &config.kafka.socket_keepalive_enable)
         .create()
         .expect("Consumer creation failed");
     let consumer = std::sync::Arc::new(consumer_raw);
@@ -329,12 +321,8 @@ async fn main() {
         tokio::runtime::Handle::current(),
     );
 
-    let balance_topic = config
-        .kafka
-        .topics
-        .balance_ops
-        .clone()
-        .unwrap_or("balance.operations".to_string());
+    let balance_topic =
+        config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
     let mut balance_processor = BalanceProcessor::new();
 
     consumer
@@ -369,10 +357,15 @@ async fn main() {
     // Extract Ledger WAL for Output Processor (Consumer 3)
     let mut ledger_wal = engine.ledger.take_wal().expect("Ledger WAL not found");
     let mut last_ledger_seq = engine.ledger.last_seq;
-    
+
     // Factory: Create empty events in the ring buffer
-    let factory = || OrderEvent { command: None, processing_result: std::sync::Mutex::new(None), kafka_offset: None, timestamp: 0 };
-    
+    let factory = || OrderEvent {
+        command: None,
+        processing_result: std::sync::Mutex::new(None),
+        kafka_offset: None,
+        timestamp: 0,
+    };
+
     // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
     let progress_for_writer = progress_handle.clone();
     let mut batch_start = std::time::Instant::now();
@@ -389,7 +382,17 @@ async fn main() {
             if let Some(ref cmd) = event.command {
                 match cmd {
                     EngineCommand::PlaceOrderBatch(batch) => {
-                        for (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp) in batch {
+                        for (
+                            symbol_id,
+                            order_id,
+                            side,
+                            _order_type,
+                            price,
+                            quantity,
+                            user_id,
+                            _timestamp,
+                        ) in batch
+                        {
                             let wal_side = *side;
                             if let Err(e) = wal.log_place_order_no_flush(
                                 *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
@@ -401,7 +404,10 @@ async fn main() {
                     }
                     EngineCommand::CancelOrder { order_id, .. } => {
                         if let Err(e) = wal.log_cancel_order_no_flush(*order_id) {
-                            panic!("CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.", e);
+                            panic!(
+                                "CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.",
+                                e
+                            );
                         }
                         wal.current_seq = sequence as u64;
                     }
@@ -410,7 +416,7 @@ async fn main() {
                     }
                 }
             }
-            
+
             // Flush WAL at end of batch and update progress
             if end_of_batch {
                 let start_flush = std::time::Instant::now();
@@ -418,43 +424,51 @@ async fn main() {
                     panic!("CRITICAL: Failed to flush Order WAL: {}. Halting.", e);
                 }
                 let flush_time = start_flush.elapsed();
-                
+
                 // Only print if there was actual work (batch_count > 0)
                 if batch_count > 0 {
-                     println!("[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}", 
-                         batch_count, batch_start.elapsed(), flush_time);
+                    println!(
+                        "[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}",
+                        batch_count,
+                        batch_start.elapsed(),
+                        flush_time
+                    );
                 }
                 batch_count = 0;
 
                 progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
-                
+
                 // Commit Kafka offset only after WAL flush
                 if let Some((_topic, partition, offset)) = &event.kafka_offset {
-                    if let Err(e) = consumer_for_writer.store_offset("latency-test-topic", *partition, *offset) {
-                         eprintln!("Failed to store offset: {}", e);
+                    if let Err(e) =
+                        consumer_for_writer.store_offset("latency-test-topic", *partition, *offset)
+                    {
+                        eprintln!("Failed to store offset: {}", e);
                     }
                 }
             }
         } else {
-             // No WAL: Just update progress and commit offset immediately
-             if end_of_batch {
-                 progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
-                 if let Some((_topic, partition, offset)) = &event.kafka_offset {
-                    if let Err(e) = consumer_for_writer.store_offset("latency-test-topic", *partition, *offset) {
-                         eprintln!("Failed to store offset: {}", e);
+            // No WAL: Just update progress and commit offset immediately
+            if end_of_batch {
+                progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
+                if let Some((_topic, partition, offset)) = &event.kafka_offset {
+                    if let Err(e) =
+                        consumer_for_writer.store_offset("latency-test-topic", *partition, *offset)
+                    {
+                        eprintln!("Failed to store offset: {}", e);
                     }
                 }
-             }
+            }
         }
 
         if end_of_batch {
-             // Metrics (Optional)
-             if batch_count >= batch_poll_count {
-                 batch_count = 0;
-             }
+            // Metrics (Optional)
+            if batch_count >= batch_poll_count {
+                batch_count = 0;
+            }
         }
     };
-    
+
     // === Consumer 2: Matcher (waits for progress, matches, updates memory) ===
     let progress_for_matcher = progress_handle.clone();
     let matcher = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
@@ -465,7 +479,7 @@ async fn main() {
             if (sequence as u64) <= progress {
                 break; // Safe to process
             }
-            
+
             if spins < 10000 {
                 std::hint::spin_loop();
                 spins += 1;
@@ -473,7 +487,7 @@ async fn main() {
                 std::thread::yield_now();
             }
         }
-        
+
         // Now safe to process - WAL is guaranteed to be flushed
         if let Some(ref cmd) = event.command {
             match cmd {
@@ -486,8 +500,13 @@ async fn main() {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
-                    if let Err(e) = balance_processor.process_balance_request(&mut engine, req.clone()) {
-                        eprintln!("Balance processing error: {}", e);
+                    match balance_processor.process_balance_request(&mut engine, req.clone()) {
+                        Ok(cmds) => {
+                            if !cmds.is_empty() {
+                                *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
+                            }
+                        }
+                        Err(e) => eprintln!("Balance processing error: {}", e),
                     }
                 }
             }
@@ -496,9 +515,7 @@ async fn main() {
 
     // === Consumer 3a: Ledger Writer (Writes to Ledger WAL) ===
     let ledger_writer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        let cmds_arc = {
-            event.processing_result.lock().unwrap().as_ref().cloned()
-        };
+        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             if !cmds.is_empty() {
                 // Write to Ledger WAL
@@ -514,14 +531,12 @@ async fn main() {
 
     // === Consumer 3b: Trade Publisher (Publishes Trades to Kafka) ===
     let trade_publisher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        let cmds_arc = {
-            event.processing_result.lock().unwrap().as_ref().cloned()
-        };
+        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             if !cmds.is_empty() {
                 let start = std::time::Instant::now();
                 if let Err(e) = trade_producer.on_batch(&cmds) {
-                     eprintln!("Trade Publish Error: {}", e);
+                    eprintln!("Trade Publish Error: {}", e);
                 }
                 println!("[PERF] Output(Trade): {} cmds. Time: {:?}", cmds.len(), start.elapsed());
             }
@@ -531,24 +546,50 @@ async fn main() {
     // === Consumer 3c: ZMQ Publisher (Critical & Fast Path) ===
     let zmq_pub_clone = zmq_publisher.clone();
     let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        let cmds_arc = {
-            event.processing_result.lock().unwrap().as_ref().cloned()
-        };
+        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             for cmd in cmds.iter() {
                 match cmd {
                     LedgerCommand::MatchExec(match_data) => {
-                         if let Ok(data) = serde_json::to_vec(match_data) {
-                             let _ = zmq_pub_clone.publish_market_data(&data);
-                             let _ = zmq_pub_clone.publish_settlement(&data);
-                         }
+                        if let Ok(data) = serde_json::to_vec(match_data) {
+                            let _ = zmq_pub_clone.publish_market_data(&data);
+                            let _ = zmq_pub_clone.publish_settlement(&data);
+                        }
                     }
                     LedgerCommand::MatchExecBatch(batch) => {
                         for match_data in batch {
-                             if let Ok(data) = serde_json::to_vec(match_data) {
-                                 let _ = zmq_pub_clone.publish_market_data(&data);
-                                 let _ = zmq_pub_clone.publish_settlement(&data);
-                             }
+                            if let Ok(data) = serde_json::to_vec(match_data) {
+                                let _ = zmq_pub_clone.publish_market_data(&data);
+                                let _ = zmq_pub_clone.publish_settlement(&data);
+                            }
+                        }
+                    }
+                    LedgerCommand::Deposit { user_id, asset, amount } => {
+                        let event = LedgerEvent {
+                            user_id: *user_id,
+                            sequence_id: 0,
+                            event_type: "DEPOSIT".to_string(),
+                            amount: *amount,
+                            currency: *asset,
+                            related_id: 0,
+                            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+                        };
+                        if let Ok(data) = serde_json::to_vec(&event) {
+                            let _ = zmq_pub_clone.publish_settlement(&data);
+                        }
+                    }
+                    LedgerCommand::Withdraw { user_id, asset, amount } => {
+                        let event = LedgerEvent {
+                            user_id: *user_id,
+                            sequence_id: 0,
+                            event_type: "WITHDRAWAL".to_string(),
+                            amount: *amount,
+                            currency: *asset,
+                            related_id: 0,
+                            created_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64,
+                        };
+                        if let Ok(data) = serde_json::to_vec(&event) {
+                            let _ = zmq_pub_clone.publish_settlement(&data);
                         }
                     }
                     _ => {}
@@ -556,7 +597,7 @@ async fn main() {
             }
         }
     };
-    
+
     // Build disruptor with 3-Stage Pipeline (Stage 3 is Parallel)
     // 1. WAL Writer & Matcher run in parallel
     // 2. Ledger Writer & Trade Publisher run in parallel AFTER Matcher
@@ -568,7 +609,7 @@ async fn main() {
         .handle_events_with(trade_publisher)
         .handle_events_with(zmq_consumer)
         .build();
-    
+
     println!(">>> Disruptor initialized with 3-STAGE PIPELINE (Parallel Output):");
     println!(">>> 1. WAL Writer (Parallel)");
     println!(">>> 2. Matcher (Parallel, gated on Writer)");
@@ -627,7 +668,8 @@ async fn main() {
             let current_offset = Some((topic.to_string(), partition, offset));
 
             if let Some(payload) = m.payload() {
-                if topic == config.kafka.topics.orders { // Changed from `order_topic` to `config.kafka.topics.orders` to match existing code
+                if topic == config.kafka.topics.orders {
+                    // Changed from `order_topic` to `config.kafka.topics.orders` to match existing code
                     // Deserialize Order
                     if let Ok(req) = serde_json::from_slice::<OrderRequest>(payload) {
                         match req {
@@ -642,7 +684,13 @@ async fn main() {
                                 checksum,
                             } => {
                                 let calculated = calculate_checksum(
-                                    order_id, user_id, symbol_id, side as u8, price, quantity, order_type as u8
+                                    order_id,
+                                    user_id,
+                                    symbol_id,
+                                    side as u8,
+                                    price,
+                                    quantity,
+                                    order_type as u8,
                                 );
                                 if calculated != checksum {
                                     eprintln!("❌ Checksum Mismatch! OrderID: {}", order_id);
@@ -659,27 +707,27 @@ async fn main() {
                                     eprintln!("Unknown symbol ID: {}", symbol_id);
                                 }
                             }
-                            OrderRequest::CancelOrder {
-                                order_id,
-                                symbol_id,
-                                ..
-                            } => {
+                            OrderRequest::CancelOrder { order_id, symbol_id, .. } => {
                                 if let Some(_symbol_name) = symbol_manager.get_symbol(symbol_id) {
                                     // Publish pending place orders first
                                     if !place_orders.is_empty() {
                                         let count = place_orders.len();
                                         let batch_clone = place_orders.clone();
                                         let offset_clone = pending_batch_offset.clone();
-                                        println!("[Poll] Publishing batch of {} orders before cancel", count);
+                                        println!(
+                                            "[Poll] Publishing batch of {} orders before cancel",
+                                            count
+                                        );
                                         producer.publish(|event| {
-                                            event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                            event.command =
+                                                Some(EngineCommand::PlaceOrderBatch(batch_clone));
                                             event.kafka_offset = offset_clone;
                                             event.timestamp = timestamp; // Use latest timestamp for batch event metadata
                                         });
                                         place_orders.clear();
                                         pending_batch_offset = None;
                                     }
-                                    
+
                                     // Publish cancel order
                                     println!("[Poll] Publishing cancel order {}", order_id);
                                     let offset_clone = current_offset.clone();
@@ -714,7 +762,7 @@ async fn main() {
                             place_orders.clear();
                             pending_batch_offset = None;
                         }
-                        
+
                         // Publish balance request
                         let offset_clone = current_offset.clone();
                         producer.publish(|event| {
