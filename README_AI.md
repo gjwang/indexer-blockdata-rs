@@ -23,7 +23,31 @@ Before you write a single line of code or answer a complex question:
 *   **Verify First**: Run the `verification_commands` listed in `AI_STATE.yaml` to ground yourself.
 *   **No Magic**: If it's not in the code, it doesn't exist. Trust `git status` over your training data.
 
-## 3. 🐳 Docker-First Development (MANDATORY)
+## 3. Code Quality Rules (MANDATORY)
+
+**READ**: `CODE_QUALITY_RULES.md` for complete guidelines.
+
+### Quick Reference - Never Hardcode:
+- ❌ SQL/CQL queries → Extract to `const QUERY_NAME: &str = "..."`
+- ❌ API URLs → Use config or constants
+- ❌ Magic numbers → Use named constants (e.g., `const SECONDS_PER_DAY: i64 = 86400`)
+- ❌ Credentials/secrets → Use environment variables
+- ❌ Port numbers → Use configuration
+- ❌ File paths → Use configuration
+
+**Example**:
+```rust
+// ❌ BAD
+session.prepare("INSERT INTO users (id, name) VALUES (?, ?)").await?;
+
+// ✅ GOOD
+const INSERT_USER_CQL: &str = "INSERT INTO users (id, name) VALUES (?, ?)";
+session.prepare(INSERT_USER_CQL).await?;
+```
+
+**📚 See `CODE_QUALITY_RULES.md` for detailed examples and rationale.**
+
+## 4. 🐳 Docker-First Development (MANDATORY)
 
 **CRITICAL RULE**: All dependency services MUST run in Docker containers in local development.
 

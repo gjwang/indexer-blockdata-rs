@@ -7,6 +7,17 @@ use chrono::Utc;
 use crate::configure::ScyllaDbConfig;
 use crate::ledger::MatchExecData;
 
+// CQL Statements
+const INSERT_TRADE_CQL: &str = "
+    INSERT INTO settled_trades (
+        trade_date, output_sequence, trade_id, match_seq,
+        buy_order_id, sell_order_id,
+        buyer_user_id, seller_user_id,
+        price, quantity, base_asset, quote_asset,
+        buyer_refund, seller_refund, settled_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+";
+
 /// Settlement database client for ScyllaDB
 /// 
 /// Provides a clean abstraction for storing and querying settled trades.
@@ -45,15 +56,7 @@ impl SettlementDb {
 
         // Prepare insert statement
         let insert_trade_stmt = session
-            .prepare(
-                "INSERT INTO settled_trades (
-                    trade_date, output_sequence, trade_id, match_seq,
-                    buy_order_id, sell_order_id,
-                    buyer_user_id, seller_user_id,
-                    price, quantity, base_asset, quote_asset,
-                    buyer_refund, seller_refund, settled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            )
+            .prepare(INSERT_TRADE_CQL)
             .await
             .context("Failed to prepare insert statement")?;
 
