@@ -19,6 +19,18 @@ pub struct InternalBalance {
 }
 
 
+/// BalanceManager handles the conversion between client-facing decimal amounts (e.g., "1.5 BTC")
+/// and internal integer representations (e.g., 150_000_000 satoshis).
+///
+/// # Key Features
+/// - **Precision Enforcement**: Ensures client inputs do not exceed `display_decimals`.
+/// - **Safe Arithmetic**: Uses checked operations to prevent overflows.
+/// - **Rounding**: Rounds output values to `display_decimals` for consistent client display.
+///
+/// # Warning
+/// - This manager is designed for **Asset Balances** (quantities).
+/// - Do NOT use this for **Prices** unless the price precision matches the asset's display precision (which is rarely the case).
+/// - Prices usually have their own `price_decimal` configuration in `SymbolManager`.
 pub struct BalanceManager {
     symbol_manager: Arc<SymbolManager>,
 }
@@ -57,6 +69,14 @@ impl BalanceManager {
         })
     }
 
+    /// Converts an internal integer amount to a client-facing Decimal.
+    ///
+    /// # Returns
+    /// * `Option<Decimal>` - The decimal amount rounded to `display_decimals`.
+    ///
+    /// # Notes
+    /// * This method rounds towards zero (truncates) to match `display_decimals`.
+    /// * Returns `None` if asset is unknown or calculation overflows.
     pub fn to_client_amount(&self, asset_id: u32, amount: u64) -> Option<Decimal> {
         let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
         let display_decimals =
@@ -69,6 +89,19 @@ impl BalanceManager {
         )
     }
 
+    /// Converts a client-facing Decimal amount to an internal integer representation.
+    ///
+    /// # Arguments
+    /// * `asset_name` - The name of the asset (e.g., "BTC").
+    /// * `amount` - The amount in decimal format.
+    ///
+    /// # Returns
+    /// * `Result<(u32, u64), String>` - The asset ID and the raw internal amount.
+    ///
+    /// # Errors
+    /// * If the asset is unknown.
+    /// * If the amount exceeds the allowed `display_decimals` precision.
+    /// * If the conversion results in an overflow (e.g., decimals too large).
     pub fn to_internal_amount(
         &self,
         asset_name: &str,
