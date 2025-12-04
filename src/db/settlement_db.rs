@@ -146,9 +146,7 @@ impl SettlementDb {
     pub async fn insert_trade(&self, trade: &MatchExecData) -> Result<()> {
         let start = std::time::Instant::now();
 
-        // Get current date as days since Unix epoch (for partitioning)
-        let now_ts = Utc::now().timestamp();
-        let trade_date = (now_ts / 86400) as i32; // Days since Unix epoch
+        let trade_date = crate::common_utils::get_current_date();
         let settled_at = Utc::now().timestamp_millis();
 
         let result = Self::retry_with_backoff(|| async {
@@ -205,8 +203,7 @@ impl SettlementDb {
 
         let start = std::time::Instant::now();
 
-        let now_ts = Utc::now().timestamp();
-        let trade_date = (now_ts / 86400) as i32;
+        let trade_date = crate::common_utils::get_current_date();
         let settled_at = Utc::now().timestamp_millis();
 
         // Execute all inserts (ScyllaDB will batch them automatically)
