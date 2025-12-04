@@ -125,99 +125,7 @@ impl BalanceProcessor {
     }
 }
 
-struct RedpandaTradeProducer {
-    producer: FutureProducer,
-    topic: String,
-    runtime_handle: tokio::runtime::Handle,
-}
 
-impl RedpandaTradeProducer {
-    fn new(
-        producer: FutureProducer,
-        topic: String,
-        runtime_handle: tokio::runtime::Handle,
-    ) -> Self {
-        Self { producer, topic, runtime_handle }
-    }
-
-    fn collect_trades(cmd: &LedgerCommand, trades: &mut Vec<fetcher::models::Trade>) {
-        match cmd {
-            LedgerCommand::MatchExec(data) => {
-                trades.push(Self::to_trade(data));
-            }
-            LedgerCommand::MatchExecBatch(batch) => {
-                for data in batch {
-                    trades.push(Self::to_trade(data));
-                }
-            }
-            LedgerCommand::Batch(cmds) => {
-                for c in cmds {
-                    Self::collect_trades(c, trades);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn to_trade(data: &MatchExecData) -> fetcher::models::Trade {
-        fetcher::models::Trade {
-            trade_id: data.trade_id,
-            buy_order_id: data.buy_order_id,
-            sell_order_id: data.sell_order_id,
-            buy_user_id: data.buyer_user_id,
-            sell_user_id: data.seller_user_id,
-            price: data.price,
-            quantity: data.quantity,
-            match_seq: data.match_seq,
-        }
-    }
-}
-
-impl LedgerListener for RedpandaTradeProducer {
-    fn on_command(&mut self, _cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
-        Ok(())
-    }
-
-    fn on_batch(&mut self, cmds: &[LedgerCommand]) -> Result<(), anyhow::Error> {
-        // Collect all trades from the batch
-        let mut all_trades = Vec::new();
-        for cmd in cmds {
-            Self::collect_trades(cmd, &mut all_trades);
-        }
-
-        if all_trades.is_empty() {
-            return Ok(());
-        }
-
-        // Send trades to Kafka using the runtime handle
-        if let Ok(payload) = serde_json::to_vec(&all_trades) {
-            let key = "batch";
-            let producer = self.producer.clone();
-            let topic = self.topic.clone();
-            let count = all_trades.len();
-
-            // Use the runtime handle to SPAWN the task (Fire-and-Forget)
-            // This returns immediately and doesn't block the matcher thread
-            self.runtime_handle.spawn(async move {
-                match producer
-                    .send(
-                        FutureRecord::to(&topic).payload(&payload).key(key),
-                        std::time::Duration::from_secs(0), // No wait for queue full
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        // println!("[Trade Publisher] Published {} trades to {}", count, topic);
-                    }
-                    Err((e, _)) => {
-                        eprintln!("[Trade Publisher] Failed to send trades: {}", e);
-                    }
-                }
-            });
-        }
-        Ok(())
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -310,12 +218,6 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-    // Trade producer will be used in Output Processor
-    let mut trade_producer = RedpandaTradeProducer::new(
-        producer.clone(),
-        config.kafka.topics.trades.clone(),
-        tokio::runtime::Handle::current(),
-    );
 
     let balance_topic =
         config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
@@ -526,21 +428,8 @@ async fn main() {
         }
     };
 
-    // === Consumer 3b: Trade Publisher (Publishes Trades to Kafka) ===
-    let trade_publisher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
-        if let Some(cmds) = cmds_arc {
-            if !cmds.is_empty() {
-                let start = std::time::Instant::now();
-                if let Err(e) = trade_producer.on_batch(&cmds) {
-                    eprintln!("Trade Publish Error: {}", e);
-                }
-                println!("[PERF] Output(Trade): {} cmds. Time: {:?}", cmds.len(), start.elapsed());
-            }
-        }
-    };
 
-    // === Consumer 3c: ZMQ Publisher (Critical & Fast Path) ===
+    // === Consumer 3b: ZMQ Publisher (Critical & Fast Path) ===
     let zmq_pub_clone = zmq_publisher.clone();
     let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
         let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
@@ -603,20 +492,19 @@ async fn main() {
 
     // Build disruptor with 3-Stage Pipeline (Stage 3 is Parallel)
     // 1. WAL Writer & Matcher run in parallel
-    // 2. Ledger Writer & Trade Publisher run in parallel AFTER Matcher
+    // 2. Ledger Writer & ZMQ Publisher run in parallel AFTER Matcher
     let mut producer = build_single_producer(8192, factory, BusySpin)
         .handle_events_with(wal_writer)
         .handle_events_with(matcher)
         .and_then()
         .handle_events_with(ledger_writer)
-        .handle_events_with(trade_publisher)
         .handle_events_with(zmq_consumer)
         .build();
 
     println!(">>> Disruptor initialized with 3-STAGE PIPELINE (Parallel Output):");
     println!(">>> 1. WAL Writer (Parallel)");
     println!(">>> 2. Matcher (Parallel, gated on Writer)");
-    println!(">>> 3. Ledger Writer & Trade Publisher (Parallel after Matcher)");
+    println!(">>> 3. Ledger Writer & ZMQ Publisher (Parallel after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
