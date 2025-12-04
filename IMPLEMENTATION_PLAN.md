@@ -161,7 +161,16 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
     2.  [ ] **Modify**: Log slow queries (> 100ms).
     3.  [ ] **Modify**: Add health check endpoint that verifies ScyllaDB connectivity.
     4.  [ ] **Verify**: Run load test and observe metrics.
-    5.  [ ] **Commit**: `git commit -m "feat: add settlement database monitoring"`
+    5.  [ ] **Commit**: `git commit -m "feat: add settlement metrics"`
+
+### Task 4.9: Event Sourcing Implementation
+*   **Goal**: Implement complete audit trail for all balance changes.
+*   **Steps**:
+    1.  [ ] **Schema**: Add `ledger_events` table to `settlement_schema.cql`.
+    2.  [ ] **Modify**: Update `SettlementDb` to support `insert_ledger_event`.
+    3.  [ ] **Modify**: Update `settlement_service.rs` to handle Deposit/Withdrawal messages.
+    4.  [ ] **Verify**: Verify deposits/withdrawals are persisted to ScyllaDB.
+    5.  [ ] **Commit**: `git commit -m "feat: implement event sourcing for settlement"`
 
 ## Phase 5: Advanced Features (Future)
 
