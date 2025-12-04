@@ -22,3 +22,11 @@ kafka:
 zeromq:
   settlement_port: 5557
   market_data_port: 5558
+
+scylladb:
+  hosts:
+    - "localhost:9042"
+  keyspace: "settlement"
+  replication_factor: 1
+  connection_timeout_ms: 5000
+  request_timeout_ms: 3000

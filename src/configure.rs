@@ -35,6 +35,25 @@ pub struct ZmqConfig {
     pub market_data_port: u16,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+pub struct ScyllaDbConfig {
+    pub hosts: Vec<String>,
+    pub keyspace: String,
+    pub replication_factor: u32,
+    #[serde(default = "default_connection_timeout")]
+    pub connection_timeout_ms: u64,
+    #[serde(default = "default_request_timeout")]
+    pub request_timeout_ms: u64,
+}
+
+fn default_connection_timeout() -> u64 {
+    5000
+}
+
+fn default_request_timeout() -> u64 {
+    3000
+}
+
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
     pub log_file: String,
@@ -47,6 +66,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub enable_local_wal: bool,
     pub zeromq: Option<ZmqConfig>,
+    pub scylladb: Option<ScyllaDbConfig>,
 }
 
 fn default_log_level() -> String {
