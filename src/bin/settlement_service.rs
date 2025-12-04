@@ -1,17 +1,21 @@
 use fetcher::configure;
-use fetcher::logger::setup_logger_for_service;
+use fetcher::logger::setup_logger;
 use zmq::{Context, SUB};
 use log::{info, error, debug};
 
 fn main() {
-    // Setup service-specific logger (logs to log/settlement.log)
-    if let Err(e) = setup_logger_for_service(Some("settlement")) {
+    // Load service-specific configuration (config/settlement.yaml)
+    // This isolates settlement config from other services
+    let config = configure::load_service_config("settlement")
+        .expect("Failed to load settlement configuration");
+
+    // Setup logger using config (log file path comes from config/settlement.yaml)
+    if let Err(e) = setup_logger(&config) {
         eprintln!("Failed to initialize logger: {}", e);
         return;
     }
 
-    // 2. Load Config
-    let config = configure::load_config().expect("Failed to load config");
+    // Get ZMQ configuration
     let zmq_config = config.zeromq.expect("ZMQ config missing");
 
     // 3. Setup ZMQ Subscriber
@@ -21,6 +25,8 @@ fn main() {
     let endpoint = format!("tcp://localhost:{}", zmq_config.settlement_port);
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
+
+    //todo: print boot params before loop start
 
     info!("Settlement Service started.");
     info!("Listening on {}", endpoint);
