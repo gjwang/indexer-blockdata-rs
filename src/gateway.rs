@@ -43,7 +43,7 @@ impl BalanceManager {
 
     pub fn to_client_balance(&self, asset_id: u32, avail: u64, frozen: u64) -> Option<ClientBalance> {
         let asset_name = self.symbol_manager.get_asset_name(asset_id)?;
-        let decimals = self.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+        let decimals = self.symbol_manager.get_asset_decimal(asset_id)?;
         let divisor = Decimal::from(10_u64.pow(decimals));
 
         Some(ClientBalance {
@@ -57,7 +57,8 @@ impl BalanceManager {
         let asset_id = self.symbol_manager.get_asset_id(asset_name)
             .ok_or_else(|| format!("Unknown asset: {}", asset_name))?;
 
-        let decimals = self.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
+        let decimals = self.symbol_manager.get_asset_decimal(asset_id)
+            .ok_or_else(|| format!("Decimal not found for asset: {}", asset_name))?;
         let multiplier = Decimal::from(10_u64.pow(decimals));
 
         let raw_amount = (amount * multiplier)
