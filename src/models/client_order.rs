@@ -131,10 +131,8 @@ impl ClientOrder {
                     .ok_or_else(|| format!("Unknown symbol ID: {}", symbol_id))?;
 
                 // Convert price from integer to Decimal
-                let price_divisor = Decimal::from(
-                    10_u64.checked_pow(symbol_info.price_decimal).ok_or("Price decimals overflow")?,
-                );
-                let price_decimal = Decimal::from(*price) / price_divisor;
+                let price_decimal = balance_manager.to_client_price_by_id(*symbol_id, *price)
+                    .ok_or("Failed to convert price")?;
 
                 // Convert quantity from integer to Decimal (Base Asset)
                 let quantity_decimal = balance_manager.to_client_amount(symbol_info.base_asset_id, *quantity)
@@ -242,14 +240,7 @@ impl ClientOrder {
             .ok_or_else(|| format!("Unknown symbol: {}", self.symbol))?;
 
         // Convert price to integer representation (already Decimal, no parsing needed)
-        let price_multiplier = Decimal::from(
-            10_u64.checked_pow(symbol_info.price_decimal).ok_or("Price decimals overflow")?,
-        );
-        let price = (self.price * price_multiplier)
-            .round()
-            .to_string()
-            .parse::<u64>()
-            .map_err(|_| format!("Price overflow: {}", self.price))?;
+        let price = balance_manager.to_internal_price(&self.symbol, self.price)?;
 
         // Convert quantity to integer representation (Base Asset)
         let base_asset_name = symbol_manager.get_asset_name(symbol_info.base_asset_id)
