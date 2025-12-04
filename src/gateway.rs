@@ -93,16 +93,12 @@ struct BalanceResponse {
     frozen: String,
 }
 
-trait ToBalanceResponse {
-    fn to_response(&self, asset_name: String, decimals: u32) -> BalanceResponse;
-}
-
-impl ToBalanceResponse for Balance {
-    fn to_response(&self, asset_name: String, decimals: u32) -> BalanceResponse {
-        BalanceResponse {
+impl BalanceResponse {
+    pub fn from_balance(balance: &Balance, asset_name: String, decimals: u32) -> Self {
+        Self {
             asset: asset_name,
-            available: u64_to_decimal_string(self.avail, decimals),
-            frozen: u64_to_decimal_string(self.frozen, decimals),
+            available: u64_to_decimal_string(balance.avail, decimals),
+            frozen: u64_to_decimal_string(balance.frozen, decimals),
         }
     }
 }
@@ -148,7 +144,7 @@ async fn get_balance(
 
             let balance = Balance { avail, frozen: 0, version: 0 };
 
-            response.push(balance.to_response(asset_name, decimals));
+            response.push(BalanceResponse::from_balance(&balance, asset_name, decimals));
         }
 
         // Sort by asset name for consistent output
