@@ -11,10 +11,10 @@ plan_doc: "IMPLEMENTATION_PLAN.md"
 current_phase: "Phase 2: The Output Pipeline"
 
 active_task:
-  id: "2.4"
-  name: "Implement Output Sequence Tracking"
+  id: "2.5"
+  name: "Implement Snapshot Recovery for Output Sequence"
   status: "COMPLETED" # Options: PENDING, IN_PROGRESS, VERIFYING, COMPLETED
-  next_action: "Proceed to Task 2.5: Implement Snapshot Recovery for Output Sequence"
+  next_action: "Proceed to Task 2.6: Verify Output Pipeline"
 
 # CRITICAL: What is NOT done yet (Do not hallucinate!)
 not_implemented:
