@@ -3,6 +3,8 @@ use fetcher::db::SettlementDb;
 use fetcher::logger::setup_logger;
 use zmq::{Context, SUB};
 
+use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
+
 // Use custom log macros with target "settlement" for cleaner logs
 const LOG_TARGET: &str = "settlement";
 
@@ -39,6 +41,9 @@ async fn main() {
             return;
         }
     };
+
+    // Initialize StarRocks Client
+    let starrocks_client = std::sync::Arc::new(StarRocksClient::new());
 
     // Initial Health check
     match settlement_db.health_check().await {
@@ -161,6 +166,19 @@ async fn main() {
                         log::error!(target: LOG_TARGET, "Failed to update balances for trade {}: {}", trade.trade_id, e);
                         // Continue processing - balance can be rebuilt from trades
                     }
+
+                    // Async load to StarRocks (Analytics)
+                    let sr_client = starrocks_client.clone();
+                    // Use settled_at from trade, or current time if 0
+                    let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { chrono::Utc::now().timestamp_millis() };
+                    let sr_trade = StarRocksTrade::from_match_exec(&trade, ts);
+
+                    tokio::spawn(async move {
+                        if let Err(e) = sr_client.load_trade(sr_trade).await {
+                            // Log error but don't stop settlement
+                            log::error!(target: LOG_TARGET, "Failed to load trade to StarRocks: {}", e);
+                        }
+                    });
 
                     if total_settled % 100 == 0 {
                         log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
