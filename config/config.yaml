@@ -1,4 +1,5 @@
 log_file: "log/eth_block_data.log"
+enable_local_wal: false
 
 centrifugo:
   url: "ws://localhost:8000/connection/websocket"
