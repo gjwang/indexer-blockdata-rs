@@ -58,6 +58,10 @@ async fn main() {
         match_seq: 10,
         output_sequence: 10,
         settled_at: Utc::now().timestamp_millis() as u64,
+        buyer_quote_version: 0,
+        buyer_base_version: 0,
+        seller_base_version: 0,
+        seller_quote_version: 0,
     };
 
     db.insert_trade(&trade).await.expect("Failed to insert trade");
