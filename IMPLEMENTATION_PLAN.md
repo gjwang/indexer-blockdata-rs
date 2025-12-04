@@ -4,6 +4,9 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 
 **⚠️ PROTOCOL RULE**: Before starting any task, you MUST update `AI_STATE.yaml` to set the task status to `IN_PROGRESS`. This ensures resumption capability.
 
+**🛠️ CODING STANDARDS**:
+*   **Common Utils**: Use `src/common_utils.rs` for shared logic (time, formatting, etc.) to avoid duplication.
+
 ## Phase 1: Pure Memory Core (The Cleanup)
 
 ### Task 1.1: Configurable WAL (Feature Flag)
