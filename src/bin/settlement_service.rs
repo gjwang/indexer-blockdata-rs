@@ -136,6 +136,7 @@ async fn main() {
                     next_sequence += 1;
                 }
 
+                //TODO: add profiling here
                 // Persist to ScyllaDB (primary storage)
                 match settlement_db.insert_trade(&trade).await {
                     Ok(()) => {
@@ -146,7 +147,25 @@ async fn main() {
                     }
                     Err(e) => {
                         log::error!(target: LOG_TARGET, "Failed to insert trade to ScyllaDB: {}", e);
-                        // Continue processing - CSV backup will still work
+                        
+                        // Log to failed_trades.json for manual recovery
+                        let failed_file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .append(true)
+                            .open("failed_trades.json");
+                            
+                        match failed_file {
+                            Ok(mut f) => {
+                                if let Ok(json) = serde_json::to_string(&trade) {
+                                    use std::io::Write;
+                                    let _ = writeln!(f, "{}", json);
+                                }
+                            }
+                            Err(io_err) => {
+                                log::error!(target: LOG_TARGET, "Failed to write to failed_trades.json: {}", io_err);
+                            }
+                        }
                     }
                 }
                 
