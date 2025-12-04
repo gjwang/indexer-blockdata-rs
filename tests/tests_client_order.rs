@@ -3,11 +3,12 @@ mod tests {
     use axum::http::StatusCode;
     use fetcher::client_order_convertor::client_order_convert;
     use fetcher::fast_ulid::SnowflakeGenRng;
+    use fetcher::models::balance_manager::BalanceManager;
     use fetcher::models::{ClientOrder, OrderRequest, OrderType, Side};
     use fetcher::symbol_manager::SymbolManager;
     use rust_decimal::Decimal;
     use std::str::FromStr;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     fn setup_symbol_manager() -> SymbolManager {
         let mut sm = SymbolManager::new();
@@ -20,8 +21,10 @@ mod tests {
     }
 
     #[test]
+    #[test]
     fn test_try_to_internal_success() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("clientid1234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
@@ -31,7 +34,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_ok(), "Error: {:?}", result.err());
         if let Ok(OrderRequest::PlaceOrder {
             symbol_id, side, price, quantity, order_type, ..
@@ -49,7 +52,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_unknown_symbol() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("clientid2234567890123".to_string()),
             symbol: "UNKNOWN_SYMBOL".to_string(),
@@ -59,7 +63,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Unknown symbol: UNKNOWN_SYMBOL");
     }
@@ -72,7 +76,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_invalid_price() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("clientid5234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
@@ -82,7 +87,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("Price must be a positive number") || err.contains("invalid_price"));
@@ -90,7 +95,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_invalid_quantity() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("clientid6234567890123".to_string()),
             symbol: "BTC_USDT".to_string(),
@@ -100,7 +106,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -110,7 +116,8 @@ mod tests {
 
     #[test]
     fn test_try_from_internal_success() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let request = OrderRequest::PlaceOrder {
             order_id: 1001,
             user_id: 1,
@@ -122,13 +129,13 @@ mod tests {
             checksum: 0,
         };
 
-        let result = ClientOrder::try_from_internal(&request, &sm);
+        let result = ClientOrder::try_from_internal(&request, &sm, &bm);
         assert!(result.is_ok());
         let client_order = result.unwrap();
         assert_eq!(client_order.symbol, "BTC_USDT");
         assert_eq!(client_order.side, Side::Sell);
         assert_eq!(client_order.price, Decimal::from_str("3500.75").unwrap());
-        assert_eq!(client_order.quantity, Decimal::from_str("0.12345678").unwrap());
+        assert_eq!(client_order.quantity, Decimal::from_str("0.123").unwrap());
         assert_eq!(client_order.order_type, OrderType::Market);
         // We expect an empty string for cid as it's not in OrderRequest
         assert_eq!(client_order.cid, None);
@@ -136,7 +143,8 @@ mod tests {
 
     #[test]
     fn test_try_from_internal_unknown_symbol_id() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let request = OrderRequest::PlaceOrder {
             order_id: 1001,
             user_id: 1,
@@ -148,25 +156,27 @@ mod tests {
             checksum: 0,
         };
 
-        let result = ClientOrder::try_from_internal(&request, &sm);
+        let result = ClientOrder::try_from_internal(&request, &sm, &bm);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Unknown symbol ID: 999");
     }
 
     #[test]
     fn test_try_from_internal_invalid_request_type() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let request =
             OrderRequest::CancelOrder { order_id: 1001, user_id: 1, symbol_id: 1, checksum: 0 };
 
-        let result = ClientOrder::try_from_internal(&request, &sm);
+        let result = ClientOrder::try_from_internal(&request, &sm, &bm);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), "Only PlaceOrder can be converted to ClientOrder");
     }
 
     #[test]
     fn test_try_to_internal_invalid_cid_length() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("a".repeat(33)),
             symbol: "BTC_USDT".to_string(),
@@ -176,7 +186,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cid"));
@@ -185,7 +195,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_invalid_cid_chars() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("invalidid1234567890123!".to_string()),
             symbol: "BTC_USDT".to_string(),
@@ -195,7 +206,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cid"));
@@ -276,7 +287,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_invalid_cid_min_length() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
         let client_order = ClientOrder {
             cid: Some("shortid".to_string()),
             symbol: "BTC_USDT".to_string(),
@@ -286,7 +298,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order.try_to_internal(&sm, 1001, 1);
+        let result = client_order.try_to_internal(&sm, &bm, 1001, 1);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("cid"));
@@ -295,7 +307,8 @@ mod tests {
 
     #[test]
     fn test_try_to_internal_invalid_symbol_format() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
 
         // Short
         let order1 = ClientOrder {
@@ -306,7 +319,7 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res1 = order1.try_to_internal(&sm, 1, 1);
+        let res1 = order1.try_to_internal(&sm, &bm, 1, 1);
         assert!(res1.is_err());
         assert!(res1.unwrap_err().contains("symbol"));
 
@@ -319,7 +332,7 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res2 = order2.try_to_internal(&sm, 1, 1);
+        let res2 = order2.try_to_internal(&sm, &bm, 1, 1);
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("uppercase"));
 
@@ -332,14 +345,15 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res3 = order3.try_to_internal(&sm, 1, 1);
+        let res3 = order3.try_to_internal(&sm, &bm, 1, 1);
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("alphanumeric"));
     }
 
     #[test]
     fn test_try_to_internal_invalid_symbol_format_underscore() {
-        let sm = setup_symbol_manager();
+        let sm = Arc::new(setup_symbol_manager());
+        let bm = BalanceManager::new(sm.clone());
 
         // No underscore
         let order1 = ClientOrder {
@@ -350,7 +364,7 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res1 = order1.try_to_internal(&sm, 1, 1);
+        let res1 = order1.try_to_internal(&sm, &bm, 1, 1);
         assert!(res1.is_err());
         assert!(res1.unwrap_err().contains("underscore"));
 
@@ -363,7 +377,7 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res2 = order2.try_to_internal(&sm, 1, 1);
+        let res2 = order2.try_to_internal(&sm, &bm, 1, 1);
         assert!(res2.is_err());
         assert!(res2.unwrap_err().contains("start or end"));
 
@@ -376,7 +390,7 @@ mod tests {
             quantity: Decimal::from_str("2.5").unwrap(),
             order_type: OrderType::Limit,
         };
-        let res3 = order3.try_to_internal(&sm, 1, 1);
+        let res3 = order3.try_to_internal(&sm, &bm, 1, 1);
         assert!(res3.is_err());
         assert!(res3.unwrap_err().contains("consecutive"));
     }
@@ -387,6 +401,8 @@ mod tests {
         sm.add_asset(1, 8, 3, "BTC"); // BTC
         sm.add_asset(2, 8, 2, "USDT"); // USDT
         sm.insert("BTC_USDT", 1, 1, 2);
+        let sm = Arc::new(sm);
+        let bm = BalanceManager::new(sm.clone());
         let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
         let client_order = ClientOrder {
@@ -398,7 +414,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
+        let result = client_order_convert(&client_order, &sm, &bm, &snowflake_gen, 1);
         assert!(result.is_ok());
         let (order_id, _internal_order) = result.unwrap();
         assert!(order_id > 0);
@@ -406,7 +422,8 @@ mod tests {
 
     #[test]
     fn test_process_order_invalid_symbol() {
-        let sm = SymbolManager::new(); // Empty
+        let sm = Arc::new(SymbolManager::new()); // Empty
+        let bm = BalanceManager::new(sm.clone());
         let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
 
         let client_order = ClientOrder {
@@ -418,7 +435,7 @@ mod tests {
             order_type: OrderType::Limit,
         };
 
-        let result = client_order_convert(&client_order, &sm, &snowflake_gen, 1);
+        let result = client_order_convert(&client_order, &sm, &bm, &snowflake_gen, 1);
         let err = result.unwrap_err();
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert!(err.1.contains("Unknown symbol"));

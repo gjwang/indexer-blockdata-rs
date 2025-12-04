@@ -303,7 +303,7 @@ async fn create_order(
 ) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
     let user_id = params.user_id;
     let (order_id, internal_order) =
-        client_order_convert(&client_order, &state.symbol_manager, &state.snowflake_gen, user_id)?;
+        client_order_convert(&client_order, &state.symbol_manager, &state.balance_manager, &state.snowflake_gen, user_id)?;
 
     // Send to Kafka
     let payload = serde_json::to_vec(&internal_order).unwrap();

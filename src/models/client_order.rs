@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use validator::{Validate, ValidationError};
 
 use crate::models::{OrderRequest, OrderType, Side};
+use crate::models::balance_manager::BalanceManager;
 use crate::symbol_manager::SymbolManager;
 use crc32fast::Hasher;
 
@@ -81,13 +82,14 @@ impl ClientOrder {
     pub fn try_to_internal(
         &self,
         symbol_manager: &SymbolManager,
+        balance_manager: &BalanceManager,
         order_id: u64,
         user_id: u64,
     ) -> Result<OrderRequest, String> {
         // Validate order including symbol existence
         self.validate_with_symbol_manager(symbol_manager)?;
 
-        let raw_order = self.to_raw_order(symbol_manager, user_id)?;
+        let raw_order = self.to_raw_order(symbol_manager, balance_manager, user_id)?;
 
         let checksum = calculate_checksum(
             order_id,
@@ -115,6 +117,7 @@ impl ClientOrder {
     pub fn try_from_internal(
         request: &OrderRequest,
         symbol_manager: &SymbolManager,
+        balance_manager: &BalanceManager,
     ) -> Result<Self, String> {
         match request {
             OrderRequest::PlaceOrder { symbol_id, side, price, quantity, order_type, .. } => {
@@ -131,11 +134,9 @@ impl ClientOrder {
                 let price_divisor = Decimal::from(10_u64.pow(symbol_info.price_decimal));
                 let price_decimal = Decimal::from(*price) / price_divisor;
 
-                // Convert quantity from integer to Decimal
-                let quantity_decimals =
-                    symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
-                let quantity_divisor = Decimal::from(10_u64.pow(quantity_decimals));
-                let quantity_decimal = Decimal::from(*quantity) / quantity_divisor;
+                // Convert quantity from integer to Decimal (Base Asset)
+                let quantity_decimal = balance_manager.to_client_amount(symbol_info.base_asset_id, *quantity)
+                    .ok_or("Failed to convert quantity")?;
 
                 Ok(ClientOrder {
                     cid: None, // OrderRequest doesn't store cid yet
@@ -229,6 +230,7 @@ impl ClientOrder {
     pub fn to_raw_order(
         &self,
         symbol_manager: &SymbolManager,
+        balance_manager: &BalanceManager,
         user_id: u64,
     ) -> Result<ClientRawOrder, String> {
         self.validate_order()?;
@@ -245,15 +247,11 @@ impl ClientOrder {
             .parse::<u64>()
             .map_err(|_| format!("Price overflow: {}", self.price))?;
 
-        // Convert quantity to integer representation (already Decimal, no parsing needed)
-        let quantity_decimals =
-            symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
-        let quantity_multiplier = Decimal::from(10_u64.pow(quantity_decimals));
-        let quantity = (self.quantity * quantity_multiplier)
-            .round()
-            .to_string()
-            .parse::<u64>()
-            .map_err(|_| format!("Quantity overflow: {}", self.quantity))?;
+        // Convert quantity to integer representation (Base Asset)
+        let base_asset_name = symbol_manager.get_asset_name(symbol_info.base_asset_id)
+            .ok_or_else(|| format!("Unknown base asset ID: {}", symbol_info.base_asset_id))?;
+        let (_, quantity) = balance_manager.to_internal_amount(&base_asset_name, self.quantity)?;
+        let quantity_decimals = symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
 
         Ok(ClientRawOrder {
             user_id,
