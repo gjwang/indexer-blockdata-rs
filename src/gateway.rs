@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use rust_decimal::Decimal;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -23,6 +24,31 @@ use crate::models::{
 };
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
+
+
+#[derive(Debug, serde::Serialize)]
+struct BalanceResponse {
+    asset: String,
+    avail: Decimal,
+    frozen: Decimal,
+}
+
+impl BalanceResponse {
+    pub fn from_balance(balance: &Balance, asset_name: String, decimals: u32) -> Self {
+        let divisor = Decimal::from(10_u64.pow(decimals));
+        Self {
+            asset: asset_name,
+            avail: Decimal::from(balance.avail) / divisor,
+            frozen: Decimal::from(balance.frozen) / divisor,
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UserIdParams {
+    user_id: u64,
+}
+
 
 pub trait OrderPublisher: Send + Sync {
     fn publish(
@@ -75,9 +101,8 @@ impl SimulatedFundingAccount {
     }
 }
 
-use rust_decimal::Decimal;
 
-// ... imports ...
+
 
 #[derive(Debug, serde::Deserialize)]
 pub struct TransferInRequestPayload {
@@ -338,27 +363,6 @@ async fn create_order(
     Ok(Json(ApiResponse::success(response_data)))
 }
 
-#[derive(Debug, serde::Serialize)]
-struct BalanceResponse {
-    asset: String,
-    avail: String,
-    frozen: String,
-}
-
-impl BalanceResponse {
-    pub fn from_balance(balance: &Balance, asset_name: String, decimals: u32) -> Self {
-        Self {
-            asset: asset_name,
-            avail: u64_to_decimal_string(balance.avail, decimals),
-            frozen: u64_to_decimal_string(balance.frozen, decimals),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct UserIdParams {
-    user_id: u64,
-}
 
 async fn get_balance(
     Extension(state): Extension<Arc<AppState>>,
