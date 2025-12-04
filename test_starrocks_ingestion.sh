@@ -65,7 +65,7 @@ TEST_TRADE='{
 }'
 
 # Push to Kafka using rpk
-echo "$TEST_TRADE" | docker exec -i redpanda rpk topic produce trades
+echo "$TEST_TRADE" | docker exec -i redpanda rpk topic produce trade.history
 
 echo "✅ Test trade pushed to Kafka"
 
