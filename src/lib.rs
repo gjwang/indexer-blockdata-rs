@@ -7,6 +7,7 @@ pub mod fast_ulid;
 pub mod gateway;
 
 pub mod ledger;
+pub mod log_macros;
 pub mod logger;
 pub mod matching_engine_base;
 pub mod md5_utils;
