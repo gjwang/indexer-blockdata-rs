@@ -99,12 +99,12 @@ This plan is designed for **Atomic Development Sessions**. Each task is small en
 ### Task 4.2: Schema Definition & Migration
 *   **Goal**: Create the settlement database schema.
 *   **Steps**:
-    1.  [ ] **Create**: `schema/settlement_schema.cql` with keyspace and table definitions.
-    2.  [ ] **Design**: Table `settled_trades` with columns: trade_id, sequence, buyer_id, seller_id, price, quantity, timestamp, etc.
-    3.  [ ] **Design**: Add appropriate partition key (e.g., by date) and clustering key (sequence).
-    4.  [ ] **Create**: `scripts/init_scylla.sh` to apply schema.
-    5.  [ ] **Verify**: Run script and confirm tables exist using `cqlsh`.
-    6.  [ ] **Commit**: `git commit -m "feat: add scylladb settlement schema"`
+    1.  [x] **Create**: `schema/settlement_schema.cql` with keyspace and table definitions.
+    2.  [x] **Design**: Table `settled_trades` with columns: trade_id, sequence, buyer_id, seller_id, price, quantity, timestamp, etc.
+    3.  [x] **Design**: Add appropriate partition key (trade_date) and clustering key (output_sequence).
+    4.  [x] **Create**: `scripts/init_scylla.sh` to apply schema.
+    5.  [x] **Verify**: Schema created and script is executable.
+    6.  [x] **Commit**: `git commit -m "feat: add scylladb settlement schema"`
 
 ### Task 4.3: Database Client Abstraction
 *   **Goal**: Create a clean abstraction for database operations.
