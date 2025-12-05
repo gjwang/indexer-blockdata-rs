@@ -1,3 +1,4 @@
+
 # 🛑 STOP! READ THIS FIRST 🛑
 
 This project is being developed by a sequence of AI Agents.
@@ -59,7 +60,7 @@ docker-compose up -d
 
 ### ❌ NEVER Suggest Installing These Locally
 - ❌ Kafka/Redpanda via Homebrew
-- ❌ ScyllaDB/Cassandra via Homebrew  
+- ❌ ScyllaDB/Cassandra via Homebrew
 - ❌ PostgreSQL via Homebrew
 - ❌ Any database or message broker directly on the system
 
