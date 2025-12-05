@@ -948,7 +948,13 @@ impl SettlementDb {
         // 1. Insert trade (uses existing method with proper prepared statement)
         self.insert_trade(trade).await?;
 
-        // 2. Update balances using simple counter updates
+        // 2. Initialize balances if they don't exist
+        self.init_balance_if_not_exists(trade.buyer_user_id, trade.base_asset).await?;
+        self.init_balance_if_not_exists(trade.buyer_user_id, trade.quote_asset).await?;
+        self.init_balance_if_not_exists(trade.seller_user_id, trade.base_asset).await?;
+        self.init_balance_if_not_exists(trade.seller_user_id, trade.quote_asset).await?;
+
+        // 3. Update balances using simple counter updates
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
             SET available = available + ?, version = version + 1, updated_at = ?
