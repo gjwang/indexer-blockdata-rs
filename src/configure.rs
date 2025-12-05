@@ -107,6 +107,32 @@ pub fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Prepare data directory by expanding tilde and creating it if needed
+///
+/// # Arguments
+/// * `data_dir` - Path to data directory (may contain ~)
+///
+/// # Returns
+/// * `Ok(String)` - Expanded absolute path to data directory
+/// * `Err(String)` - Error message if directory creation fails
+///
+/// # Examples
+/// ```
+/// use fetcher::configure::prepare_data_dir;
+/// let dir = prepare_data_dir("~/data").expect("Failed to create data dir");
+/// // Returns: "/home/user/data" and ensures directory exists
+/// ```
+pub fn prepare_data_dir(data_dir: &str) -> Result<String, String> {
+    // Expand tilde in data_dir (e.g., ~/data -> /home/user/data)
+    let expanded_dir = expand_tilde(data_dir);
+
+    // Create data directory if it doesn't exist
+    std::fs::create_dir_all(&expanded_dir)
+        .map_err(|e| format!("Failed to create data directory '{}': {}", expanded_dir, e))?;
+
+    Ok(expanded_dir)
+}
+
 pub fn load_config() -> Result<AppConfig, ConfigError> {
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "dev".into());
     let config_file_name = format!("config/{}", run_mode);
