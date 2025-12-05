@@ -148,7 +148,7 @@ pub struct Trade {
 
 #[derive(Debug, Clone)]
 pub enum OrderError {
-    InsufficientFunds { user_id: u64, asset_id: u32, required: u64, available: u64 },
+    InsufficientFunds { user_id: u64, asset_id: u32, required: u64, avail: u64 },
     InvalidSymbol { symbol_id: u32 },
     SymbolMismatch { expected: u32, actual: u32 },
     DuplicateOrderId { order_id: u64 },
@@ -161,10 +161,10 @@ pub enum OrderError {
 impl std::fmt::Display for OrderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OrderError::InsufficientFunds { user_id, asset_id, required, available } => write!(
+            OrderError::InsufficientFunds { user_id, asset_id, required, avail } => write!(
                 f,
                 "Insufficient funds: User {} needs {} of Asset {}, has {}",
-                user_id, required, asset_id, available
+                user_id, required, asset_id, avail
             ),
             OrderError::InvalidSymbol { symbol_id } => {
                 write!(f, "Invalid symbol ID: {}", symbol_id)

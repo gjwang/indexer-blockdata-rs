@@ -48,11 +48,11 @@ mod tests {
         assert!(matches!(err, OrderError::InsufficientFunds { .. }));
 
         match err {
-            OrderError::InsufficientFunds { user_id, asset_id, required, available } => {
+            OrderError::InsufficientFunds { user_id, asset_id, required, avail } => {
                 assert_eq!(user_id, 1);
                 assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);
-                assert_eq!(available, 500);
+                assert_eq!(avail, 500);
             }
             _ => panic!("Expected InsufficientFunds error"),
         }
@@ -70,11 +70,11 @@ mod tests {
         assert!(result.is_err(), "Order should be rejected for user with no funds");
 
         match result.unwrap_err() {
-            OrderError::InsufficientFunds { user_id, asset_id, required, available } => {
+            OrderError::InsufficientFunds { user_id, asset_id, required, avail } => {
                 assert_eq!(user_id, 2);
                 assert_eq!(asset_id, 2);
                 assert_eq!(required, 1000);
-                assert_eq!(available, 0);
+                assert_eq!(avail, 0);
             }
             _ => panic!("Expected InsufficientFunds error"),
         }
