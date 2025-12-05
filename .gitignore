@@ -36,3 +36,4 @@ test_snap_*
 *.wal
 trades*.txt
 me_wal_*/
+data/
