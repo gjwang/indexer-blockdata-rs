@@ -1,0 +1,21 @@
+# Order History Service Configuration
+
+# Logging
+log_file: "logs/order_history_service.log"
+log_level: "info"
+log_to_file: true
+
+# Data Directory
+data_dir: "~/trading_data"
+
+# ZeroMQ Configuration
+zeromq:
+  settlement_port: 5557  # Matching Engine settlement stream port
+
+# ScyllaDB Configuration (for Phase 4)
+scylladb:
+  hosts:
+    - "127.0.0.1:9042"
+  keyspace: "trading"
+  username: ""
+  password: ""

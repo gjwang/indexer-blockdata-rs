@@ -431,94 +431,36 @@ async fn main() {
 
     // === Consumer 3b: ZMQ Publisher (Critical & Fast Path) ===
     let zmq_pub_clone = zmq_publisher.clone();
-    let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+    let zmq_consumer = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
         let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             for cmd in cmds.iter() {
+                // 1. Publish Market Data (Trades)
                 match cmd {
                     LedgerCommand::MatchExec(match_data) => {
                         if let Ok(data) = serde_json::to_vec(match_data) {
                             let _ = zmq_pub_clone.publish_market_data(&data);
-                            let _ = zmq_pub_clone.publish_settlement(&data);
                         }
                     }
                     LedgerCommand::MatchExecBatch(batch) => {
                         for match_data in batch {
                             if let Ok(data) = serde_json::to_vec(match_data) {
                                 let _ = zmq_pub_clone.publish_market_data(&data);
-                                let _ = zmq_pub_clone.publish_settlement(&data);
                             }
                         }
                     }
-                    LedgerCommand::Deposit { user_id, asset, amount } => {
-                        let event = LedgerEvent {
-                            user_id: *user_id,
-                            sequence_id: 0,
-                            event_type: "DEPOSIT".to_string(),
-                            amount: *amount,
-                            currency: *asset,
-                            related_id: 0,
-                            created_at: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as i64,
-                        };
-                        if let Ok(data) = serde_json::to_vec(&event) {
-                            let _ = zmq_pub_clone.publish_settlement(&data);
-                        }
-                    }
-                    LedgerCommand::Withdraw { user_id, asset, amount } => {
-                        let event = LedgerEvent {
-                            user_id: *user_id,
-                            sequence_id: 0,
-                            event_type: "WITHDRAWAL".to_string(),
-                            amount: *amount,
-                            currency: *asset,
-                            related_id: 0,
-                            created_at: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as i64,
-                        };
-                        if let Ok(data) = serde_json::to_vec(&event) {
-                            let _ = zmq_pub_clone.publish_settlement(&data);
-                        }
-                    }
-                    LedgerCommand::Lock { user_id, asset, amount } => {
-                        let event = LedgerEvent {
-                            user_id: *user_id,
-                            sequence_id: 0,
-                            event_type: "LOCK".to_string(),
-                            amount: *amount,
-                            currency: *asset,
-                            related_id: 0,
-                            created_at: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as i64,
-                        };
-                        if let Ok(data) = serde_json::to_vec(&event) {
-                            let _ = zmq_pub_clone.publish_settlement(&data);
-                        }
-                    }
-                    LedgerCommand::Unlock { user_id, asset, amount } => {
-                        let event = LedgerEvent {
-                            user_id: *user_id,
-                            sequence_id: 0,
-                            event_type: "UNLOCK".to_string(),
-                            amount: *amount,
-                            currency: *asset,
-                            related_id: 0,
-                            created_at: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_millis() as i64,
-                        };
-                        if let Ok(data) = serde_json::to_vec(&event) {
-                            let _ = zmq_pub_clone.publish_settlement(&data);
-                        }
-                    }
                     _ => {}
+                }
+
+                // 2. Publish Settlement Data (All Commands)
+                // We send the LedgerCommand enum directly so consumers (Order History, Settlement)
+                // can deserialize the enum and handle variants relevant to them.
+                if let Ok(data) = serde_json::to_vec(cmd) {
+                     // Debug logging for OrderUpdate
+                     if let LedgerCommand::OrderUpdate(ou) = cmd {
+                         println!("[ZMQ] Publishing OrderUpdate: id={}, status={:?}", ou.order_id, ou.status);
+                     }
+                     let _ = zmq_pub_clone.publish_settlement(&data);
                 }
             }
         }
@@ -597,6 +539,7 @@ async fn main() {
                     // Changed from `order_topic` to `config.kafka.topics.orders` to match existing code
                     // Deserialize Order
                     if let Ok(req) = serde_json::from_slice::<OrderRequest>(payload) {
+                        println!("DEBUG: Received OrderRequest: {:?}", req);
                         match req {
                             OrderRequest::PlaceOrder {
                                 order_id,
