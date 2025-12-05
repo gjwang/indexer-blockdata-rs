@@ -113,8 +113,8 @@ pub struct OrderUpdate {
     pub client_order_id: Option<String>,
     pub user_id: UserId,
     pub symbol: String, // e.g. "BTC_USDT"
-    pub side: String,   // "Buy" or "Sell"
-    pub order_type: String, // "Limit" or "Market"
+    pub side: u8,   // 1=Buy, 2=Sell
+    pub order_type: u8, // 1=Limit, 2=Market
     pub status: OrderStatus,
     pub price: u64,
     pub qty: u64,
