@@ -115,7 +115,7 @@ async fn main() {
                     total_events,
                     order_update.order_id,
                     order_update.user_id,
-                    order_update.symbol,
+                    order_update.symbol_id,
                     format_status(&order_update.status),
                     order_update.price,
                     order_update.qty,

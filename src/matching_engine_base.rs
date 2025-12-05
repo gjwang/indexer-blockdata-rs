@@ -518,8 +518,6 @@ impl MatchingEngine {
         let (base_asset, quote_asset) =
             *asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
-        // Get symbol name for OrderUpdate
-        let symbol_name = format!("SYMBOL_{}", symbol_id); // TODO: Get from symbol_manager
 
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -532,7 +530,7 @@ impl MatchingEngine {
                 order_id,
                 client_order_id: None,
                 user_id,
-                symbol: symbol_name,
+                symbol_id,
                 side: side.as_u8(),
                 order_type: order_type.as_u8(),
                 status: OrderStatus::Rejected,
@@ -553,7 +551,7 @@ impl MatchingEngine {
             order_id,
             client_order_id: None,
             user_id,
-            symbol: symbol_name.clone(),
+            symbol_id,
             side: side.as_u8(),
             order_type: order_type.as_u8(),
             status: OrderStatus::New,
@@ -829,12 +827,11 @@ impl MatchingEngine {
         });
 
         // Emit OrderUpdate(Cancelled)
-        let symbol_name = format!("SYMBOL_{}", symbol_id); // TODO: Get from symbol_manager
         let order_update = OrderUpdate {
             order_id: cancelled_order.order_id,
-            client_order_id: None, // TODO: Track client_order_id
+            client_order_id: None,
             user_id: cancelled_order.user_id,
-            symbol: symbol_name,
+            symbol_id,
             side: cancelled_order.side.as_u8(),
             order_type: cancelled_order.order_type.as_u8(),
             status: OrderStatus::Cancelled,
