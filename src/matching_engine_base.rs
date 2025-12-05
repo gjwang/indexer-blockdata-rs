@@ -445,7 +445,7 @@ impl MatchingEngine {
                 user_id,
                 asset_id: required_asset,
                 required: required_amount,
-                available: balance,
+                avail: balance,
             });
         }
 
@@ -686,7 +686,7 @@ impl MatchingEngine {
             //         user_id: *user_id,
             //         asset_id: required_asset,
             //         required: required_amount,
-            //         available: balance,
+            //         avail: balance,
             //     });
             //     continue;
             // }

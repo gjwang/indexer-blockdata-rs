@@ -21,10 +21,10 @@ async fn main() {
 
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
-    let total_count: u64 = 1_00;
+    let total_count: u64 = 1000_000;
 
-    let concurrency = 1;
-    let interval_ms = 10;
+    let concurrency = 10;
+    let interval_ms = 1;
 
     let mut handles = Vec::new();
 
