@@ -193,39 +193,73 @@ async fn main() {
                 next_sequence += 1;
             }
 
-            // Persist to ScyllaDB (primary storage)
-            match settlement_db.insert_trade(&trade).await {
+            // Get symbol from asset IDs
+            let symbol = match fetcher::symbol_utils::get_symbol_from_assets(
+                trade.base_asset,
+                trade.quote_asset,
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!(target: LOG_TARGET, "Failed to get symbol for trade {}: {}", trade.trade_id, e);
+                    continue;
+                }
+            };
+
+            // Check if already settled (idempotency)
+            let already_settled = match settlement_db.trade_exists(&symbol, trade.trade_id).await {
+                Ok(exists) => exists,
+                Err(e) => {
+                    log::error!(target: LOG_TARGET, "Failed to check if trade exists: {}", e);
+                    false // Assume not settled, will fail on duplicate key
+                }
+            };
+
+            if already_settled {
+                log::debug!(target: LOG_TARGET, "Trade {} already settled, skipping", trade.trade_id);
+                continue;
+            }
+
+            // Settle atomically using LOGGED BATCH
+            match settlement_db.settle_trade_atomically(&symbol, &trade).await {
                 Ok(()) => {
                     total_settled += 1;
 
-                    // Update user balances using version-based idempotent updates
-                    if let Err(e) = update_balances_for_trade(&settlement_db, &trade).await {
-                        log::error!(target: LOG_TARGET, "Failed to update balances for trade {}: {}", trade.trade_id, e);
-                        // Continue processing - balance can be rebuilt from trades
-                    }
-
                     // Async load to StarRocks (Analytics)
                     let sr_client = starrocks_client.clone();
-                    // Use settled_at from trade, or current time if 0
-                    let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { chrono::Utc::now().timestamp_millis() };
+                    let ts = if trade.settled_at > 0 {
+                        trade.settled_at as i64
+                    } else {
+                        chrono::Utc::now().timestamp_millis()
+                    };
                     let sr_trade = StarRocksTrade::from_match_exec(&trade, ts);
 
                     tokio::spawn(async move {
                         if let Err(e) = sr_client.load_trade(sr_trade).await {
-                            // Log error but don't stop settlement
                             log::error!(target: LOG_TARGET, "Failed to load trade to StarRocks: {}", e);
                         }
                     });
 
                     if total_settled % 100 == 0 {
                         log::info!(target: LOG_TARGET, "Total trades settled: {}", total_settled);
-                        log::info!(target: LOG_TARGET, "[METRIC] settlement_db_inserts_total={}", total_settled);
+                        log::info!(target: LOG_TARGET, "[METRIC] settlement_trades_total={}", total_settled);
                     }
+
+                    log::info!(
+                        target: LOG_TARGET,
+                        "✅ Settled trade {} on {} (seq={}, buyer={}, seller={}, price={}, qty={})",
+                        trade.trade_id,
+                        symbol,
+                        trade.output_sequence,
+                        trade.buyer_user_id,
+                        trade.seller_user_id,
+                        trade.price,
+                        trade.quantity
+                    );
                 }
                 Err(e) => {
                     total_errors += 1;
-                    log::error!(target: LOG_TARGET, "Failed to insert trade to ScyllaDB: {}", e);
-                    log::error!(target: LOG_TARGET, "[METRIC] settlement_db_errors_total={}", total_errors);
+                    log::error!(target: LOG_TARGET, "❌ Failed to settle trade {}: {}", trade.trade_id, e);
+                    log::error!(target: LOG_TARGET, "[METRIC] settlement_errors_total={}", total_errors);
 
                     // Log to failed_trades.json for manual recovery
                     let failed_file = std::fs::OpenOptions::new()
@@ -255,18 +289,6 @@ async fn main() {
             if let Err(e) = wtr.flush() {
                 log::error!(target: LOG_TARGET, "Failed to flush CSV: {}", e);
             }
-
-            // Log trade details
-            log::info!(
-                target: LOG_TARGET,
-                "Seq: {}, TradeID: {}, Price: {}, Qty: {}, Buyer: {}, Seller: {}",
-                trade.output_sequence,
-                trade.trade_id,
-                trade.price,
-                trade.quantity,
-                trade.buyer_user_id,
-                trade.seller_user_id
-            );
         }
         // Try LedgerEvent (Deposit/Withdrawal)
         else if let Ok(mut event) = serde_json::from_slice::<fetcher::ledger::LedgerEvent>(&data)
@@ -314,87 +336,4 @@ async fn main() {
             }
         }
     }
-}
-
-/// Update user balances for a trade using version-based idempotent updates
-///
-/// This function updates both buyer and seller balances atomically using
-/// the balance versions captured from the matching engine at trade execution time.
-///
-/// # Arguments
-/// * `db` - Settlement database connection
-/// * `trade` - Trade data with balance versions
-///
-/// # Returns
-/// * `Ok(())` - All balances updated successfully (or skipped due to version conflict)
-/// * `Err(_)` - Database error
-async fn update_balances_for_trade(
-    db: &SettlementDb,
-    trade: &fetcher::ledger::MatchExecData,
-) -> anyhow::Result<()> {
-    // Calculate amounts
-    let quote_amount = trade.price * trade.quantity;
-
-    // Update buyer balances
-    // Buyer: spend quote_asset, gain base_asset
-    let buyer_quote_updated = db
-        .update_balance_with_version(
-            trade.buyer_user_id,
-            trade.quote_asset,
-            -(quote_amount as i64), // Spend USDT
-            trade.buyer_quote_version,
-        )
-        .await?;
-
-    let buyer_base_updated = db
-        .update_balance_with_version(
-            trade.buyer_user_id,
-            trade.base_asset,
-            trade.quantity as i64, // Gain BTC
-            trade.buyer_base_version,
-        )
-        .await?;
-
-    // Update seller balances
-    // Seller: spend base_asset, gain quote_asset
-    let seller_base_updated = db
-        .update_balance_with_version(
-            trade.seller_user_id,
-            trade.base_asset,
-            -(trade.quantity as i64), // Spend BTC
-            trade.seller_base_version,
-        )
-        .await?;
-
-    let seller_quote_updated = db
-        .update_balance_with_version(
-            trade.seller_user_id,
-            trade.quote_asset,
-            quote_amount as i64, // Gain USDT
-            trade.seller_quote_version,
-        )
-        .await?;
-
-    // Log results
-    if buyer_quote_updated && buyer_base_updated && seller_base_updated && seller_quote_updated {
-        log::debug!(
-            target: LOG_TARGET,
-            "Balances updated for trade {}: buyer={}, seller={}",
-            trade.trade_id,
-            trade.buyer_user_id,
-            trade.seller_user_id
-        );
-    } else {
-        log::debug!(
-            target: LOG_TARGET,
-            "Balance update skipped (version conflict) for trade {}: buyer_q={}, buyer_b={}, seller_b={}, seller_q={}",
-            trade.trade_id,
-            buyer_quote_updated,
-            buyer_base_updated,
-            seller_base_updated,
-            seller_quote_updated
-        );
-    }
-
-    Ok(())
 }
