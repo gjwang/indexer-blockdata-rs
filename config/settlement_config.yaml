@@ -5,3 +5,7 @@ log_to_file: true
 zeromq:
   settlement_port: 5557
   market_data_port: 5558
+
+# Backup and error logging
+backup_csv_file: "settled_trades.csv"
+failed_trades_file: "failed_trades.json"
