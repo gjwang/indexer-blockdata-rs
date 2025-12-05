@@ -205,6 +205,8 @@ async fn main() {
                 }
             };
 
+
+            //TODO:  user optimzation settlement strategy: assume not settled, will fail on duplicate key
             // Check if already settled (idempotency)
             let already_settled = match settlement_db.trade_exists(&symbol, trade.trade_id).await {
                 Ok(exists) => exists,
