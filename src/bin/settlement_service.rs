@@ -81,9 +81,20 @@ async fn main() {
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
 
-    // Get file paths from config with defaults
-    let backup_csv_file = config.backup_csv_file.as_deref().unwrap_or("settled_trades.csv");
-    let failed_trades_file = config.failed_trades_file.as_deref().unwrap_or("failed_trades.json");
+    // Validate required file paths from config
+    if config.backup_csv_file.is_empty() {
+        log::error!(target: LOG_TARGET, "❌ backup_csv_file not configured in settlement_config.yaml");
+        log::error!(target: LOG_TARGET, "   Please add: backup_csv_file: \"path/to/settled_trades.csv\"");
+        return;
+    }
+    if config.failed_trades_file.is_empty() {
+        log::error!(target: LOG_TARGET, "❌ failed_trades_file not configured in settlement_config.yaml");
+        log::error!(target: LOG_TARGET, "   Please add: failed_trades_file: \"path/to/failed_trades.json\"");
+        return;
+    }
+
+    let backup_csv_file = &config.backup_csv_file;
+    let failed_trades_file = &config.failed_trades_file;
 
     // Print boot parameters
     log::info!(target: LOG_TARGET, "=== Settlement Service Boot Parameters ===");

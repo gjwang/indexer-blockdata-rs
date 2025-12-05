@@ -67,9 +67,11 @@ pub struct AppConfig {
     pub enable_local_wal: bool,
     pub zeromq: Option<ZmqConfig>,
     pub scylladb: Option<ScyllaDbConfig>,
-    // Settlement service file paths
-    pub backup_csv_file: Option<String>,
-    pub failed_trades_file: Option<String>,
+    // Settlement service file paths (required for settlement service)
+    #[serde(default)]
+    pub backup_csv_file: String,
+    #[serde(default)]
+    pub failed_trades_file: String,
 }
 
 fn default_log_level() -> String {
