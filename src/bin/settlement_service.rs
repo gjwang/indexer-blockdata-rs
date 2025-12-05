@@ -100,13 +100,17 @@ async fn main() {
     let mut total_settled: u64 = 0;
     let mut total_errors: u64 = 0;
 
+    // Get file paths from config with defaults
+    let backup_csv_file = config.backup_csv_file.as_deref().unwrap_or("settled_trades.csv");
+    let failed_trades_file = config.failed_trades_file.as_deref().unwrap_or("failed_trades.json");
+
     // Open CSV Writer in Append Mode (keep as backup/audit trail)
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .append(true)
-        .open("settled_trades.csv")
-        .expect("Failed to open settled_trades.csv");
+        .open(backup_csv_file)
+        .expect("Failed to open backup CSV file");
 
     let mut wtr = csv::WriterBuilder::new()
         .has_headers(false) // Don't write headers on append
@@ -195,7 +199,7 @@ async fn main() {
                         .write(true)
                         .create(true)
                         .append(true)
-                        .open("failed_trades.json");
+                        .open(failed_trades_file);
 
                     match failed_file {
                         Ok(mut f) => {
