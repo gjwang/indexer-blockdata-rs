@@ -82,8 +82,8 @@ done
 echo "  ✅ Transfer in completed"
 
 echo ""
-echo "=== Step 7: Waiting for settlement (3 seconds) ==="
-sleep 3
+echo "=== Step 7: Waiting for settlement (1 seconds) ==="
+sleep 1
 
 echo ""
 echo "=== Step 8: Verifying initial balances ==="
@@ -95,10 +95,10 @@ curl -s "http://localhost:3001/api/user/balance?user_id=1001"
 echo ""
 
 echo ""
-echo "=== Step 9: Sending test orders (5 seconds) ==="
+echo "=== Step 9: Sending test orders (2 seconds) ==="
 ./target/debug/order_http_client > /tmp/client.log 2>&1 &
 CLIENT_PID=$!
-sleep 5
+sleep 2
 kill $CLIENT_PID || true
 sleep 2
 
