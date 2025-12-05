@@ -1,4 +1,4 @@
-use fetcher::configure::{self, expand_tilde};
+use fetcher::configure;
 use fetcher::db::SettlementDb;
 use fetcher::logger::setup_logger;
 use zmq::{Context, SUB};
@@ -93,14 +93,14 @@ async fn main() {
         return;
     }
 
-    // Expand tilde in data_dir (e.g., ~/data -> /home/user/data)
-    let data_dir = expand_tilde(&config.data_dir);
-
-    // Create data directory if it doesn't exist
-    if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        log::error!(target: LOG_TARGET, "❌ Failed to create data directory '{}': {}", data_dir, e);
-        return;
-    }
+    // Prepare data directory (expand tilde and create if needed)
+    let data_dir = match configure::prepare_data_dir(&config.data_dir) {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::error!(target: LOG_TARGET, "❌ {}", e);
+            return;
+        }
+    };
 
     // Resolve file paths (relative to data_dir if not absolute)
     let backup_csv_file = if std::path::Path::new(&config.backup_csv_file).is_absolute() {
