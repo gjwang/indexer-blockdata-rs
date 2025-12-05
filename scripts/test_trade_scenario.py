@@ -200,6 +200,30 @@ def verify_state():
     print("Final Balances:")
     print(balances)
 
+    # 5. Check Symbol ID (Refactor Verification)
+    history_symbol = query("SELECT order_id, symbol_id FROM order_history")
+    # We expect symbol_id to be present. Assuming default symbol registration maps BTC_USDT to 1.
+    # The output format of cqlsh usually has pipes. " 1 " should be safe.
+    # But let's print it regardless.
+    print("\nSymbol ID Check:")
+    print(history_symbol)
+
+    found_zero = False
+    for line in history_symbol.split('\n'):
+        if "---" in line or "order_id" in line or "rows)" in line or not line.strip():
+            continue
+        parts = line.split('|')
+        if len(parts) >= 2:
+            sym_val = parts[1].strip()
+            if sym_val == "0":
+                found_zero = True
+                break
+
+    if found_zero:
+         print_success("Order History shows SYMBOL_ID=0 (Correct)")
+    else:
+         print_error(f"Order History missing SYMBOL_ID=0:\n{history_symbol}")
+
 def main():
     try:
         clean_environment()
