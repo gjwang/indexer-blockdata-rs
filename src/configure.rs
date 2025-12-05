@@ -88,6 +88,25 @@ fn default_data_dir() -> String {
     "./data".to_string()
 }
 
+/// Expand tilde (~) in path to home directory
+///
+/// # Examples
+/// ```
+/// use fetcher::configure::expand_tilde;
+/// let path = expand_tilde("~/data");
+/// // Returns: "/home/user/data" (or "/Users/user/data" on macOS)
+/// ```
+pub fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            if let Some(home_str) = home.to_str() {
+                return path.replacen("~", home_str, 1);
+            }
+        }
+    }
+    path.to_string()
+}
+
 pub fn load_config() -> Result<AppConfig, ConfigError> {
     let run_mode = std::env::var("RUN_MODE").unwrap_or_else(|_| "dev".into());
     let config_file_name = format!("config/{}", run_mode);

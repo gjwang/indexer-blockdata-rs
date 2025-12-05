@@ -1,4 +1,4 @@
-use fetcher::configure;
+use fetcher::configure::{self, expand_tilde};
 use fetcher::db::SettlementDb;
 use fetcher::logger::setup_logger;
 use zmq::{Context, SUB};
@@ -7,18 +7,6 @@ use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 
 // Use custom log macros with target "settlement" for cleaner logs
 const LOG_TARGET: &str = "settlement";
-
-/// Expand tilde (~) in path to home directory
-fn expand_tilde(path: &str) -> String {
-    if path.starts_with("~/") {
-        if let Some(home) = std::env::var_os("HOME") {
-            if let Some(home_str) = home.to_str() {
-                return path.replacen("~", home_str, 1);
-            }
-        }
-    }
-    path.to_string()
-}
 
 #[tokio::main]
 async fn main() {
