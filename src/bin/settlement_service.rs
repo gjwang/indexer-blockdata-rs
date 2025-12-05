@@ -81,6 +81,10 @@ async fn main() {
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
     subscriber.set_subscribe(b"").expect("Failed to subscribe");
 
+    // Get file paths from config with defaults
+    let backup_csv_file = config.backup_csv_file.as_deref().unwrap_or("settled_trades.csv");
+    let failed_trades_file = config.failed_trades_file.as_deref().unwrap_or("failed_trades.json");
+
     // Print boot parameters
     log::info!(target: LOG_TARGET, "=== Settlement Service Boot Parameters ===");
     log::info!(target: LOG_TARGET, "  ZMQ Endpoint:     {}", endpoint);
@@ -89,6 +93,8 @@ async fn main() {
     log::info!(target: LOG_TARGET, "  Log File:         {}", config.log_file);
     log::info!(target: LOG_TARGET, "  Log Level:        {}", config.log_level);
     log::info!(target: LOG_TARGET, "  Log to File:      {}", config.log_to_file);
+    log::info!(target: LOG_TARGET, "  Backup CSV:       {}", backup_csv_file);
+    log::info!(target: LOG_TARGET, "  Failed Trades:    {}", failed_trades_file);
     log::info!(target: LOG_TARGET, "===========================================");
 
     log::info!(target: LOG_TARGET, "Settlement Service started.");
@@ -99,10 +105,6 @@ async fn main() {
     let mut next_sequence: u64 = 0;
     let mut total_settled: u64 = 0;
     let mut total_errors: u64 = 0;
-
-    // Get file paths from config with defaults
-    let backup_csv_file = config.backup_csv_file.as_deref().unwrap_or("settled_trades.csv");
-    let failed_trades_file = config.failed_trades_file.as_deref().unwrap_or("failed_trades.json");
 
     // Open CSV Writer in Append Mode (keep as backup/audit trail)
     let file = std::fs::OpenOptions::new()
