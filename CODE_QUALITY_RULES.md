@@ -310,7 +310,16 @@ If you find hardcoded values in existing code:
        .expect("API_KEY environment variable not set");
    ```
 
+## 9. General Coding Standards
+
+1. **Language**: Comments must be in English.
+2. **Simplicity**: Prioritize concise, readable, and practical code. Avoid over-engineering.
+3. **Complexity**: Minimize cyclomatic complexity; maximize reusability.
+4. **Architecture**: Employ modular design and appropriate patterns.
+5. **Modifications**: Minimize side effects and changes to unrelated modules.
+6. **API Standard**: Server actions must return `{ status: number, msg: string, data: Option<T> }`.
 ---
+
 
 ## Summary
 
@@ -326,7 +335,7 @@ If **YES** to any → Extract it!
 
 ---
 
-## 9. Pre-Commit Standards
+## 10. Pre-Commit Standards
 
 **MANDATORY**: Before committing any code, you MUST run:
 ```bash
@@ -334,3 +343,4 @@ cargo fmt
 cargo check
 ```
 This ensures code consistency and prevents build errors.
+
