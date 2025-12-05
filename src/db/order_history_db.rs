@@ -41,8 +41,8 @@ impl OrderHistoryDb {
     /// Insert or update an active order
     pub async fn upsert_active_order(&self, order: &OrderUpdate) -> Result<()> {
         let query = "
-            INSERT INTO active_orders (
-                user_id, order_id, client_order_id, symbol, side, order_type,
+                INSERT INTO active_orders (
+                user_id, order_id, client_order_id, symbol_id, side, order_type,
                 price, qty, filled_qty, avg_fill_price, status, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ";
@@ -54,7 +54,7 @@ impl OrderHistoryDb {
                     order.user_id as i64,
                     order.order_id as i64,
                     order.client_order_id.as_deref().unwrap_or(""),
-                    &order.symbol,
+                    order.symbol_id as i32,
                     &(order.side as i8),
                     &(order.order_type as i8),
                     order.price as i64,
@@ -91,12 +91,12 @@ impl OrderHistoryDb {
 
     /// Get active order state
     pub async fn get_active_order(&self, user_id: u64, order_id: u64) -> Result<Option<OrderUpdate>> {
-            let query = "SELECT user_id, order_id, client_order_id, symbol, price, qty, filled_qty, status, created_at, side, order_type FROM active_orders WHERE user_id = ? AND order_id = ?";
+            let query = "SELECT user_id, order_id, client_order_id, symbol_id, price, qty, filled_qty, status, created_at, side, order_type FROM active_orders WHERE user_id = ? AND order_id = ?";
         let result = self.session.query(query, (user_id as i64, order_id as i64)).await?;
 
         if let Some(rows) = result.rows {
              for row in rows {
-                 if let Ok((uid, oid, cid, sym, price, qty, filled, status_val, ts, side_val, type_val)) = row.into_typed::<(i64, i64, String, String, i64, i64, i64, i8, i64, i8, i8)>() {
+                 if let Ok((uid, oid, cid, sym_id, price, qty, filled, status_val, ts, side_val, type_val)) = row.into_typed::<(i64, i64, String, i32, i64, i64, i64, i8, i64, i8, i8)>() {
                      let status = match status_val {
                          1 => OrderStatus::New,
                          3 => OrderStatus::PartiallyFilled,
@@ -111,7 +111,7 @@ impl OrderHistoryDb {
                          order_id: oid as u64,
                          client_order_id: if cid.is_empty() { None } else { Some(cid) },
                          user_id: uid as u64,
-                         symbol: sym,
+                         symbol_id: sym_id as u32,
                          side: side_val as u8,
                          order_type: type_val as u8,
                          status,
@@ -137,7 +137,7 @@ impl OrderHistoryDb {
     pub async fn insert_order_history(&self, order: &OrderUpdate) -> Result<()> {
         let query = "
             INSERT INTO order_history (
-                user_id, created_at, order_id, client_order_id, symbol, side, order_type,
+                user_id, created_at, order_id, client_order_id, symbol_id, side, order_type,
                 price, qty, filled_qty, avg_fill_price, status, rejection_reason,
                 match_id, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -151,7 +151,7 @@ impl OrderHistoryDb {
                     order.timestamp as i64,
                     order.order_id as i64,
                     order.client_order_id.as_deref().unwrap_or(""),
-                    &order.symbol,
+                    order.symbol_id as i32,
                     &(order.side as i8),
                     &(order.order_type as i8),
                     order.price as i64,
@@ -187,7 +187,7 @@ impl OrderHistoryDb {
 
         let query = "
             INSERT INTO order_updates_stream (
-                event_date, event_id, order_id, user_id, client_order_id, symbol,
+                event_date, event_id, order_id, user_id, client_order_id, symbol_id,
                 status, price, qty, filled_qty, avg_fill_price, rejection_reason,
                 match_id, timestamp
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -202,7 +202,7 @@ impl OrderHistoryDb {
                     order.order_id as i64,
                     order.user_id as i64,
                     order.client_order_id.as_deref().unwrap_or(""),
-                    &order.symbol,
+                    order.symbol_id as i32,
                     match order.status {
                         OrderStatus::New => 1,
                         OrderStatus::PartiallyFilled => 3,

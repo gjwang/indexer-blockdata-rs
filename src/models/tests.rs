@@ -9,7 +9,7 @@ mod tests {
             order_id: 12345,
             client_order_id: Some("cid_001".to_string()),
             user_id: 1,
-            symbol: "BTC_USDT".to_string(),
+            symbol_id: 1,
             side: 1, // Buy
             order_type: 1, // Limit
             status: OrderStatus::Filled,
@@ -37,7 +37,7 @@ mod tests {
             order_id: 67890,
             client_order_id: None,
             user_id: 2,
-            symbol: "ETH_USDT".to_string(),
+            symbol_id: 2,
             side: 2, // Sell
             order_type: 2, // Market
             status: OrderStatus::New,

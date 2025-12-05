@@ -132,7 +132,7 @@ mod order_lifecycle_integration_tests {
             order_id: 101,
             client_order_id: Some("CID_101".to_string()),
             user_id: 1,
-            symbol: "BTC_USDT".to_string(),
+            symbol_id: 1,
             side: 1, // Buy
             order_type: 1, // Limit
             status: OrderStatus::New,
@@ -162,7 +162,7 @@ mod order_lifecycle_integration_tests {
             order_id: 101,
             client_order_id: None,
             user_id: 1,
-            symbol: "BTC_USDT".to_string(),
+            symbol_id: 1,
             side: 1, // Buy
             order_type: 1, // Limit
             status: OrderStatus::Filled,
@@ -223,7 +223,7 @@ mod order_lifecycle_integration_tests {
                 order_id: 1,
                 client_order_id: None,
                 user_id: 1,
-                symbol: "BTC_USDT".to_string(),
+                symbol_id: 1,
                 side: 1,
                 order_type: 1,
                 status: from,
@@ -240,7 +240,7 @@ mod order_lifecycle_integration_tests {
                 order_id: 1,
                 client_order_id: None,
                 user_id: 1,
-                symbol: "BTC_USDT".to_string(),
+                symbol_id: 1,
                 side: 1,
                 order_type: 1,
                 status: to,
