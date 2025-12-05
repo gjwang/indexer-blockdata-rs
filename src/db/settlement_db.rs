@@ -1019,24 +1019,24 @@ impl SettlementDb {
         user_id: u64,
         asset_id: u32,
         expected_ver: i64,
-    ) -> Result<(i64, i64)> {
+    ) -> Result<(i64, i64, i64)> {
         let mut attempts = 0;
         loop {
             let res = self.get_user_balance(user_id, asset_id).await?;
-            let (bal, ver) = match res {
-                Some(b) => (b.available as i64, b.version as i64),
-                None => (0, 0),
+            let (bal, frozen, ver) = match res {
+                Some(b) => (b.available as i64, b.frozen as i64, b.version as i64),
+                None => (0, 0, 0),
             };
 
             // If version matches (or is newer), we are good.
             if ver >= expected_ver {
-                return Ok((bal, ver));
+                return Ok((bal, frozen, ver));
             }
 
             attempts += 1;
             if attempts >= 5 {
                 // Return whatever we have; strict check will fail later if mismatch persists
-                return Ok((bal, ver));
+                return Ok((bal, frozen, ver));
             }
             sleep(Duration::from_millis(50)).await;
         }
@@ -1049,7 +1049,8 @@ impl SettlementDb {
         // If a balance is missing during settlement, it indicates a critical logic error.
 
         // 2. Read current balances (with retry for consistency)
-        let (buyer_base, buyer_base_ver) = self
+        // 2. Read current balances (with retry for consistency)
+        let (buyer_base, buyer_base_frozen, buyer_base_ver) = self
             .get_consistent_balance(
                 trade.buyer_user_id,
                 trade.base_asset,
@@ -1057,7 +1058,7 @@ impl SettlementDb {
             )
             .await?;
 
-        let (buyer_quote, buyer_quote_ver) = self
+        let (buyer_quote, buyer_quote_frozen, buyer_quote_ver) = self
             .get_consistent_balance(
                 trade.buyer_user_id,
                 trade.quote_asset,
@@ -1065,7 +1066,7 @@ impl SettlementDb {
             )
             .await?;
 
-        let (seller_base, seller_base_ver) = self
+        let (seller_base, seller_base_frozen, seller_base_ver) = self
             .get_consistent_balance(
                 trade.seller_user_id,
                 trade.base_asset,
@@ -1073,7 +1074,7 @@ impl SettlementDb {
             )
             .await?;
 
-        let (seller_quote, seller_quote_ver) = self
+        let (seller_quote, seller_quote_frozen, seller_quote_ver) = self
             .get_consistent_balance(
                 trade.seller_user_id,
                 trade.quote_asset,
@@ -1152,9 +1153,10 @@ impl SettlementDb {
         batch.append_statement(INSERT_TRADE_CQL);
 
         // Add Balance Updates
+        // Add Balance Updates
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?, version = ?, updated_at = ?
+            SET available = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
 
@@ -1184,8 +1186,10 @@ impl SettlementDb {
         );
 
         // Values for Balance Updates
+        // Values for Balance Updates
         let buyer_base_values = (
             new_buyer_base,
+            buyer_base_frozen, // Preserve frozen
             new_buyer_base_ver,
             now,
             trade.buyer_user_id as i64,
@@ -1193,6 +1197,7 @@ impl SettlementDb {
         );
         let buyer_quote_values = (
             new_buyer_quote,
+            buyer_quote_frozen, // Preserve frozen
             new_buyer_quote_ver,
             now,
             trade.buyer_user_id as i64,
@@ -1200,6 +1205,7 @@ impl SettlementDb {
         );
         let seller_base_values = (
             new_seller_base,
+            seller_base_frozen, // Preserve frozen
             new_seller_base_ver,
             now,
             trade.seller_user_id as i64,
@@ -1207,6 +1213,7 @@ impl SettlementDb {
         );
         let seller_quote_values = (
             new_seller_quote,
+            seller_quote_frozen, // Preserve frozen
             new_seller_quote_ver,
             now,
             trade.seller_user_id as i64,
