@@ -117,7 +117,7 @@ async fn centrifugo_token_handler(
 struct PublishBalanceRequest {
     user_id: String,
     asset: String,
-    available: f64,
+    avail: f64,
     locked: f64,
 }
 
@@ -127,9 +127,9 @@ async fn test_publish_balance(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let balance = BalanceUpdate {
         asset: payload.asset,
-        available: payload.available,
+        avail: payload.avail,
         locked: payload.locked,
-        total: payload.available + payload.locked,
+        total: payload.avail + payload.locked,
     };
 
     let user_update = UserUpdate::Balance(balance);

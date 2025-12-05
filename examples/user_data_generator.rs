@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let locked = rng.random_range(0.0..0.5);
                 UserUpdate::Balance(BalanceUpdate {
                     asset: "BTC".into(),
-                    available,
+                    avail: available,
                     locked,
                     total: available + locked,
                 })

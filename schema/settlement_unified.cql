@@ -43,7 +43,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS settled_trades_by_sequence AS
 CREATE TABLE IF NOT EXISTS user_balances (
     user_id bigint,
     asset_id int,
-    available bigint,
+    avail bigint,
     frozen bigint,
     version bigint,
     updated_at bigint,

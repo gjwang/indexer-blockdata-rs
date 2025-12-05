@@ -537,7 +537,7 @@ impl SettlementDb {
         for _ in 0..10 {
             let current = self.get_user_balance(user_id, asset_id).await?;
             let (current_avail, current_ver) = match current {
-                Some(b) => (b.available as i64, b.version),
+                Some(b) => (b.avail as i64, b.version),
                 None => {
                     anyhow::bail!("Balance not found for user {} asset {}", user_id, asset_id);
                 }
@@ -553,7 +553,7 @@ impl SettlementDb {
 
             let query = "
                 UPDATE user_balances
-                SET available = ?, version = ?, updated_at = ?
+                SET avail = ?, version = ?, updated_at = ?
                 WHERE user_id = ? AND asset_id = ?
                 IF version = ?
             ";
@@ -596,7 +596,7 @@ impl SettlementDb {
         // First, get current balance
         let current = self.get_user_balance(user_id, asset_id).await?;
 
-        let (current_available, current_version) = match current {
+        let (current_avail, current_version) = match current {
             Some(balance) => {
                 //TODO: maybe bad idea to allow gaps for non-persisted events like Locks
                 // Verify version matches or is older (allowing gaps for non-persisted events like Locks)
@@ -610,7 +610,7 @@ impl SettlementDb {
                     );
                     return Ok(false);
                 }
-                (balance.available as i64, balance.version)
+                (balance.avail as i64, balance.version)
             }
             None => {
                 anyhow::bail!("Balance not found for user {} asset {}", user_id, asset_id);
@@ -618,13 +618,13 @@ impl SettlementDb {
         };
 
         // Calculate new balance
-        let new_available = current_available + delta;
-        if new_available < 0 {
+        let new_avail = current_avail + delta;
+        if new_avail < 0 {
             anyhow::bail!(
                 "Balance would go negative: user={}, asset={}, current={}, delta={}",
                 user_id,
                 asset_id,
-                current_available,
+                current_avail,
                 delta
             );
         }
@@ -633,7 +633,7 @@ impl SettlementDb {
         // We set version to expected_version + 1 to sync with ME, skipping any gaps
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?,
+            SET avail = ?,
                 version = ?,
                 updated_at = ?
             WHERE user_id = ? AND asset_id = ?
@@ -648,7 +648,7 @@ impl SettlementDb {
             .query(
                 UPDATE_BALANCE_CQL,
                 (
-                    new_available,
+                    new_avail,
                     new_version as i64,
                     now,
                     user_id as i64,
@@ -677,8 +677,8 @@ impl SettlementDb {
                         "Balance updated: user={}, asset={}, {} -> {}, v={} -> {}",
                         user_id,
                         asset_id,
-                        current_available,
-                        new_available,
+                        current_avail,
+                        new_avail,
                         current_version,
                         new_version
                     );
@@ -694,7 +694,7 @@ impl SettlementDb {
     /// Initialize balance record if it doesn't exist
     async fn init_balance_if_not_exists(&self, user_id: u64, asset_id: u32) -> Result<()> {
         const INIT_BALANCE_CQL: &str = "
-            INSERT INTO user_balances (user_id, asset_id, available, frozen, version, updated_at)
+            INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at)
             VALUES (?, ?, 0, 0, 0, ?)
             IF NOT EXISTS
         ";
@@ -713,7 +713,7 @@ impl SettlementDb {
         asset_id: u32,
     ) -> Result<Option<UserBalance>> {
         const GET_BALANCE_CQL: &str = "
-            SELECT available, frozen, version, updated_at
+            SELECT avail, frozen, version, updated_at
             FROM user_balances
             WHERE user_id = ? AND asset_id = ?
         ";
@@ -722,13 +722,13 @@ impl SettlementDb {
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
-                let (available, frozen, version, updated_at): (i64, Option<i64>, i64, i64) =
+                let (avail, frozen, version, updated_at): (i64, Option<i64>, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
 
                 return Ok(Some(UserBalance {
                     user_id,
                     asset_id,
-                    available: available as u64,
+                    avail: avail as u64,
                     frozen: frozen.unwrap_or(0) as u64,
                     version: version as u64,
                     updated_at: updated_at as u64,
@@ -742,7 +742,7 @@ impl SettlementDb {
     /// Get all balances for a user
     pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
         const GET_ALL_BALANCES_CQL: &str = "
-            SELECT asset_id, available, frozen, version, updated_at
+            SELECT asset_id, avail, frozen, version, updated_at
             FROM user_balances
             WHERE user_id = ?
         ";
@@ -752,13 +752,13 @@ impl SettlementDb {
         let mut balances = Vec::new();
         if let Some(rows) = result.rows {
             for row in rows.into_iter() {
-                let (asset_id, available, frozen, version, updated_at): (i32, i64, i64, i64, i64) =
+                let (asset_id, avail, frozen, version, updated_at): (i32, i64, i64, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
 
                 balances.push(UserBalance {
                     user_id,
                     asset_id: asset_id as u32,
-                    available: available as u64,
+                    avail: avail as u64,
                     frozen: frozen as u64,
                     version: version as u64,
                     updated_at: updated_at as u64,
@@ -783,18 +783,18 @@ impl SettlementDb {
 
         // Note: current is Option<UserBalance>, but we just init'd it, so likely Some.
         // But concurrent access might be tricky. Using defaults is safe.
-        let current_available = current.as_ref().map(|b| b.available as i64).unwrap_or(0);
+        let current_avail = current.as_ref().map(|b| b.avail as i64).unwrap_or(0);
         let current_frozen = current.as_ref().map(|b| b.frozen as i64).unwrap_or(0);
         let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
 
         // Calculate new balance
-        let new_available = current_available + amount as i64;
+        let new_avail = current_avail + amount as i64;
         let new_frozen = current_frozen; // Preserve frozen
         let new_version = current_version + 1;
 
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?,
+            SET avail = ?,
                 frozen = ?,
                 version = ?,
                 updated_at = ?
@@ -807,7 +807,7 @@ impl SettlementDb {
             .query(
                 UPDATE_BALANCE_CQL,
                 (
-                    new_available,
+                    new_avail,
                     new_frozen,
                     new_version as i64,
                     now,
@@ -817,7 +817,7 @@ impl SettlementDb {
             )
             .await?;
 
-        Ok((current_available, new_available, current_version as i64, new_version as i64))
+        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
 
     pub async fn update_balance_for_lock(
@@ -829,23 +829,23 @@ impl SettlementDb {
         let current = self.get_user_balance(user_id, asset_id).await?
             .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Lock)", user_id, asset_id))?;
 
-        let current_available = current.available as i64;
+        let current_avail = current.avail as i64;
         let current_frozen = current.frozen as i64;
         let current_version = current.version;
 
-        let new_available = current_available - amount as i64;
+        let new_avail = current_avail - amount as i64;
         let new_frozen = current_frozen + amount as i64;
         let new_version = current_version + 1;
 
         const UPDATE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?, frozen = ?, version = ?, updated_at = ?
+            SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
         let now = get_current_timestamp_ms();
 
         self.session.query(UPDATE_CQL, (
-            new_available,
+            new_avail,
             new_frozen,
             new_version as i64,
             now,
@@ -853,7 +853,7 @@ impl SettlementDb {
             asset_id as i32
         )).await?;
 
-        Ok((current_available, new_available, current_version as i64, new_version as i64))
+        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
 
     pub async fn update_balance_for_unlock(
@@ -865,23 +865,23 @@ impl SettlementDb {
         let current = self.get_user_balance(user_id, asset_id).await?
             .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Unlock)", user_id, asset_id))?;
 
-        let current_available = current.available as i64;
+        let current_avail = current.avail as i64;
         let current_frozen = current.frozen as i64;
         let current_version = current.version;
 
-        let new_available = current_available + amount as i64;
+        let new_avail = current_avail + amount as i64;
         let new_frozen = current_frozen - amount as i64;
         let new_version = current_version + 1;
 
         const UPDATE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?, frozen = ?, version = ?, updated_at = ?
+            SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
         let now = get_current_timestamp_ms();
 
         self.session.query(UPDATE_CQL, (
-            new_available,
+            new_avail,
             new_frozen,
             new_version as i64,
             now,
@@ -889,7 +889,7 @@ impl SettlementDb {
             asset_id as i32
         )).await?;
 
-        Ok((current_available, new_available, current_version as i64, new_version as i64))
+        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
 }
 
@@ -897,7 +897,7 @@ impl SettlementDb {
 pub struct UserBalance {
     pub user_id: u64,
     pub asset_id: u32,
-    pub available: u64,
+    pub avail: u64,
     pub frozen: u64,
     pub version: u64,
     pub updated_at: u64,
@@ -1024,7 +1024,7 @@ impl SettlementDb {
         loop {
             let res = self.get_user_balance(user_id, asset_id).await?;
             let (bal, frozen, ver) = match res {
-                Some(b) => (b.available as i64, b.frozen as i64, b.version as i64),
+                Some(b) => (b.avail as i64, b.frozen as i64, b.version as i64),
                 None => (0, 0, 0),
             };
 
@@ -1156,7 +1156,7 @@ impl SettlementDb {
         // Add Balance Updates
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = ?, frozen = ?, version = ?, updated_at = ?
+            SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
 
