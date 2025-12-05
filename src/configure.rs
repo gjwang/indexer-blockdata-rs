@@ -67,7 +67,9 @@ pub struct AppConfig {
     pub enable_local_wal: bool,
     pub zeromq: Option<ZmqConfig>,
     pub scylladb: Option<ScyllaDbConfig>,
-    // Settlement service file paths (required for settlement service)
+    // Settlement service configuration
+    #[serde(default = "default_data_dir")]
+    pub data_dir: String,
     #[serde(default)]
     pub backup_csv_file: String,
     #[serde(default)]
@@ -80,6 +82,10 @@ fn default_log_level() -> String {
 
 fn default_log_to_file() -> bool {
     true
+}
+
+fn default_data_dir() -> String {
+    "./data".to_string()
 }
 
 pub fn load_config() -> Result<AppConfig, ConfigError> {

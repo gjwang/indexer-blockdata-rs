@@ -8,6 +8,18 @@ use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 // Use custom log macros with target "settlement" for cleaner logs
 const LOG_TARGET: &str = "settlement";
 
+/// Expand tilde (~) in path to home directory
+fn expand_tilde(path: &str) -> String {
+    if path.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            if let Some(home_str) = home.to_str() {
+                return path.replacen("~", home_str, 1);
+            }
+        }
+    }
+    path.to_string()
+}
+
 #[tokio::main]
 async fn main() {
     // Load service-specific configuration (config/settlement_config.yaml)
@@ -93,8 +105,27 @@ async fn main() {
         return;
     }
 
-    let backup_csv_file = &config.backup_csv_file;
-    let failed_trades_file = &config.failed_trades_file;
+    // Expand tilde in data_dir (e.g., ~/data -> /home/user/data)
+    let data_dir = expand_tilde(&config.data_dir);
+
+    // Create data directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        log::error!(target: LOG_TARGET, "❌ Failed to create data directory '{}': {}", data_dir, e);
+        return;
+    }
+
+    // Resolve file paths (relative to data_dir if not absolute)
+    let backup_csv_file = if std::path::Path::new(&config.backup_csv_file).is_absolute() {
+        config.backup_csv_file.clone()
+    } else {
+        format!("{}/{}", data_dir, config.backup_csv_file)
+    };
+
+    let failed_trades_file = if std::path::Path::new(&config.failed_trades_file).is_absolute() {
+        config.failed_trades_file.clone()
+    } else {
+        format!("{}/{}", data_dir, config.failed_trades_file)
+    };
 
     // Print boot parameters
     log::info!(target: LOG_TARGET, "=== Settlement Service Boot Parameters ===");
@@ -104,6 +135,7 @@ async fn main() {
     log::info!(target: LOG_TARGET, "  Log File:         {}", config.log_file);
     log::info!(target: LOG_TARGET, "  Log Level:        {}", config.log_level);
     log::info!(target: LOG_TARGET, "  Log to File:      {}", config.log_to_file);
+    log::info!(target: LOG_TARGET, "  Data Directory:   {}", data_dir);
     log::info!(target: LOG_TARGET, "  Backup CSV:       {}", backup_csv_file);
     log::info!(target: LOG_TARGET, "  Failed Trades:    {}", failed_trades_file);
     log::info!(target: LOG_TARGET, "===========================================");
@@ -212,7 +244,7 @@ async fn main() {
                         .write(true)
                         .create(true)
                         .append(true)
-                        .open(failed_trades_file);
+                        .open(&failed_trades_file);
 
                     match failed_file {
                         Ok(mut f) => {
