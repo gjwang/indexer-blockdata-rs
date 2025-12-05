@@ -1,116 +1,126 @@
--- Settlement Database Schema for ScyllaDB
--- This schema stores all settled trades from the matching engine
+-- Settlement Service Schema
+-- Per-symbol trade tables + User balances + Reconciliation
 
--- Create keyspace with SimpleStrategy (for development)
--- In production, use NetworkTopologyStrategy with appropriate replication
-CREATE KEYSPACE IF NOT EXISTS settlement
-WITH replication = {
-    'class': 'SimpleStrategy',
-    'replication_factor': 1
-};
+-- ============================================================================
+-- Per-Symbol Trade Tables (Source of Truth)
+-- ============================================================================
 
--- Use the settlement keyspace
-USE settlement;
-
--- Main settled trades table
--- Partition key: trade_date (for time-based partitioning)
--- Clustering key: output_sequence (for ordering within partition)
-CREATE TABLE IF NOT EXISTS settled_trades (
-    -- Partition key: Date as days since Unix epoch (int for compatibility)
-    trade_date int,
-
-    -- Clustering key: Ensures ordering by sequence within each day
+-- BTC/USDT trades
+CREATE TABLE IF NOT EXISTS settled_trades_btc_usdt (
+    trade_id bigint PRIMARY KEY,
     output_sequence bigint,
-
-    -- Trade identification
-    trade_id bigint,
     match_seq bigint,
-
-    -- Order references
     buy_order_id bigint,
     sell_order_id bigint,
-
-    -- Parties involved
     buyer_user_id bigint,
     seller_user_id bigint,
-
-    -- Trade details
     price bigint,
     quantity bigint,
     base_asset int,
     quote_asset int,
-
-    -- Refunds (if any)
     buyer_refund bigint,
     seller_refund bigint,
-
-    -- Timestamp as milliseconds since Unix epoch (bigint for compatibility)
     settled_at bigint,
+    trade_date int,
+    -- Balance versions for tracking
+    buyer_base_version bigint,
+    buyer_quote_version bigint,
+    seller_base_version bigint,
+    seller_quote_version bigint
+);
 
-    PRIMARY KEY ((trade_date), output_sequence)
-) WITH CLUSTERING ORDER BY (output_sequence ASC)
-  AND compaction = {
-      'class': 'TimeWindowCompactionStrategy',
-      'compaction_window_size': 1,
-      'compaction_window_unit': 'DAYS'
-  }
-  AND gc_grace_seconds = 86400
-  AND comment = 'Stores all settled trades from the matching engine';
+-- Indexes for queries
+CREATE INDEX IF NOT EXISTS idx_btc_usdt_buyer ON settled_trades_btc_usdt (buyer_user_id);
+CREATE INDEX IF NOT EXISTS idx_btc_usdt_seller ON settled_trades_btc_usdt (seller_user_id);
+CREATE INDEX IF NOT EXISTS idx_btc_usdt_sequence ON settled_trades_btc_usdt (output_sequence);
+CREATE INDEX IF NOT EXISTS idx_btc_usdt_date ON settled_trades_btc_usdt (trade_date);
 
--- Secondary index on trade_id for lookups by trade ID
-CREATE INDEX IF NOT EXISTS idx_trade_id ON settled_trades (trade_id);
+-- ETH/USDT trades
+CREATE TABLE IF NOT EXISTS settled_trades_eth_usdt (
+    trade_id bigint PRIMARY KEY,
+    output_sequence bigint,
+    match_seq bigint,
+    buy_order_id bigint,
+    sell_order_id bigint,
+    buyer_user_id bigint,
+    seller_user_id bigint,
+    price bigint,
+    quantity bigint,
+    base_asset int,
+    quote_asset int,
+    buyer_refund bigint,
+    seller_refund bigint,
+    settled_at bigint,
+    trade_date int,
+    buyer_base_version bigint,
+    buyer_quote_version bigint,
+    seller_base_version bigint,
+    seller_quote_version bigint
+);
 
--- Secondary index on buyer_user_id for user trade history
-CREATE INDEX IF NOT EXISTS idx_buyer_user_id ON settled_trades (buyer_user_id);
+CREATE INDEX IF NOT EXISTS idx_eth_usdt_buyer ON settled_trades_eth_usdt (buyer_user_id);
+CREATE INDEX IF NOT EXISTS idx_eth_usdt_seller ON settled_trades_eth_usdt (seller_user_id);
+CREATE INDEX IF NOT EXISTS idx_eth_usdt_sequence ON settled_trades_eth_usdt (output_sequence);
+CREATE INDEX IF NOT EXISTS idx_eth_usdt_date ON settled_trades_eth_usdt (trade_date);
 
--- Secondary index on seller_user_id for user trade history
-CREATE INDEX IF NOT EXISTS idx_seller_user_id ON settled_trades (seller_user_id);
+-- ============================================================================
+-- User Balances Table (Materialized View for Fast Queries)
+-- ============================================================================
 
--- Materialized view for sequence-based queries (global ordering)
--- This allows querying trades by sequence across all partitions
-CREATE MATERIALIZED VIEW IF NOT EXISTS settled_trades_by_sequence AS
-    SELECT *
-    FROM settled_trades
-    WHERE output_sequence IS NOT NULL
-      AND trade_date IS NOT NULL
-    PRIMARY KEY (output_sequence, trade_date)
-    WITH CLUSTERING ORDER BY (trade_date DESC);
-
--- Table for tracking settlement service state (for recovery)
-CREATE TABLE IF NOT EXISTS settlement_state (
-    service_id text,
-    last_processed_sequence bigint,
-    last_update_time timestamp,
-    PRIMARY KEY (service_id)
-) WITH comment = 'Tracks the last processed sequence for settlement service recovery';
-
--- Ledger Events table for Event Sourcing (Audit Trail)
--- Stores all balance-changing events (Deposits, Withdrawals, Trades)
-CREATE TABLE IF NOT EXISTS ledger_events (
-    user_id bigint,
-    sequence_id bigint,
-    event_type text, -- 'DEPOSIT', 'WITHDRAWAL', 'TRADE_SPEND', 'TRADE_RECEIVE'
-    amount bigint,
-    currency int,
-    related_id bigint, -- trade_id or tx_id
-    created_at bigint,
-    PRIMARY KEY (user_id, sequence_id)
-) WITH CLUSTERING ORDER BY (sequence_id DESC)
-  AND comment = 'Immutable log of all balance-changing events';
-
--- User Balances table (Materialized View of Ledger Events)
--- This table stores the current balance state for each user's assets
--- Updated idempotently using balance version from matching engine
 CREATE TABLE IF NOT EXISTS user_balances (
     user_id bigint,
     asset_id int,
     available bigint,
     frozen bigint,
-    version bigint,  -- Balance version from matching engine (for idempotent updates)
+    version bigint,
     updated_at bigint,
     PRIMARY KEY (user_id, asset_id)
-) WITH comment = 'Current balance state for each user asset, updated idempotently using version';
+) WITH CLUSTERING ORDER BY (asset_id ASC);
 
--- Index for monitoring balance update progress
-CREATE INDEX IF NOT EXISTS idx_balance_version ON user_balances (version);
+-- ============================================================================
+-- Reconciliation Tables
+-- ============================================================================
 
+CREATE TABLE IF NOT EXISTS reconciliation_jobs (
+    job_id uuid PRIMARY KEY,
+    started_at bigint,
+    completed_at bigint,
+    trades_checked bigint,
+    errors_found bigint,
+    errors_fixed bigint,
+    status text
+);
+
+CREATE TABLE IF NOT EXISTS reconciliation_errors (
+    error_id uuid PRIMARY KEY,
+    job_id uuid,
+    trade_id bigint,
+    user_id bigint,
+    asset_id int,
+    expected_balance bigint,
+    actual_balance bigint,
+    fixed boolean,
+    detected_at bigint,
+    fixed_at bigint
+);
+
+CREATE INDEX IF NOT EXISTS idx_recon_errors_user ON reconciliation_errors (user_id);
+CREATE INDEX IF NOT EXISTS idx_recon_errors_fixed ON reconciliation_errors (fixed);
+
+-- ============================================================================
+-- Ledger Events Table (for deposits/withdrawals)
+-- ============================================================================
+
+CREATE TABLE IF NOT EXISTS ledger_events (
+    event_id bigint PRIMARY KEY,
+    sequence_id bigint,
+    user_id bigint,
+    asset_id int,
+    event_type text,
+    amount bigint,
+    balance_after bigint,
+    created_at bigint
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger_events (user_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_sequence ON ledger_events (sequence_id);
