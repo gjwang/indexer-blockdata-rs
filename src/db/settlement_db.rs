@@ -903,6 +903,7 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
+
         let result = SettlementDb::retry_with_backoff(|| async {
             counter_clone.fetch_add(1, Ordering::SeqCst);
             Err::<(), _>(MockError)
@@ -913,19 +914,21 @@ mod tests {
         // Should try 1 initial + 3 retries = 4 attempts
         assert_eq!(counter.load(Ordering::SeqCst), 4);
     }
+}
 
-    // ========================================================================
-    // Atomic Settlement with LOGGED BATCH
-    // ========================================================================
+// ========================================================================
+// Atomic Settlement with LOGGED BATCH
+// ========================================================================
 
-    /// Settle trade atomically using LOGGED batch
+impl SettlementDb {
+    /// Settle trade atomically using sequential operations
     ///
     /// This method settles a trade by:
     /// 1. Inserting the trade into the symbol-specific table
     /// 2. Updating buyer's balances (both assets)
     /// 3. Updating seller's balances (both assets)
     ///
-    /// All 5 operations are executed in a single LOGGED batch, ensuring atomicity.
+    /// Note: Currently uses sequential operations. Full BATCH atomicity will be added later.
     ///
     /// # Arguments
     /// * `symbol` - Trading pair symbol (e.g., "btc_usdt")
@@ -933,112 +936,64 @@ mod tests {
     ///
     /// # Returns
     /// * `Ok(())` - Trade settled successfully
-    /// * `Err(_)` - Settlement failed (batch will be retried by ScyllaDB)
+    /// * `Err(_)` - Settlement failed
     pub async fn settle_trade_atomically(
         &self,
-        symbol: &str,
+        _symbol: &str,
         trade: &MatchExecData,
     ) -> Result<()> {
-        use scylla::batch::Batch;
-        use scylla::query::Query;
-
         let quote_amount = trade.price * trade.quantity;
         let now = get_current_timestamp_ms();
-        let trade_date = get_current_date();
 
-        // Create LOGGED batch for atomicity
-        let mut batch: Batch = Default::default();
-        batch.set_is_logged(true); // CRITICAL: Use LOGGED for atomicity
+        // 1. Insert trade (uses existing method with proper prepared statement)
+        self.insert_trade(trade).await?;
 
-        // 1. Insert trade into symbol-specific table
-        let table_name = format!("settled_trades_{}", symbol.to_lowercase());
-        let insert_trade_query = format!(
-            "INSERT INTO {} (
-                trade_id, output_sequence, match_seq,
-                buy_order_id, sell_order_id,
-                buyer_user_id, seller_user_id,
-                price, quantity, base_asset, quote_asset,
-                buyer_refund, seller_refund, settled_at, trade_date,
-                buyer_base_version, buyer_quote_version,
-                seller_base_version, seller_quote_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            table_name
-        );
+        // 2. Update balances using simple counter updates
+        const UPDATE_BALANCE_CQL: &str = "
+            UPDATE user_balances
+            SET available = available + ?, version = version + 1, updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+        ";
 
-        batch.append_statement(Query::new(insert_trade_query));
-
-        // 2. Update buyer BTC balance
-        batch.append_statement(Query::new(
-            "UPDATE user_balances
-             SET available = available + ?, version = version + 1, updated_at = ?
-             WHERE user_id = ? AND asset_id = ?"
-        ));
-
-        // 3. Update buyer USDT balance
-        batch.append_statement(Query::new(
-            "UPDATE user_balances
-             SET available = available - ?, version = version + 1, updated_at = ?
-             WHERE user_id = ? AND asset_id = ?"
-        ));
-
-        // 4. Update seller BTC balance
-        batch.append_statement(Query::new(
-            "UPDATE user_balances
-             SET available = available - ?, version = version + 1, updated_at = ?
-             WHERE user_id = ? AND asset_id = ?"
-        ));
-
-        // 5. Update seller USDT balance
-        batch.append_statement(Query::new(
-            "UPDATE user_balances
-             SET available = available + ?, version = version + 1, updated_at = ?
-             WHERE user_id = ? AND asset_id = ?"
-        ));
-
-        // Prepare batch values
-        let batch_values = (
-            // Trade insert values
-            (
-                trade.trade_id as i64,
-                trade.output_sequence as i64,
-                trade.match_seq as i64,
-                trade.buy_order_id as i64,
-                trade.sell_order_id as i64,
-                trade.buyer_user_id as i64,
-                trade.seller_user_id as i64,
-                trade.price as i64,
-                trade.quantity as i64,
-                trade.base_asset as i32,
-                trade.quote_asset as i32,
-                trade.buyer_refund as i64,
-                trade.seller_refund as i64,
-                now,
-                trade_date,
-                trade.buyer_base_version as i64,
-                trade.buyer_quote_version as i64,
-                trade.seller_base_version as i64,
-                trade.seller_quote_version as i64,
-            ),
-            // Buyer BTC update
-            (trade.quantity as i64, now, trade.buyer_user_id as i64, trade.base_asset as i32),
-            // Buyer USDT update
-            (quote_amount as i64, now, trade.buyer_user_id as i64, trade.quote_asset as i32),
-            // Seller BTC update
-            (trade.quantity as i64, now, trade.seller_user_id as i64, trade.base_asset as i32),
-            // Seller USDT update
-            (quote_amount as i64, now, trade.seller_user_id as i64, trade.quote_asset as i32),
-        );
-
-        // Execute atomic batch
+        // Update buyer BTC balance (+quantity)
         self.session
-            .batch(&batch, batch_values)
+            .query(
+                UPDATE_BALANCE_CQL,
+                (trade.quantity as i64, now, trade.buyer_user_id as i64, trade.base_asset as i32),
+            )
             .await
-            .context("Failed to execute settlement batch")?;
+            .context("Failed to update buyer BTC balance")?;
+
+        // Update buyer USDT balance (-quote_amount)
+        self.session
+            .query(
+                UPDATE_BALANCE_CQL,
+                (-(quote_amount as i64), now, trade.buyer_user_id as i64, trade.quote_asset as i32),
+            )
+            .await
+            .context("Failed to update buyer USDT balance")?;
+
+        // Update seller BTC balance (-quantity)
+        self.session
+            .query(
+                UPDATE_BALANCE_CQL,
+                (-(trade.quantity as i64), now, trade.seller_user_id as i64, trade.base_asset as i32),
+            )
+            .await
+            .context("Failed to update seller BTC balance")?;
+
+        // Update seller USDT balance (+quote_amount)
+        self.session
+            .query(
+                UPDATE_BALANCE_CQL,
+                (quote_amount as i64, now, trade.seller_user_id as i64, trade.quote_asset as i32),
+            )
+            .await
+            .context("Failed to update seller USDT balance")?;
 
         log::debug!(
-            "Settled trade {} atomically on {} (buyer={}, seller={})",
+            "Settled trade {} (buyer={}, seller={})",
             trade.trade_id,
-            symbol,
             trade.buyer_user_id,
             trade.seller_user_id
         );
@@ -1060,39 +1015,5 @@ mod tests {
             .context("Failed to check if trade exists")?;
 
         Ok(result.rows.is_some() && !result.rows.unwrap().is_empty())
-    }
-
-    /// Get all balances for a user (O(1) query)
-    pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
-        const QUERY: &str = "
-            SELECT asset_id, available, frozen, version, updated_at
-            FROM user_balances
-            WHERE user_id = ?
-        ";
-
-        let result = self
-            .session
-            .query(QUERY, (user_id as i64,))
-            .await
-            .context("Failed to get user balances")?;
-
-        let mut balances = Vec::new();
-        if let Some(rows) = result.rows {
-            for row in rows {
-                let (asset_id, available, frozen, version, updated_at): (i32, i64, i64, i64, i64) =
-                    row.into_typed().context("Failed to parse balance row")?;
-
-                balances.push(UserBalance {
-                    user_id,
-                    asset_id: asset_id as u32,
-                    available: available as u64,
-                    frozen: frozen as u64,
-                    version: version as u64,
-                    updated_at: updated_at as u64,
-                });
-            }
-        }
-
-        Ok(balances)
     }
 }
