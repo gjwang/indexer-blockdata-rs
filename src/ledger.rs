@@ -542,9 +542,6 @@ impl<'a> Ledger for ShadowLedger<'a> {
     }
 
     fn apply(&mut self, cmd: &LedgerCommand) -> Result<()> {
-        // Record command
-        self.pending_commands.push(cmd.clone());
-
         // Apply to delta state
         match cmd {
             LedgerCommand::Lock { user_id, .. }
@@ -557,18 +554,6 @@ impl<'a> Ledger for ShadowLedger<'a> {
                     .entry(*user_id)
                     .or_insert_with(|| self.real_ledger.get_account_copy(*user_id));
 
-                // We use a static helper to apply to a single account map,
-                // but apply_transaction takes the whole map.
-                // Let's reuse apply_transaction but pass a temporary map containing just this user?
-                // Or better: extract apply logic to work on UserAccount.
-                // For now, let's just use apply_transaction on our delta map.
-                // But apply_transaction expects the map to have the user. We ensured that.
-
-                // Wait, apply_transaction takes &mut FxHashMap<UserId, UserAccount>.
-                // We can pass &mut self.delta_accounts.
-                // But we need to ensure ALL users involved in the command are in delta_accounts.
-                // For single-user commands, we did that above.
-                // For MatchExec, it involves TWO users.
                 GlobalLedger::apply_transaction(&mut self.delta_accounts, cmd)?;
             }
             LedgerCommand::MatchExec(data) => {
@@ -595,9 +580,14 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 for c in cmds {
                     self.apply(c)?;
                 }
+                // Return early for Batch since recursive calls handle pushing
+                return Ok(());
             }
             LedgerCommand::OrderUpdate(_) => {} // No-op for ledger state
         }
+
+        // Record command ONLY if application succeeded
+        self.pending_commands.push(cmd.clone());
         Ok(())
     }
 }

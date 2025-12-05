@@ -76,9 +76,10 @@ mod balance_correctness_tests {
 
         let new_version = engine.ledger.get_balance_version(1, 200);
 
-        assert!(
-            new_version > initial_version,
-            "Version must increment on lock. Initial: {}, New: {}",
+        assert_eq!(
+            new_version,
+            initial_version + 1,
+            "Version must increment by exactly 1 on lock (Frozen). Initial: {}, New: {}",
             initial_version,
             new_version
         );
@@ -159,21 +160,80 @@ mod balance_correctness_tests {
         engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 1, 2, 1000)]);
 
         let seller_btc_v1 = engine.ledger.get_balance_version(2, 100);
-        assert!(seller_btc_v1 > seller_btc_v0, "Seller BTC version must increment on lock");
+        assert_eq!(seller_btc_v1, seller_btc_v0 + 1, "Seller BTC version must increment by 1 on lock");
 
-        // Place buy order (matches)
+        // Place buy order (matches) -> Trade Execution
         engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1001)]);
 
-        // Verify all versions incremented
+        // Verify all versions incremented exactly
         let buyer_usdt_v1 = engine.ledger.get_balance_version(1, 200);
         let buyer_btc_v1 = engine.ledger.get_balance_version(1, 100);
         let seller_btc_v2 = engine.ledger.get_balance_version(2, 100);
         let seller_usdt_v1 = engine.ledger.get_balance_version(2, 200);
 
-        assert!(buyer_usdt_v1 > buyer_usdt_v0, "Buyer USDT version must increment (lock + spend)");
-        assert!(buyer_btc_v1 > buyer_btc_v0, "Buyer BTC version must increment (gain)");
-        assert!(seller_btc_v2 > seller_btc_v1, "Seller BTC version must increment again (spend)");
-        assert!(seller_usdt_v1 > seller_usdt_v0, "Seller USDT version must increment (gain)");
+        // Buyer USDT: Lock (+1) -> Wait, add_order_batch processes Order Logic (Lock) THEN Match.
+        // Lock: +1. Match: Spend Frozen (+1). Total = +2.
+        assert_eq!(buyer_usdt_v1, buyer_usdt_v0 + 2, "Buyer USDT version must increment by 2 (Lock + Spend)");
+
+        // Buyer BTC: Match: Deposit (+1).
+        assert_eq!(buyer_btc_v1, buyer_btc_v0 + 1, "Buyer BTC version must increment by 1 (Gain)");
+
+        // Seller BTC: Already Locked (+1). Match: Spend Frozen (+1). Total from v0 = +2.
+        assert_eq!(seller_btc_v2, seller_btc_v0 + 2, "Seller BTC version must increment by 2 total (Lock + Spend)");
+
+        // Seller USDT: Match: Deposit (+1).
+        assert_eq!(seller_usdt_v1, seller_usdt_v0 + 1, "Seller USDT version must increment by 1 (Gain)");
+    }
+
+    #[test]
+    fn test_balance_version_on_cancellation() {
+        let (mut engine, _wal_dir, _snap_dir) = create_test_engine();
+        engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000 }).unwrap();
+
+        let v0 = engine.ledger.get_balance_version(1, 200);
+
+        // Lock
+        engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000)]);
+        let v1 = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(v1, v0 + 1, "Lock increments version");
+
+        // Cancel
+        engine.cancel_order(1, 101).unwrap();
+        let v2 = engine.ledger.get_balance_version(1, 200);
+
+        // Unlock calls unfrozen (+1)
+        assert_eq!(v2, v1 + 1, "Cancel (Unlock) increments version");
+    }
+
+    #[test]
+    fn test_balance_version_on_partial_fill_and_cancel() {
+        let (mut engine, _wal_dir, _snap_dir) = create_test_engine();
+        engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
+
+        // Buyer has 100k USDT
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000 }).unwrap();
+        let buyer_usdt_v0 = engine.ledger.get_balance_version(1, 200);
+
+        // Seller has 1 BTC
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset: 100, amount: 1 }).unwrap();
+
+        // 1. Buyer places order for 2 BTC @ 50k = 100k USDT locked
+        engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 2, 1, 1000)]);
+        let buyer_usdt_v1 = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(buyer_usdt_v1, buyer_usdt_v0 + 1, "Lock increments +1");
+
+        // 2. Seller fills 1 BTC
+        // Buyer: Match -> Spend Frozen 50k (+1). remaining frozen 50k.
+        engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 1, 2, 1001)]);
+        let buyer_usdt_v2 = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(buyer_usdt_v2, buyer_usdt_v1 + 1, "Match (Partial Spend) increments +1");
+
+        // 3. Cancel remaining 1 BTC
+        // Unlock 50k -> Unfrozen (+1).
+        engine.cancel_order(1, 101).unwrap();
+        let buyer_usdt_v3 = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(buyer_usdt_v3, buyer_usdt_v2 + 1, "Cancel remaining increments +1");
     }
 
     #[test]
@@ -264,7 +324,13 @@ mod balance_correctness_tests {
             1, 101, Side::Buy, OrderType::Limit, 100000, 1, 1, 1000,
         )]);
 
-        assert!(results[0].is_err(), "Order should fail due to insufficient funds");
+        // Check for success (Order Processed) but Rejection Event
+        assert!(results[0].is_ok(), "Order process should return Ok (execution handled)");
+
+        // Use full path for enum matching in test
+        use crate::ledger::OrderStatus;
+        let has_rejection = _commands.iter().any(|c| matches!(c, LedgerCommand::OrderUpdate(u) if u.status == OrderStatus::Rejected));
+        assert!(has_rejection, "Should emit Rejected event");
 
         // Verify balance unchanged
         let final_balance = engine.ledger.get_balance(1, 200);
@@ -314,5 +380,94 @@ mod balance_correctness_tests {
                 user_id
             );
         }
+    }
+
+    #[test]
+    fn test_order_status_and_balance_version_sync() {
+        use crate::ledger::OrderStatus;
+
+        let (mut engine, _wal_dir, _snap_dir) = create_test_engine();
+        engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
+
+        // Fund users
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 200000 }).unwrap();
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset: 100, amount: 10 }).unwrap();
+
+        // ---------------------------------------------------------
+        // Scenario 1: New Order (Lock)
+        // ---------------------------------------------------------
+        let v_pre_new = engine.ledger.get_balance_version(1, 200);
+
+        // Buy 1 BTC @ 50,000
+        let (_results, commands) = engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000)]);
+
+        // Verify Status: New
+        let status_new = commands.iter().find_map(|c| match c {
+            LedgerCommand::OrderUpdate(u) if u.status == OrderStatus::New => Some(u),
+            _ => None
+        }).expect("Must emit OrderUpdate(New)");
+
+        // Verify Version: +1
+        let v_post_new = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(v_post_new, v_pre_new + 1, "Status: New -> Balance Version must increment +1 (Lock)");
+
+        // ---------------------------------------------------------
+        // Scenario 2: Trade Match (Fill)
+        // ---------------------------------------------------------
+        let v_pre_match_buyer = engine.ledger.get_balance_version(1, 200); // USDT (Spend)
+        let v_pre_match_seller = engine.ledger.get_balance_version(2, 100); // BTC (Spend)
+
+        // Seller places match (1 BTC @ 50,000)
+        let (_results, commands) = engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 1, 2, 1001)]);
+
+        // Verify Match occurred
+        let match_event = commands.iter().any(|c| matches!(c, LedgerCommand::MatchExecBatch(_)));
+        assert!(match_event, "Must emit MatchExecBatch");
+
+        // Buyer USDT: Match calls `spend_frozen` (Spend Locked). Increment +1.
+        let v_post_match_buyer = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(v_post_match_buyer, v_pre_match_buyer + 1, "Status: Filled -> Buyer Balance Version +1 (Spend Frozen)");
+
+        // Seller BTC: Lock (+1) -> Match Spend (+1) = +2 from START of batch.
+        // v_pre_match_seller is BEFORE batch.
+        let v_post_match_seller = engine.ledger.get_balance_version(2, 100);
+        assert_eq!(v_post_match_seller, v_pre_match_seller + 2, "Status: New->Filled -> Seller Balance Version +2 (Lock + Spend)");
+
+        // ---------------------------------------------------------
+        // Scenario 3: Cancel (Unlock)
+        // ---------------------------------------------------------
+        // Place another order first (1 BTC @ 50,000)
+        engine.add_order_batch(vec![(1, 102, Side::Buy, OrderType::Limit, 50000, 1, 1, 1002)]);
+        let v_pre_cancel = engine.ledger.get_balance_version(1, 200); // Locked state
+
+        let commands = engine.cancel_order(1, 102).unwrap();
+
+        // Verify Status: Cancelled
+        let status_cancel = commands.iter().find_map(|c| match c {
+            LedgerCommand::OrderUpdate(u) if u.status == OrderStatus::Cancelled => Some(u),
+            _ => None
+        }).expect("Must emit OrderUpdate(Cancelled)");
+
+        // Verify Version: +1 (Unlock)
+        let v_post_cancel = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(v_post_cancel, v_pre_cancel + 1, "Status: Cancelled -> Balance Version +1 (Unfrozen)");
+
+        // ---------------------------------------------------------
+        // Scenario 4: Reject (No Change)
+        // ---------------------------------------------------------
+        let v_pre_reject = engine.ledger.get_balance_version(1, 200);
+
+        // Try to buy 1M USDT (Insufficient)
+        let (_results, commands) = engine.add_order_batch(vec![(1, 103, Side::Buy, OrderType::Limit, 1000000, 1, 1, 1003)]);
+
+        // Verify Status: Rejected
+        let status_reject = commands.iter().find_map(|c| match c {
+            LedgerCommand::OrderUpdate(u) if u.status == OrderStatus::Rejected => Some(u),
+            _ => None
+        }).expect("Must emit OrderUpdate(Rejected)");
+
+        // Verify Version: Unchanged
+        let v_post_reject = engine.ledger.get_balance_version(1, 200);
+        assert_eq!(v_post_reject, v_pre_reject, "Status: Rejected -> Balance Version Unchanged");
     }
 }
