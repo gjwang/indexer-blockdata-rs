@@ -4,9 +4,24 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum Side {
-    Buy,
-    Sell,
+    Buy = 1,
+    Sell = 2,
+}
+
+impl Side {
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(Side::Buy),
+            2 => Some(Side::Sell),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for Side {
@@ -31,9 +46,24 @@ impl FromStr for Side {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum OrderType {
-    Limit,
-    Market,
+    Limit = 1,
+    Market = 2,
+}
+
+impl OrderType {
+    pub fn as_u8(&self) -> u8 {
+        *self as u8
+    }
+
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            1 => Some(OrderType::Limit),
+            2 => Some(OrderType::Market),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for OrderType {
@@ -65,6 +95,31 @@ pub enum OrderStatus {
     Filled,
     Cancelled,
     Rejected(String),
+}
+
+impl OrderStatus {
+    pub fn code(&self) -> u8 {
+        match self {
+            OrderStatus::New => 1,
+            OrderStatus::Accepted => 2,
+            OrderStatus::PartiallyFilled => 3,
+            OrderStatus::Filled => 4,
+            OrderStatus::Cancelled => 5,
+            OrderStatus::Rejected(_) => 6,
+        }
+    }
+
+    pub fn from_code(code: u8, rejection_reason: Option<String>) -> Self {
+        match code {
+            1 => OrderStatus::New,
+            2 => OrderStatus::Accepted,
+            3 => OrderStatus::PartiallyFilled,
+            4 => OrderStatus::Filled,
+            5 => OrderStatus::Cancelled,
+            6 => OrderStatus::Rejected(rejection_reason.unwrap_or_default()),
+            _ => OrderStatus::New, // Default or Error
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

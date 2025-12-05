@@ -182,10 +182,13 @@ def verify_state():
         else:
              print_error(f"Settled Trades Missing:\n{trades}")
 
-    # 3. Order History (Should have 2 filled orders)
+    # 3. Order History (Should have 2 filled orders: Status 4=Filled)
+    # Side 1=Buy, 2=Sell.
     history = query("SELECT order_id, side, status, filled_qty FROM order_history")
-    if "Filled" in history:
-        print_success("Order History shows FILLED orders")
+
+    # Check if we see status 4 (Filled)
+    if " 4 " in history or "4" in history.split():
+        print_success("Order History shows FILLED orders (Status 4)")
         print(history)
     else:
         print_error(f"Order History Incorrect:\n{history}")
