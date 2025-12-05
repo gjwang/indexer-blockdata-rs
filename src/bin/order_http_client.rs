@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rand::{rng, Rng};
@@ -21,10 +21,10 @@ async fn main() {
 
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
-    let total_count: u64 = 3_000;
+    let total_count: u64 = 1_00;
 
-    let concurrency = 2;
-    let interval_ms = 0;
+    let concurrency = 1;
+    let interval_ms = 10;
 
     let mut handles = Vec::new();
 

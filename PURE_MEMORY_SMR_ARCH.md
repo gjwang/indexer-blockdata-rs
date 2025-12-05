@@ -66,6 +66,17 @@ The architecture is based on **State Machine Replication (SMR)** with a **Pure I
     *   Handles "Order Status" updates (Mutable Primary Key) efficiently.
     *   Stores Trade History (Immutable).
 
+### F. Order History Service (The Query Layer)
+*   **Role**: Maintains authoritative state of Active and Historic Orders.
+*   **Source of Truth**: Consumes the Matching Engine's ZMQ Output Stream (Follower).
+*   **Architecture Detail**: See [**ORDER_HISTORY_ARCH.md**](./ORDER_HISTORY_ARCH.md) for the full State Machine and Event Lifecycle.
+*   **Logic**:
+    1.  **Ingest**: Listens for Unified `OrderUpdate` events (New, Rejected, Fill, Cancel).
+    2.  **Replay**: Deterministically updates order status (`NEW` -> `PARTIAL` -> `FILLED` / `CANCELLED`).
+    3.  **Persist**: Writes to **ScyllaDB** (`active_orders`, `order_history`).
+    4.  **Query**: Serves API requests for "Open Orders" and "Order History".
+*   **Benefit**: Decouples complex queries from the Matching Engine. The ME remains pure in-memory and fast, while OHS handles state-heavy user queries.
+
 ## 2.1 Event Sourcing Strategy (The Source of Truth)
 For financial integrity, we **DO NOT** rely on the current state of user balances in ScyllaDB as the source of truth. Instead, we use **Event Sourcing**.
 
@@ -135,30 +146,32 @@ CREATE TABLE ledger_events (
 graph TD
     User -->|WS/REST| LB[Load Balancer]
     LB --> GW[Gateway Cluster]
-    
+
     subgraph "Input / Sequencer"
     GW -->|Produce| RP[(Redpanda)]
     end
-    
+
     subgraph "Matching Engine (SMR)"
     RP -->|Consume P0| ME1[ME Node 1]
     RP -->|Consume P0| ME2[ME Node 2]
     ME1 -- Ring Buffer --> ME1
     end
-    
+
     subgraph "Output / Settlement"
     ME1 -->|Path A (Critical)| SET[Settlement Service]
+    ME1 -->|Path A (Critical)| OHS[Order History Service]
     ME2 -->|Path A (Critical)| SET
-    SET -->|ZMQ REQ| ME1
+    SET -->|SEQ Check| ME1
     end
-    
+
     subgraph "Market Data (Fast)"
     ME1 -->|Path B (Fast)| MD[Market Data GW]
     MD -->|WS Ticker| User
     end
-    
+
     subgraph "Storage"
     SET -->|Balances| SCY[(ScyllaDB)]
+    OHS -->|Orders| SCY
     SET -->|History| STR[(StarRocks)]
     end
 ```

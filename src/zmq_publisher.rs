@@ -29,9 +29,7 @@ impl ZmqPublisher {
     }
 
     pub fn publish_settlement(&self, data: &[u8]) -> Result<(), zmq::Error> {
-        // Topic: "settlement"
-        // Multipart: [Topic, Data]
-        self.settlement_pub.send("settlement", zmq::SNDMORE)?;
+        // PUSH socket - no topic needed, just send data
         self.settlement_pub.send(data, 0)
     }
 

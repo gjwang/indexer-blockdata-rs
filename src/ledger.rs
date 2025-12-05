@@ -69,6 +69,7 @@ pub enum LedgerCommand {
     },
     MatchExec(MatchExecData),
     MatchExecBatch(Vec<MatchExecData>),
+    OrderUpdate(OrderUpdate),
     Batch(Vec<LedgerCommand>),
 }
 
@@ -93,6 +94,33 @@ pub struct MatchExecData {
     pub buyer_base_version: u64,   // buyer's base_asset balance version
     pub seller_base_version: u64,  // seller's base_asset balance version
     pub seller_quote_version: u64, // seller's quote_asset balance version
+}
+
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OrderStatus {
+    New,
+    PartiallyFilled,
+    Filled,
+    Cancelled,
+    Rejected,
+    Expired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderUpdate {
+    pub order_id: u64,
+    pub client_order_id: Option<String>,
+    pub user_id: UserId,
+    pub symbol: String, // e.g. "BTC_USDT"
+    pub status: OrderStatus,
+    pub price: u64,
+    pub qty: u64,
+    pub filled_qty: u64,
+    pub avg_fill_price: Option<u64>,
+    pub rejection_reason: Option<String>,
+    pub timestamp: u64, // ms
+    pub match_id: Option<u64>, // For Fills
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -568,6 +596,7 @@ impl<'a> Ledger for ShadowLedger<'a> {
                     self.apply(c)?;
                 }
             }
+            LedgerCommand::OrderUpdate(_) => {} // No-op for ledger state
         }
         Ok(())
     }
@@ -975,6 +1004,7 @@ impl GlobalLedger {
                     Self::apply_transaction(accounts, cmd)?;
                 }
             }
+            LedgerCommand::OrderUpdate(_) => {} // No-op for ledger state
         }
         Ok(())
     }
