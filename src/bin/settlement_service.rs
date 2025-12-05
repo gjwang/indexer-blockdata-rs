@@ -1,7 +1,8 @@
 use fetcher::configure;
 use fetcher::db::SettlementDb;
 use fetcher::logger::setup_logger;
-use zmq::{Context, SUB};
+use zmq::{Context, PULL};
+use chrono::Utc;
 
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 
@@ -73,13 +74,13 @@ async fn main() {
         }
     });
 
-    // Setup ZMQ Subscriber
+    // Setup ZMQ Subscriber (Actually PULL to guarantee no drops)
     let context = Context::new();
-    let subscriber = context.socket(SUB).expect("Failed to create SUB socket");
+    let subscriber = context.socket(PULL).expect("Failed to create PULL socket");
+    subscriber.set_rcvhwm(1_000_000).expect("Failed to set RCVHWM");
 
     let endpoint = format!("tcp://localhost:{}", zmq_config.settlement_port);
     subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
-    subscriber.set_subscribe(b"").expect("Failed to subscribe");
 
     // Validate required file paths from config
     if config.backup_csv_file.is_empty() {
@@ -148,6 +149,9 @@ async fn main() {
     let mut wtr = csv::WriterBuilder::new()
         .has_headers(false) // Don't write headers on append
         .from_writer(file);
+
+    // Initialize sequence counter avoiding timestamp collision (Seed with Time, Increment Locally)
+    let mut event_seq_counter = Utc::now().timestamp_nanos() as u64;
 
     loop {
         let _topic = match subscriber.recv_string(0) {
@@ -222,7 +226,7 @@ async fn main() {
             }
 
             // Settle atomically using LOGGED BATCH
-            match settlement_db.settle_trade_atomically(&symbol, &trade).await {
+            match settlement_db.settle_trade_atomically(&trade).await {
                 Ok(()) => {
                     total_settled += 1;
 
@@ -260,7 +264,7 @@ async fn main() {
                 }
                 Err(e) => {
                     total_errors += 1;
-                    log::error!(target: LOG_TARGET, "❌ Failed to settle trade {}: {}", trade.trade_id, e);
+                    log::error!(target: LOG_TARGET, "❌ Failed to settle trade {}: {:#}", trade.trade_id, e);
                     log::error!(target: LOG_TARGET, "[METRIC] settlement_errors_total={}", total_errors);
 
                     // Log to failed_trades.json for manual recovery
@@ -296,7 +300,9 @@ async fn main() {
         else if let Ok(mut event) = serde_json::from_slice::<fetcher::ledger::LedgerEvent>(&data)
         {
             // Assign a unique sequence ID (using timestamp nanos) since engine sent 0
-            event.sequence_id = chrono::Utc::now().timestamp_nanos() as u64;
+            // Assign a unique sequence ID (using local counter) since engine sent 0
+            event_seq_counter += 1;
+            event.sequence_id = event_seq_counter;
 
             match settlement_db.insert_ledger_event(&event).await {
                 Ok(()) => {
@@ -305,7 +311,6 @@ async fn main() {
                     // Update user_balances for DEPOSIT events
                     if event.event_type == "DEPOSIT" {
                         // For deposits, we don't have a version from ME, so we use a simple increment
-                        // This is safe because deposits happen at initialization before any trades
                         match settlement_db.update_balance_for_deposit(event.user_id, event.currency, event.amount).await {
                             Ok((current_available, new_available, current_version, new_version)) => {
                                 log::info!(
@@ -321,6 +326,42 @@ async fn main() {
                             }
                             Err(e) => {
                                 log::error!(target: LOG_TARGET, "Failed to update balance for deposit: {}", e);
+                            }
+                        }
+                    } else if event.event_type == "LOCK" {
+                        match settlement_db.update_balance_for_lock(event.user_id, event.currency, event.amount).await {
+                            Ok((current_available, new_available, current_version, new_version)) => {
+                                log::info!(
+                                    target: LOG_TARGET,
+                                    "Balance updated for LOCK: user={}, asset={}, avail {} -> {}, v={} -> {}",
+                                    event.user_id,
+                                    event.currency,
+                                    current_available,
+                                    new_available,
+                                    current_version,
+                                    new_version
+                                );
+                            }
+                            Err(e) => {
+                                log::error!(target: LOG_TARGET, "Failed to update balance for LOCK: {}", e);
+                            }
+                        }
+                    } else if event.event_type == "UNLOCK" {
+                        match settlement_db.update_balance_for_unlock(event.user_id, event.currency, event.amount).await {
+                            Ok((current_available, new_available, current_version, new_version)) => {
+                                log::info!(
+                                    target: LOG_TARGET,
+                                    "Balance updated for UNLOCK: user={}, asset={}, avail {} -> {}, v={} -> {}",
+                                    event.user_id,
+                                    event.currency,
+                                    current_available,
+                                    new_available,
+                                    current_version,
+                                    new_version
+                                );
+                            }
+                            Err(e) => {
+                                log::error!(target: LOG_TARGET, "Failed to update balance for UNLOCK: {}", e);
                             }
                         }
                     }

@@ -484,6 +484,40 @@ async fn main() {
                             let _ = zmq_pub_clone.publish_settlement(&data);
                         }
                     }
+                    LedgerCommand::Lock { user_id, asset, amount } => {
+                        let event = LedgerEvent {
+                            user_id: *user_id,
+                            sequence_id: 0,
+                            event_type: "LOCK".to_string(),
+                            amount: *amount,
+                            currency: *asset,
+                            related_id: 0,
+                            created_at: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as i64,
+                        };
+                        if let Ok(data) = serde_json::to_vec(&event) {
+                            let _ = zmq_pub_clone.publish_settlement(&data);
+                        }
+                    }
+                    LedgerCommand::Unlock { user_id, asset, amount } => {
+                        let event = LedgerEvent {
+                            user_id: *user_id,
+                            sequence_id: 0,
+                            event_type: "UNLOCK".to_string(),
+                            amount: *amount,
+                            currency: *asset,
+                            related_id: 0,
+                            created_at: SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as i64,
+                        };
+                        if let Ok(data) = serde_json::to_vec(&event) {
+                            let _ = zmq_pub_clone.publish_settlement(&data);
+                        }
+                    }
                     _ => {}
                 }
             }

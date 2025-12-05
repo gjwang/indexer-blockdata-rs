@@ -1,4 +1,4 @@
-use zmq::{Context, Socket, PUB};
+use zmq::{Context, Socket, PUB, PUSH};
 
 pub struct ZmqPublisher {
     _context: Context, // Keep context alive
@@ -15,11 +15,13 @@ impl ZmqPublisher {
     pub fn new(settlement_port: u16, market_data_port: u16) -> Result<Self, zmq::Error> {
         let context = Context::new();
 
-        let settlement_pub = context.socket(PUB)?;
+        let settlement_pub = context.socket(PUSH)?;
+        settlement_pub.set_sndhwm(1_000_000)?;
         settlement_pub.bind(&format!("tcp://*:{}", settlement_port))?;
         println!("   [ZMQ] Settlement PUB bound to port {}", settlement_port);
 
         let market_data_pub = context.socket(PUB)?;
+        market_data_pub.set_sndhwm(1_000_000)?;
         market_data_pub.bind(&format!("tcp://*:{}", market_data_port))?;
         println!("   [ZMQ] Market Data PUB bound to port {}", market_data_port);
 

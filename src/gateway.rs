@@ -187,8 +187,8 @@ async fn transfer_in(
     println!("✅ Transfer In request published to Kafka: {}", payload.request_id);
 
     // 3. Wait for Settlement (Simulated)
-    println!("⏳ Waiting 5s for settlement...");
-    sleep(Duration::from_secs(5)).await;
+    println!("⏳ Waiting 1s for settlement...");
+    sleep(Duration::from_secs(1)).await;
 
     // 4. "Spend" the locked funds
     {

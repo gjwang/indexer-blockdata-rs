@@ -249,17 +249,22 @@ ScyllaDB batches are **NOT** like SQL transactions:
 
 ### 2. **Idempotency Required**
 
-Statements may be **re-executed** during recovery:
+Statements may be **re-executed** during recovery. To ensure safety, we calculate the absolute resulting balance in the application and write strictly strictly idempotent values.
 
 ```rust
 // ✅ Idempotent - safe to re-execute
-UPDATE user_balances SET available = available + 100 WHERE user_id = 1001;
-
-// ❌ NOT idempotent - would double-apply
+// "Set balance to 200" is always 200, no matter how many times it runs.
 UPDATE user_balances SET available = 200 WHERE user_id = 1001;
+
+// ❌ NOT idempotent (and invalid for non-counter columns)
+// "Add 100" would add 200 if executed twice!
+UPDATE user_balances SET available = available + 100 WHERE user_id = 1001;
 ```
 
-**Our balance updates are idempotent** because we use `+=` and `-=`.
+**Our implementation**:
+1. Read current balances (e.g., 1000).
+2. Calculate new balances in memory (e.g., 1000 + 100 = 1100).
+3. Write the **absolute value** (1100) in the batch.
 
 ### 3. **Performance Cost**
 
@@ -277,25 +282,30 @@ Batch log writes add overhead:
 ```rust
 // Trade: User 1001 buys 0.1 BTC from User 2005 for 10,000 USDT
 
+// 1. Read current balances (Pre-computation phase)
+// Buyer BTC: 0.5 -> New: 0.6
+// Buyer USDT: 50,000 -> New: 40,000
+// ...
+
 let mut batch = BatchStatement::new(BatchType::Logged);
 
-// 1. Insert trade (partition: trade_id)
-batch.append("INSERT INTO settled_trades_btc_usdt (trade_id, ...) VALUES (?, ...)");
+// 2. Insert trade (partition: trade_id)
+batch.append("INSERT INTO settled_trades (trade_id, ...) VALUES (?, ...)");
 
-// 2. Buyer balances (partition: user_id=1001)
-batch.append("UPDATE user_balances SET available = available + ?
-              WHERE user_id = 1001 AND asset_id = 1");  // +0.1 BTC
-batch.append("UPDATE user_balances SET available = available - ?
-              WHERE user_id = 1001 AND asset_id = 2");  // -10000 USDT
+// 3. Buyer balances (partition: user_id=1001) - USING ABSOLUTE VALUES
+batch.append("UPDATE user_balances SET available = ?
+              WHERE user_id = 1001 AND asset_id = 1");  // Set to 0.6
+batch.append("UPDATE user_balances SET available = ?
+              WHERE user_id = 1001 AND asset_id = 2");  // Set to 40,000
 
-// 3. Seller balances (partition: user_id=2005)
-batch.append("UPDATE user_balances SET available = available - ?
-              WHERE user_id = 2005 AND asset_id = 1");  // -0.1 BTC
-batch.append("UPDATE user_balances SET available = available + ?
-              WHERE user_id = 2005 AND asset_id = 2");  // +10000 USDT
+// 4. Seller balances (partition: user_id=2005) - USING ABSOLUTE VALUES
+batch.append("UPDATE user_balances SET available = ?
+              WHERE user_id = 2005 AND asset_id = 1");  // Set to 4.9
+batch.append("UPDATE user_balances SET available = ?
+              WHERE user_id = 2005 AND asset_id = 2");  // Set to 60,000
 
 // Execute atomically
-session.batch(&batch, ()).await?;
+session.batch(&batch, (values...)).await?;
 ```
 
 **What happens**:

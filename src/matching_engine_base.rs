@@ -540,21 +540,7 @@ impl MatchingEngine {
             std::collections::HashMap::new();
 
         for trade in trades {
-            // Helper to get and increment version
-            let mut get_and_inc_version = |user_id: u64, asset_id: u32| -> u64 {
-                let entry = temp_versions
-                    .entry((user_id, asset_id))
-                    .or_insert_with(|| ledger.get_balance_version(user_id, asset_id));
-                let v = *entry;
-                *entry += 1;
-                v
-            };
-
-            let buyer_quote_version = get_and_inc_version(trade.buy_user_id, quote_asset);
-            let buyer_base_version = get_and_inc_version(trade.buy_user_id, base_asset);
-            let seller_base_version = get_and_inc_version(trade.sell_user_id, base_asset);
-            let seller_quote_version = get_and_inc_version(trade.sell_user_id, quote_asset);
-
+            // Calculate refund early to determine version increment
             let buyer_refund = if side == Side::Buy && trade.buy_user_id == user_id {
                 if price > trade.price {
                     (price - trade.price) * trade.quantity
@@ -564,6 +550,25 @@ impl MatchingEngine {
             } else {
                 0
             };
+
+            // Buyer Quote Asset increments by 2 if there is a refund (Spend + Refund)
+            // Otherwise increments by 1 (Spend)
+            let buyer_quote_inc = if buyer_refund > 0 { 2 } else { 1 };
+
+            // Helper to get and increment version
+            let mut get_and_add_version = |user_id: u64, asset_id: u32, inc: u64| -> u64 {
+                let entry = temp_versions
+                    .entry((user_id, asset_id))
+                    .or_insert_with(|| ledger.get_balance_version(user_id, asset_id));
+                let v = *entry;
+                *entry += inc;
+                v
+            };
+
+            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset, buyer_quote_inc);
+            let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset, 1);
+            let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset, 1);
+            let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset, 1);
 
             match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use scylla::prepared_statement::PreparedStatement;
 use scylla::{Session, SessionBuilder};
+use scylla::batch::Batch;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -538,8 +539,7 @@ impl SettlementDb {
             let (current_avail, current_ver) = match current {
                 Some(b) => (b.available as i64, b.version),
                 None => {
-                    self.init_balance_if_not_exists(user_id, asset_id).await?;
-                    (0, 0)
+                    anyhow::bail!("Balance not found for user {} asset {}", user_id, asset_id);
                 }
             };
 
@@ -613,9 +613,7 @@ impl SettlementDb {
                 (balance.available as i64, balance.version)
             }
             None => {
-                // Balance doesn't exist, initialize it first
-                self.init_balance_if_not_exists(user_id, asset_id).await?;
-                (0, 0)
+                anyhow::bail!("Balance not found for user {} asset {}", user_id, asset_id);
             }
         };
 
@@ -777,16 +775,23 @@ impl SettlementDb {
         asset_id: u32,
         amount: u64,
     ) -> Result<(i64, i64, i64, i64)> {
+        // Ensure record exists
+        self.init_balance_if_not_exists(user_id, asset_id).await?;
+
         // Get current balance
         let current = self.get_user_balance(user_id, asset_id).await?;
 
+        // Note: current is Option<UserBalance>, but we just init'd it, so likely Some.
+        // But concurrent access might be tricky. Using defaults is safe.
         let current_available = current.as_ref().map(|b| b.available as i64).unwrap_or(0);
+        let current_frozen = current.as_ref().map(|b| b.frozen as i64).unwrap_or(0);
         let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
 
         // Calculate new balance
         let new_available = current_available + amount as i64;
+        let new_frozen = current_frozen; // Preserve frozen
+        let new_version = current_version + 1;
 
-        // Direct update without version check (deposits are idempotent by sequence_id in ledger_events)
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
             SET available = ?,
@@ -797,14 +802,13 @@ impl SettlementDb {
         ";
 
         let now = get_current_timestamp_ms();
-        let new_version = current_version + 1;
 
         self.session
             .query(
                 UPDATE_BALANCE_CQL,
                 (
                     new_available,
-                    0_i64, // frozen
+                    new_frozen,
                     new_version as i64,
                     now,
                     user_id as i64,
@@ -812,6 +816,78 @@ impl SettlementDb {
                 ),
             )
             .await?;
+
+        Ok((current_available, new_available, current_version as i64, new_version as i64))
+    }
+
+    pub async fn update_balance_for_lock(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<(i64, i64, i64, i64)> {
+        let current = self.get_user_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Lock)", user_id, asset_id))?;
+
+        let current_available = current.available as i64;
+        let current_frozen = current.frozen as i64;
+        let current_version = current.version;
+
+        let new_available = current_available - amount as i64;
+        let new_frozen = current_frozen + amount as i64;
+        let new_version = current_version + 1;
+
+        const UPDATE_CQL: &str = "
+            UPDATE user_balances
+            SET available = ?, frozen = ?, version = ?, updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+        ";
+        let now = get_current_timestamp_ms();
+
+        self.session.query(UPDATE_CQL, (
+            new_available,
+            new_frozen,
+            new_version as i64,
+            now,
+            user_id as i64,
+            asset_id as i32
+        )).await?;
+
+        Ok((current_available, new_available, current_version as i64, new_version as i64))
+    }
+
+    pub async fn update_balance_for_unlock(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<(i64, i64, i64, i64)> {
+        let current = self.get_user_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Unlock)", user_id, asset_id))?;
+
+        let current_available = current.available as i64;
+        let current_frozen = current.frozen as i64;
+        let current_version = current.version;
+
+        let new_available = current_available + amount as i64;
+        let new_frozen = current_frozen - amount as i64;
+        let new_version = current_version + 1;
+
+        const UPDATE_CQL: &str = "
+            UPDATE user_balances
+            SET available = ?, frozen = ?, version = ?, updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+        ";
+        let now = get_current_timestamp_ms();
+
+        self.session.query(UPDATE_CQL, (
+            new_available,
+            new_frozen,
+            new_version as i64,
+            now,
+            user_id as i64,
+            asset_id as i32
+        )).await?;
 
         Ok((current_available, new_available, current_version as i64, new_version as i64))
     }
@@ -937,65 +1013,219 @@ impl SettlementDb {
     /// # Returns
     /// * `Ok(())` - Trade settled successfully
     /// * `Err(_)` - Settlement failed
-    pub async fn settle_trade_atomically(
+    /// Helper to fetch balance with retry if version is stale
+    async fn get_consistent_balance(
         &self,
-        _symbol: &str,
-        trade: &MatchExecData,
-    ) -> Result<()> {
-        let quote_amount = trade.price * trade.quantity;
+        user_id: u64,
+        asset_id: u32,
+        expected_ver: i64,
+    ) -> Result<(i64, i64)> {
+        let mut attempts = 0;
+        loop {
+            let res = self.get_user_balance(user_id, asset_id).await?;
+            let (bal, ver) = match res {
+                Some(b) => (b.available as i64, b.version as i64),
+                None => (0, 0),
+            };
+
+            // If version matches (or is newer), we are good.
+            if ver >= expected_ver {
+                return Ok((bal, ver));
+            }
+
+            attempts += 1;
+            if attempts >= 5 {
+                // Return whatever we have; strict check will fail later if mismatch persists
+                return Ok((bal, ver));
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    pub async fn settle_trade_atomically(&self, trade: &MatchExecData) -> Result<()> {
+        // 1. Validate Balances Exist
+        // Design Decision: We do NOT initialize balances here.
+        // Users must deposit funds (which initializes the balance record) before trading.
+        // If a balance is missing during settlement, it indicates a critical logic error.
+
+        // 2. Read current balances (with retry for consistency)
+        let (buyer_base, buyer_base_ver) = self
+            .get_consistent_balance(
+                trade.buyer_user_id,
+                trade.base_asset,
+                trade.buyer_base_version as i64,
+            )
+            .await?;
+
+        let (buyer_quote, buyer_quote_ver) = self
+            .get_consistent_balance(
+                trade.buyer_user_id,
+                trade.quote_asset,
+                trade.buyer_quote_version as i64,
+            )
+            .await?;
+
+        let (seller_base, seller_base_ver) = self
+            .get_consistent_balance(
+                trade.seller_user_id,
+                trade.base_asset,
+                trade.seller_base_version as i64,
+            )
+            .await?;
+
+        let (seller_quote, seller_quote_ver) = self
+            .get_consistent_balance(
+                trade.seller_user_id,
+                trade.quote_asset,
+                trade.seller_quote_version as i64,
+            )
+            .await?;
+
+        // 3. Calculate new balances
+        let quote_amount = (trade.price * trade.quantity) as i64;
+        let quantity = trade.quantity as i64;
+
+        let new_buyer_base = buyer_base + quantity;
+        let new_buyer_quote = buyer_quote - quote_amount;
+        let new_seller_base = seller_base - quantity;
+        let new_seller_quote = seller_quote + quote_amount;
+
+        // Check data integrity: DB version must match ME version
+        if buyer_base_ver != trade.buyer_base_version as i64 {
+            anyhow::bail!(
+                "Version mismatch Buyer Base (User {} Asset {}): DB={} ME={}",
+                trade.buyer_user_id,
+                trade.base_asset,
+                buyer_base_ver,
+                trade.buyer_base_version
+            );
+        }
+        if buyer_quote_ver != trade.buyer_quote_version as i64 {
+            anyhow::bail!(
+                "Version mismatch Buyer Quote (User {} Asset {}): DB={} ME={}",
+                trade.buyer_user_id,
+                trade.quote_asset,
+                buyer_quote_ver,
+                trade.buyer_quote_version
+            );
+        }
+        if seller_base_ver != trade.seller_base_version as i64 {
+            anyhow::bail!(
+                "Version mismatch Seller Base (User {} Asset {}): DB={} ME={}",
+                trade.seller_user_id,
+                trade.base_asset,
+                seller_base_ver,
+                trade.seller_base_version
+            );
+        }
+        if seller_quote_ver != trade.seller_quote_version as i64 {
+            anyhow::bail!(
+                "Version mismatch Seller Quote (User {} Asset {}): DB={} ME={}",
+                trade.seller_user_id,
+                trade.quote_asset,
+                seller_quote_ver,
+                trade.seller_quote_version
+            );
+        }
+
+        // Calculate new versions
+        // Note: ME increments version execution steps:
+        // Buyer Quote: Spend(+1) + Refund(+1 if >0)
+        // Seller Base: Spend(+1) + Refund(+1 if >0)
+        // Buyer Base: Deposit(+1)
+        // Seller Quote: Deposit(+1)
+
+        let buyer_quote_inc = if trade.buyer_refund > 0 { 2 } else { 1 };
+        let seller_base_inc = if trade.seller_refund > 0 { 2 } else { 1 };
+
+        let new_buyer_base_ver = buyer_base_ver + 1;
+        let new_buyer_quote_ver = buyer_quote_ver + buyer_quote_inc;
+        let new_seller_base_ver = seller_base_ver + seller_base_inc;
+        let new_seller_quote_ver = seller_quote_ver + 1;
+
+        // 4. Create Batch
+        let mut batch = Batch::new(scylla::batch::BatchType::Logged);
         let now = get_current_timestamp_ms();
+        let trade_date = get_current_date();
 
-        // 1. Insert trade (uses existing method with proper prepared statement)
-        self.insert_trade(trade).await?;
+        // Add Trade Insert
+        batch.append_statement(INSERT_TRADE_CQL);
 
-        // 2. Initialize balances if they don't exist
-        self.init_balance_if_not_exists(trade.buyer_user_id, trade.base_asset).await?;
-        self.init_balance_if_not_exists(trade.buyer_user_id, trade.quote_asset).await?;
-        self.init_balance_if_not_exists(trade.seller_user_id, trade.base_asset).await?;
-        self.init_balance_if_not_exists(trade.seller_user_id, trade.quote_asset).await?;
-
-        // 3. Update balances using simple counter updates
+        // Add Balance Updates
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
-            SET available = available + ?, version = version + 1, updated_at = ?
+            SET available = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
 
-        // Update buyer BTC balance (+quantity)
-        self.session
-            .query(
-                UPDATE_BALANCE_CQL,
-                (trade.quantity as i64, now, trade.buyer_user_id as i64, trade.base_asset as i32),
-            )
-            .await
-            .context("Failed to update buyer BTC balance")?;
+        batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Base
+        batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Quote
+        batch.append_statement(UPDATE_BALANCE_CQL); // Seller Base
+        batch.append_statement(UPDATE_BALANCE_CQL); // Seller Quote
 
-        // Update buyer USDT balance (-quote_amount)
-        self.session
-            .query(
-                UPDATE_BALANCE_CQL,
-                (-(quote_amount as i64), now, trade.buyer_user_id as i64, trade.quote_asset as i32),
-            )
-            .await
-            .context("Failed to update buyer USDT balance")?;
+        // 5. Execute Batch
+        // Values for Trade Insert
+        let trade_values = (
+            trade_date as i32,
+            trade.output_sequence as i64,
+            trade.trade_id as i64,
+            trade.match_seq as i64,
+            trade.buy_order_id as i64,
+            trade.sell_order_id as i64,
+            trade.buyer_user_id as i64,
+            trade.seller_user_id as i64,
+            trade.price as i64,
+            trade.quantity as i64,
+            trade.base_asset as i32,
+            trade.quote_asset as i32,
+            trade.buyer_refund as i64,
+            trade.seller_refund as i64,
+            trade.settled_at as i64,
+        );
 
-        // Update seller BTC balance (-quantity)
-        self.session
-            .query(
-                UPDATE_BALANCE_CQL,
-                (-(trade.quantity as i64), now, trade.seller_user_id as i64, trade.base_asset as i32),
-            )
-            .await
-            .context("Failed to update seller BTC balance")?;
+        // Values for Balance Updates
+        let buyer_base_values = (
+            new_buyer_base,
+            new_buyer_base_ver,
+            now,
+            trade.buyer_user_id as i64,
+            trade.base_asset as i32,
+        );
+        let buyer_quote_values = (
+            new_buyer_quote,
+            new_buyer_quote_ver,
+            now,
+            trade.buyer_user_id as i64,
+            trade.quote_asset as i32,
+        );
+        let seller_base_values = (
+            new_seller_base,
+            new_seller_base_ver,
+            now,
+            trade.seller_user_id as i64,
+            trade.base_asset as i32,
+        );
+        let seller_quote_values = (
+            new_seller_quote,
+            new_seller_quote_ver,
+            now,
+            trade.seller_user_id as i64,
+            trade.quote_asset as i32,
+        );
 
-        // Update seller USDT balance (+quote_amount)
         self.session
-            .query(
-                UPDATE_BALANCE_CQL,
-                (quote_amount as i64, now, trade.seller_user_id as i64, trade.quote_asset as i32),
+            .batch(
+                &batch,
+                (
+                    trade_values,
+                    buyer_base_values,
+                    buyer_quote_values,
+                    seller_base_values,
+                    seller_quote_values,
+                ),
             )
             .await
-            .context("Failed to update seller USDT balance")?;
+            .context("Failed to execute settlement batch")?;
 
         log::debug!(
             "Settled trade {} (buyer={}, seller={})",
