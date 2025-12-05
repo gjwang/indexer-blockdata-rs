@@ -245,8 +245,22 @@ async fn main() {
                     if event.event_type == "DEPOSIT" {
                         // For deposits, we don't have a version from ME, so we use a simple increment
                         // This is safe because deposits happen at initialization before any trades
-                        if let Err(e) = update_balance_for_deposit(&settlement_db, &event).await {
-                            log::error!(target: LOG_TARGET, "Failed to update balance for deposit: {}", e);
+                        match settlement_db.update_balance_for_deposit(event.user_id, event.currency, event.amount).await {
+                            Ok((current_available, new_available, current_version, new_version)) => {
+                                log::info!(
+                                    target: LOG_TARGET,
+                                    "Balance updated for deposit: user={}, asset={}, {} -> {}, v={} -> {}",
+                                    event.user_id,
+                                    event.currency,
+                                    current_available,
+                                    new_available,
+                                    current_version,
+                                    new_version
+                                );
+                            }
+                            Err(e) => {
+                                log::error!(target: LOG_TARGET, "Failed to update balance for deposit: {}", e);
+                            }
                         }
                     }
                 }
@@ -344,64 +358,6 @@ async fn update_balances_for_trade(
             seller_quote_updated
         );
     }
-
-    Ok(())
-}
-
-/// Update user balance for a deposit event
-///
-/// Deposits happen at initialization before any trades, so we don't use version checking.
-/// We simply add the deposit amount to the current balance.
-async fn update_balance_for_deposit(
-    db: &SettlementDb,
-    event: &fetcher::ledger::LedgerEvent,
-) -> anyhow::Result<()> {
-    // Get current balance
-    let current = db.get_user_balance(event.user_id, event.currency).await?;
-
-    let current_available = current.as_ref().map(|b| b.available as i64).unwrap_or(0);
-    let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
-
-    // Calculate new balance
-    let new_available = current_available + event.amount as i64;
-
-    // Direct update without version check (deposits are idempotent by sequence_id in ledger_events)
-    const UPDATE_BALANCE_CQL: &str = "
-        UPDATE user_balances
-        SET available = ?,
-            frozen = ?,
-            version = ?,
-            updated_at = ?
-        WHERE user_id = ? AND asset_id = ?
-    ";
-
-    let now = fetcher::common_utils::get_current_timestamp_ms();
-    let new_version = current_version + 1;
-
-    db.session()
-        .query(
-            UPDATE_BALANCE_CQL,
-            (
-                new_available,
-                0_i64, // frozen
-                new_version as i64,
-                now,
-                event.user_id as i64,
-                event.currency as i32,
-            ),
-        )
-        .await?;
-
-    log::info!(
-        target: LOG_TARGET,
-        "Balance updated for deposit: user={}, asset={}, {} -> {}, v={} -> {}",
-        event.user_id,
-        event.currency,
-        current_available,
-        new_available,
-        current_version,
-        new_version
-    );
 
     Ok(())
 }

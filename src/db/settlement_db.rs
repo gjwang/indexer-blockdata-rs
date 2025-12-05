@@ -770,6 +770,51 @@ impl SettlementDb {
 
         Ok(balances)
     }
+    /// Update user balance for a deposit event (no version check)
+    pub async fn update_balance_for_deposit(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<(i64, i64, i64, i64)> {
+        // Get current balance
+        let current = self.get_user_balance(user_id, asset_id).await?;
+
+        let current_available = current.as_ref().map(|b| b.available as i64).unwrap_or(0);
+        let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
+
+        // Calculate new balance
+        let new_available = current_available + amount as i64;
+
+        // Direct update without version check (deposits are idempotent by sequence_id in ledger_events)
+        const UPDATE_BALANCE_CQL: &str = "
+            UPDATE user_balances
+            SET available = ?,
+                frozen = ?,
+                version = ?,
+                updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+        ";
+
+        let now = get_current_timestamp_ms();
+        let new_version = current_version + 1;
+
+        self.session
+            .query(
+                UPDATE_BALANCE_CQL,
+                (
+                    new_available,
+                    0_i64, // frozen
+                    new_version as i64,
+                    now,
+                    user_id as i64,
+                    asset_id as i32,
+                ),
+            )
+            .await?;
+
+        Ok((current_available, new_available, current_version as i64, new_version as i64))
+    }
 }
 
 #[derive(Debug, Clone)]
