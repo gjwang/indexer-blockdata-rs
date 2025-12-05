@@ -1004,13 +1004,13 @@ impl SettlementDb {
     /// Check if trade already exists in symbol-specific table
     ///
     /// Used for idempotency - prevents duplicate settlement
-    pub async fn trade_exists(&self, symbol: &str, trade_id: u64) -> Result<bool> {
-        let table_name = format!("settled_trades_{}", symbol.to_lowercase());
-        let query = format!("SELECT trade_id FROM {} WHERE trade_id = ? LIMIT 1", table_name);
+    pub async fn trade_exists(&self, _symbol: &str, trade_id: u64) -> Result<bool> {
+        // Use existing settled_trades table (per-symbol tables not yet activated)
+        const QUERY: &str = "SELECT trade_id FROM settled_trades WHERE trade_id = ? LIMIT 1";
 
         let result = self
             .session
-            .query(query, (trade_id as i64,))
+            .query(QUERY, (trade_id as i64,))
             .await
             .context("Failed to check if trade exists")?;
 
