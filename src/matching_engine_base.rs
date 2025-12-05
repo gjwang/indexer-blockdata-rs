@@ -457,7 +457,8 @@ impl MatchingEngine {
         }
 
         // 2. Process Logic
-        let (oid, _emitted_commands) = Self::process_order_logic(
+        // 2. Process Logic
+        let oid = Self::process_order_logic(
             &mut self.ledger,
             &mut self.order_books,
             &self.asset_map,
@@ -495,6 +496,8 @@ impl MatchingEngine {
 
     /// Internal Logic: Process Order (No Input WAL write)
     /// Returns (order_id, Vec<LedgerCommand>) where commands include both ledger ops and OrderUpdate events
+    /// Internal Logic: Process Order (No Input WAL write)
+    /// Returns order_id (or error). Commands are applied to the ledger.
     fn process_order_logic(
         ledger: &mut impl Ledger,
         order_books: &mut Vec<Option<OrderBook>>,
@@ -509,13 +512,11 @@ impl MatchingEngine {
         quantity: u64,
         user_id: u64,
         timestamp: u64,
-    ) -> Result<(u64, Vec<LedgerCommand>), OrderError> {
+    ) -> Result<u64, OrderError> {
         use crate::ledger::{OrderStatus, OrderUpdate};
 
         let (base_asset, quote_asset) =
             *asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
-
-        let mut emitted_commands = Vec::new();
 
         // Get symbol name for OrderUpdate
         let symbol_name = format!("SYMBOL_{}", symbol_id); // TODO: Get from symbol_manager
@@ -541,8 +542,26 @@ impl MatchingEngine {
                 timestamp,
                 match_id: None,
             };
-            return Ok((order_id, vec![LedgerCommand::OrderUpdate(rejection)]));
+            ledger.apply(&LedgerCommand::OrderUpdate(rejection)).map_err(|e| OrderError::LedgerError(e.to_string()))?;
+            return Ok(order_id);
         }
+
+        // Emit OrderUpdate(New) - Order successfully placed (Funds Locked)
+        let new_order_event = OrderUpdate {
+            order_id,
+            client_order_id: None,
+            user_id,
+            symbol: symbol_name.clone(),
+            status: OrderStatus::New,
+            price,
+            qty: quantity,
+            filled_qty: 0,
+            avg_fill_price: None,
+            rejection_reason: None,
+            timestamp,
+            match_id: None,
+        };
+        ledger.apply(&LedgerCommand::OrderUpdate(new_order_event)).map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         let book_opt = order_books
             .get_mut(symbol_id as usize)
@@ -620,29 +639,11 @@ impl MatchingEngine {
 
         if !match_batch.is_empty() {
             ledger
-                .apply(&LedgerCommand::MatchExecBatch(match_batch.clone()))
+                .apply(&LedgerCommand::MatchExecBatch(match_batch))
                 .map_err(|e| OrderError::LedgerError(e.to_string()))?;
-            emitted_commands.push(LedgerCommand::MatchExecBatch(match_batch));
         }
 
-        // Emit OrderUpdate(New) - Order successfully placed
-        let order_update = OrderUpdate {
-            order_id,
-            client_order_id: None, // TODO: Pass from caller if available
-            user_id,
-            symbol: symbol_name,
-            status: OrderStatus::New,
-            price,
-            qty: quantity,
-            filled_qty: 0, // Just placed, not filled yet
-            avg_fill_price: None,
-            rejection_reason: None,
-            timestamp,
-            match_id: None,
-        };
-        emitted_commands.push(LedgerCommand::OrderUpdate(order_update));
-
-        Ok((order_id, emitted_commands))
+        Ok(order_id)
     }
 
     pub fn add_order_batch(
@@ -706,7 +707,6 @@ impl MatchingEngine {
         // 3. Process Valid Orders (Shadow Mode)
         let t_process_start = std::time::Instant::now();
         let mut shadow = ShadowLedger::new(&self.ledger);
-        let mut all_emitted_commands = Vec::new();
 
         for i in valid_indices {
             let (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) =
@@ -726,9 +726,8 @@ impl MatchingEngine {
                 user_id,
                 timestamp,
             ) {
-                Ok((oid, mut emitted_commands)) => {
+                Ok(oid) => {
                     results[i] = Ok(oid);
-                    all_emitted_commands.append(&mut emitted_commands);
                 }
                 Err(e) => {
                     println!("[MatchingEngine] process_order_logic failed: {:?}", e);
@@ -749,8 +748,6 @@ impl MatchingEngine {
             output_cmds = cmds;
         }
 
-        // Append emitted commands (OrderUpdate events, etc.)
-        output_cmds.append(&mut all_emitted_commands);
 
         let t_commit = t_commit_start.elapsed();
 
@@ -843,6 +840,9 @@ impl MatchingEngine {
             timestamp: cancelled_order.timestamp,
             match_id: None,
         };
+
+        // Apply to Ledger for WAL consistency
+        self.ledger.apply(&LedgerCommand::OrderUpdate(order_update.clone())).map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         commands.push(LedgerCommand::OrderUpdate(order_update));
 

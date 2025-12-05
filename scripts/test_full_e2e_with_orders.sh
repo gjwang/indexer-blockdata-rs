@@ -37,17 +37,29 @@ echo ""
 
 # Step 2: Initialize database
 echo -e "${BLUE}Step 2: Initializing database...${NC}"
-docker exec scylla cqlsh -e "CREATE KEYSPACE IF NOT EXISTS $KEYSPACE WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};" 2>&1 | grep -v "Warnings" || true
-docker exec -i scylla cqlsh -k $KEYSPACE < schema/order_history_schema.cql 2>/dev/null
-docker exec scylla cqlsh -k $KEYSPACE -e "TRUNCATE active_orders; TRUNCATE order_history; TRUNCATE order_updates_stream; TRUNCATE order_statistics;" 2>/dev/null || true
-echo -e "${GREEN}✅ Database initialized${NC}"
+# Force drop keyspace to ensure fresh schema
+docker exec scylla cqlsh -e "DROP KEYSPACE IF EXISTS $KEYSPACE;" 2>&1 | grep -v "Warnings" || true
+docker exec scylla cqlsh -e "CREATE KEYSPACE $KEYSPACE WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};" 2>&1 | grep -v "Warnings" || true
+docker exec -i scylla cqlsh -k $KEYSPACE < schema/settlement_unified.cql 2>/dev/null
+echo -e "${GREEN}✅ Database initialized with Unified Schema${NC}"
+echo ""
+
+# Step 2b: Clean Kafka Topics (Prevent Replay)
+echo -e "${BLUE}Step 2b: Cleaning Kafka Topics...${NC}"
+# Attempt to delete topics (might fail if not exist, ignore error)
+docker exec redpanda rpk topic delete orders trades balance.operations 2>/dev/null || true
+# Create topics again to ensure they are empty and exist
+docker exec redpanda rpk topic create orders trades balance.operations -p 1 -r 1 2>/dev/null || true
+echo -e "${GREEN}✅ Kafka Topics cleaned${NC}"
+echo "Waiting 5s for Kafka metadata propagation..."
+sleep 5
 echo ""
 
 # Step 3: Check binaries exist (build beforehand with: cargo build --bin ...)
 echo -e "${BLUE}Step 3: Checking binaries...${NC}"
-if [ ! -f target/debug/matching_engine_server ] || [ ! -f target/debug/order_gate_server ] || [ ! -f target/debug/order_history_service ] || [ ! -f target/debug/order_http_client ]; then
+if [ ! -f target/debug/matching_engine_server ] || [ ! -f target/debug/order_gate_server ] || [ ! -f target/debug/settlement_service ] || [ ! -f target/debug/order_http_client ]; then
     echo -e "${RED}❌ Binaries not found. Please build first:${NC}"
-    echo "  cargo build --bin matching_engine_server --bin order_gate_server --bin order_history_service --bin order_http_client"
+    echo "  cargo build --bin matching_engine_server --bin order_gate_server --bin settlement_service --bin order_http_client"
     exit 1
 fi
 echo -e "${GREEN}✅ All binaries ready${NC}"
@@ -89,22 +101,23 @@ fi
 echo -e "${GREEN}✅ Order Gateway started${NC}"
 echo ""
 
-# Step 6: Start Order History Service
-echo -e "${BLUE}Step 6: Starting Order History Service...${NC}"
+# Step 6: Start Settlement Service
+echo -e "${BLUE}Step 6: Starting Settlement Service (Merged)...${NC}"
+pkill -f settlement_service || true
 pkill -f order_history_service || true
 sleep 1
-./target/debug/order_history_service > logs/order_history.log 2>&1 &
-OH_PID=$!
-echo "  Order History Service PID: $OH_PID"
+./target/debug/settlement_service > logs/settlement.log 2>&1 &
+SS_PID=$!
+echo "  Settlement Service PID: $SS_PID"
 sleep 3
 
-if ! ps -p $OH_PID > /dev/null; then
-    echo -e "${RED}❌ Order History Service failed to start${NC}"
-    cat logs/order_history.log
+if ! ps -p $SS_PID > /dev/null; then
+    echo -e "${RED}❌ Settlement Service failed to start${NC}"
+    cat logs/settlement.log
     kill $ME_PID $GATEWAY_PID 2>/dev/null || true
     exit 1
 fi
-echo -e "${GREEN}✅ Order History Service started${NC}"
+echo -e "${GREEN}✅ Settlement Service started${NC}"
 echo ""
 
 # Step 7: Send real orders via Order Client
@@ -160,8 +173,8 @@ if [ "$TOTAL_RECORDS" -gt "0" ]; then
 else
     echo -e "${YELLOW}⚠️  No data found - checking logs...${NC}"
     echo ""
-    echo "Order History Service logs:"
-    tail -20 logs/order_history.log
+    echo "Settlement Service logs:"
+    tail -20 logs/settlement.log
 fi
 echo ""
 
@@ -197,7 +210,7 @@ echo ""
 
 # Step 11: Cleanup
 echo -e "${BLUE}Step 11: Stopping services...${NC}"
-kill $OH_PID $GATEWAY_PID $ME_PID 2>/dev/null || true
+kill $SS_PID $GATEWAY_PID $ME_PID 2>/dev/null || true
 sleep 2
 echo -e "${GREEN}✅ Services stopped${NC}"
 echo ""
@@ -209,7 +222,7 @@ echo "=========================================="
 echo ""
 echo "✅ Matching Engine: Started and processed orders"
 echo "✅ Order Gateway: Started and accepted orders"
-echo "✅ Order History Service: Started and persisted data"
+echo "✅ Settlement Service (Merged): Started and persisted data"
 echo "✅ Database: Connected and accessible"
 echo ""
 echo "📊 Final Data Count:"
@@ -225,12 +238,12 @@ if [ "$TOTAL_RECORDS" -gt "0" ]; then
     echo ""
     echo "✅ Complete flow tested:"
     echo "  Order Client → Gateway API → Kafka → Matching Engine"
-    echo "  → ZMQ → Order History Service → ScyllaDB"
+    echo "  → ZMQ → Settlement Service → ScyllaDB"
 else
     echo -e "${YELLOW}⚠️  E2E test completed but no data persisted${NC}"
     echo "   Check logs for details:"
     echo "   - Matching Engine: logs/matching_engine.log"
     echo "   - Order Gateway: logs/order_gateway.log"
-    echo "   - Order History: logs/order_history.log"
+    echo "   - Settlement Service: logs/settlement.log"
 fi
 echo ""

@@ -34,11 +34,11 @@ fi
 
 # Step 3: Check schema
 echo -e "\n${YELLOW}Step 3: Checking schema...${NC}"
-if [ -f "schema/settlement_schema.cql" ]; then
-    echo -e "${GREEN}✅ Schema file exists${NC}"
-    echo "   To load schema, run: cqlsh -f schema/settlement_schema.cql"
+if [ -f "schema/settlement_unified.cql" ]; then
+    echo -e "${GREEN}✅ Unified Schema file exists${NC}"
+    echo "   To load schema, run: cqlsh -f schema/settlement_unified.cql"
 else
-    echo -e "${RED}❌ Schema file not found${NC}"
+    echo -e "${RED}❌ Schema file schema/settlement_unified.cql not found${NC}"
 fi
 
 # Step 4: Build settlement service
@@ -67,7 +67,7 @@ echo -e "${GREEN}========================================${NC}"
 
 echo -e "\n📝 Next steps:"
 echo "1. Load schema (if not already loaded):"
-echo "   ${YELLOW}cqlsh -f schema/settlement_schema.cql${NC}"
+echo "   ${YELLOW}cqlsh -f schema/settlement_unified.cql${NC}"
 echo ""
 echo "2. Start matching engine:"
 echo "   ${YELLOW}cargo run --bin matching_engine_server${NC}"

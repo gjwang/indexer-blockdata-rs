@@ -205,22 +205,37 @@ impl OrderHistoryDb {
 
     /// Update order statistics for a user
     pub async fn update_order_statistics(&self, user_id: u64, status: &OrderStatus, timestamp: u64) -> Result<()> {
-        // Increment counters based on status
-        let (total_inc, filled_inc, cancelled_inc, rejected_inc) = match status {
-            OrderStatus::New => (1, 0, 0, 0),
-            OrderStatus::PartiallyFilled => (0, 0, 0, 0), // Don't count partials
-            OrderStatus::Filled => (0, 1, 0, 0),
-            OrderStatus::Cancelled => (0, 0, 1, 0),
-            OrderStatus::Rejected => (0, 0, 0, 1),
-            OrderStatus::Expired => (0, 0, 1, 0), // Count as cancelled
+        // 1. Fetch current statistics
+        let select_query = "SELECT total_orders, filled_orders, cancelled_orders, rejected_orders FROM order_statistics WHERE user_id = ?";
+        let current_stats = self.session.query(select_query, (user_id as i64,)).await?;
+
+        let (mut total, mut filled, mut cancelled, mut rejected) = if let Some(rows) = current_stats.rows {
+            if let Some(row) = rows.into_iter().next() {
+                row.into_typed::<(i32, i32, i32, i32)>().unwrap_or((0, 0, 0, 0))
+            } else {
+                (0, 0, 0, 0)
+            }
+        } else {
+            (0, 0, 0, 0)
         };
 
-        let query = "
-            UPDATE order_statistics
-            SET total_orders = total_orders + ?,
-                filled_orders = filled_orders + ?,
-                cancelled_orders = cancelled_orders + ?,
-                rejected_orders = rejected_orders + ?,
+        // 2. Increment counters
+        match status {
+            OrderStatus::New => total += 1,
+            OrderStatus::Filled => filled += 1,
+            OrderStatus::Cancelled => cancelled += 1,
+            OrderStatus::Rejected => rejected += 1,
+            OrderStatus::Expired => cancelled += 1,
+             _ => {}
+        }
+
+        // 3. Upsert updated statistics
+        let update_query = "
+            UPDATE order_statistics SET
+                total_orders = ?,
+                filled_orders = ?,
+                cancelled_orders = ?,
+                rejected_orders = ?,
                 last_order_at = ?,
                 updated_at = ?
             WHERE user_id = ?
@@ -228,12 +243,12 @@ impl OrderHistoryDb {
 
         self.session
             .query(
-                query,
+                update_query,
                 (
-                    total_inc,
-                    filled_inc,
-                    cancelled_inc,
-                    rejected_inc,
+                    total,
+                    filled,
+                    cancelled,
+                    rejected,
                     timestamp as i64,
                     timestamp as i64,
                     user_id as i64,

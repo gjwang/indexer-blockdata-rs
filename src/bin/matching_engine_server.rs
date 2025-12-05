@@ -337,9 +337,9 @@ async fn main() {
                 progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
 
                 // Commit Kafka offset only after WAL flush
-                if let Some((_topic, partition, offset)) = &event.kafka_offset {
+                if let Some((topic, partition, offset)) = &event.kafka_offset {
                     if let Err(e) =
-                        consumer_for_writer.store_offset("latency-test-topic", *partition, *offset)
+                        consumer_for_writer.store_offset(topic, *partition, *offset)
                     {
                         eprintln!("Failed to store offset: {}", e);
                     }
@@ -349,9 +349,9 @@ async fn main() {
             // No WAL: Just update progress and commit offset immediately
             if end_of_batch {
                 progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
-                if let Some((_topic, partition, offset)) = &event.kafka_offset {
+                if let Some((topic, partition, offset)) = &event.kafka_offset {
                     if let Err(e) =
-                        consumer_for_writer.store_offset("latency-test-topic", *partition, *offset)
+                        consumer_for_writer.store_offset(topic, *partition, *offset)
                     {
                         eprintln!("Failed to store offset: {}", e);
                     }

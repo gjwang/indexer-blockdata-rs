@@ -12,3 +12,11 @@ data_dir: "./data"
 # Backup and error logging (relative to data_dir or absolute paths)
 backup_csv_file: "settled_trades.csv"
 failed_trades_file: "failed_trades.json"
+
+# ScyllaDB Configuration
+scylladb:
+  hosts:
+    - "127.0.0.1:9042"
+  keyspace: "trading"
+  username: ""
+  password: ""
