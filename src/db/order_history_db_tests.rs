@@ -15,6 +15,8 @@ mod tests {
             client_order_id: Some(format!("CID_{}", order_id)),
             user_id,
             symbol: "BTC_USDT".to_string(),
+            side: 1, // Buy
+            order_type: 1, // Limit
             status,
             price: 50000,
             qty: 1,
