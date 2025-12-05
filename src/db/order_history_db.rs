@@ -55,8 +55,8 @@ impl OrderHistoryDb {
                     order.order_id as i64,
                     order.client_order_id.as_deref().unwrap_or(""),
                     &order.symbol,
-                    "Buy", // TODO: Get from order
-                    "Limit", // TODO: Get from order
+                    &order.side,
+                    &order.order_type,
                     order.price as i64,
                     order.qty as i64,
                     order.filled_qty as i64,
@@ -84,12 +84,12 @@ impl OrderHistoryDb {
 
     /// Get active order state
     pub async fn get_active_order(&self, user_id: u64, order_id: u64) -> Result<Option<OrderUpdate>> {
-        let query = "SELECT user_id, order_id, client_order_id, symbol, price, qty, filled_qty, status, created_at FROM active_orders WHERE user_id = ? AND order_id = ?";
+            let query = "SELECT user_id, order_id, client_order_id, symbol, price, qty, filled_qty, status, created_at, side, order_type FROM active_orders WHERE user_id = ? AND order_id = ?";
         let result = self.session.query(query, (user_id as i64, order_id as i64)).await?;
 
         if let Some(rows) = result.rows {
              for row in rows {
-                 if let Ok((uid, oid, cid, sym, price, qty, filled, status_str, ts)) = row.into_typed::<(i64, i64, String, String, i64, i64, i64, String, i64)>() {
+                 if let Ok((uid, oid, cid, sym, price, qty, filled, status_str, ts, side, type_str)) = row.into_typed::<(i64, i64, String, String, i64, i64, i64, String, i64, String, String)>() {
                      let status = match status_str.as_str() {
                          "New" => OrderStatus::New,
                          "PartiallyFilled" => OrderStatus::PartiallyFilled,
@@ -102,6 +102,8 @@ impl OrderHistoryDb {
                          client_order_id: if cid.is_empty() { None } else { Some(cid) },
                          user_id: uid as u64,
                          symbol: sym,
+                         side,
+                         order_type: type_str,
                          status,
                          price: price as u64,
                          qty: qty as u64,
@@ -140,8 +142,8 @@ impl OrderHistoryDb {
                     order.order_id as i64,
                     order.client_order_id.as_deref().unwrap_or(""),
                     &order.symbol,
-                    "Buy", // TODO: Get from order
-                    "Limit", // TODO: Get from order
+                    &order.side,
+                    &order.order_type,
                     order.price as i64,
                     order.qty as i64,
                     order.filled_qty as i64,
