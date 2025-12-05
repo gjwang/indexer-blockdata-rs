@@ -173,7 +173,7 @@ mod tests {
     #[test]
     fn test_balance_update_serialization() {
         let balance =
-            BalanceUpdate { asset: "BTC".to_string(), available: 1.5, locked: 0.2, total: 1.7 };
+            BalanceUpdate { asset: "BTC".to_string(), avail: 1.5, locked: 0.2, total: 1.7 };
 
         let json = serde_json::to_string(&balance).unwrap();
         assert!(json.contains("BTC"));

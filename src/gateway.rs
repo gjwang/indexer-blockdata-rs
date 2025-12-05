@@ -352,7 +352,7 @@ async fn get_balance(
         for balance in balances {
             if let Some(client_balance) = state.balance_manager.to_client_balance(
                 balance.asset_id, // Removed incorrect 'as i32' cast
-                balance.available,
+                balance.avail,
                 balance.frozen,
             ) {
                 response.push(client_balance);

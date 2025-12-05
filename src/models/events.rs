@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 pub struct BalanceUpdate {
     pub asset: String,
     #[serde(with = "float_as_string")]
-    pub available: f64,
+    pub avail: f64,
     #[serde(with = "float_as_string")]
     pub locked: f64,
     #[serde(with = "float_as_string")]

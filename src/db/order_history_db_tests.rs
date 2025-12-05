@@ -225,7 +225,7 @@ mod tests {
         assert_eq!(order.user_id, 1);
         assert_eq!(order.status, OrderStatus::New);
         assert_eq!(order.filled_qty, 0);
-        assert_eq!(order.symbol, "BTC_USDT");
+        assert_eq!(order.symbol_id, 1);
         assert_eq!(order.price, 50000);
         assert_eq!(order.qty, 1);
     }
