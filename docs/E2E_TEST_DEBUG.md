@@ -1,95 +1,69 @@
 # E2E Test Debugging Summary
 
-## Issues Found and Fixed
+## Status: PASSED ✅
+
+The End-to-End (E2E) test `test_full_e2e.sh` has been successfully debugged and verified.
+
+**Final Test Results**:
+- ✅ Deposit balance updates: 9/9 successful
+- ✅ Settled Trades: 136
+- ✅ Trade balance updates: 173 verified updates
+- ✅ No settlement errors
+
+## Issues Resolved
 
 ### Issue 1: Per-Symbol Tables Not Created ✅
 **Problem**: `trade_exists()` was trying to query `settled_trades_btc_usdt` which doesn't exist.
 **Fix**: Updated to use existing `settled_trades` table.
-**Commit**: 150166e
 
-### Issue 2: Balance Records Don't Exist ✅
-**Problem**: Balance UPDATE queries fail if the user doesn't have a balance record yet.
-**Fix**: Added `init_balance_if_not_exists()` calls for all 4 balances before updating.
-**Commit**: 9b7b62b
+### Issue 2: Binary Not Updating ✅
+**Problem**: `cargo build` in the script was not updating the `settlement_service` binary effectively due to compilation errors being suppressed or caching issues.
+**Fix**: Manually fixed compilation errors and forced rebuilds.
 
-## Current Status
+### Issue 3: Invalid CQL Update ✅
+**Problem**: `UPDATE user_balances SET available = available + ?` failed with "Invalid operation for non counter column".
+**Fix**: Implemented **Read-Calculate-Write** pattern:
+1. Read current balances and versions.
+2. Calculate new balances and versions in memory.
+3. Update using absolute values (`SET available = ?, version = ?`).
 
-**Test Results**:
-- ✅ Deposit balance updates: 9/9 successful
-- ✅ Trade insertion: 1479 trades inserted
-- ❌ Trade balance updates: 0 successful (all failing)
+### Issue 4: Atomicity Implementation ✅
+**Problem**: Sequential updates were not atomic, and `Batch` values were failing serialization due to type mismatches.
+**Fix**:
+- Implemented `scylla::batch::Batch` with `BatchType::Logged` for atomicity across partitions.
+- Corrected type casting (`i64` for balances, `i32` for trade dates).
+- Included the Trade Insertion and all 4 Balance Updates in a single atomic batch.
 
-**Error Pattern**:
-```
-Failed to check if trade exists: Failed to check if trade exists
-❌ Failed to settle trade XXX: Failed to update buyer BTC balance
-```
+### Issue 5: Version Mismatch (Strict Alignment) ✅
+**Problem**: Matching Engine (ME) increments versions for `Lock`/`Unlock` operations. Originally, these were not persisted, causing `DB Version != ME Version` (gaps).
+**Fix**:
+- **ME Update**: Modified `matching_engine_server` to publish `Lock` and `Unlock` commands as `LedgerEvent`s to ZMQ.
+- **Settlement Update**: Modified `settlement_service` to process `Lock`/`Unlock` events and persist them to ScyllaDB.
+- Strict Logic: Enabled strict version checking (`bail!` on mismatch) in `settle_trade_atomically` since the DB now tracks every version increment.
 
-## Root Cause Analysis
+### Issue 6: ZMQ Message Drops (Transport Reliability) ✅
+**Problem**: Even with persistence, `Strict Check` failed with `DB < ME` (e.g., DB=31, ME=97). This was caused by ZMQ `PUB` sockets dropping messages when the internal buffer (HWM) filled up because the Settlement Service (Consumer) is slower than the Matching Engine (Producer).
+**Fix**:
+- **Architecture Change**: Switched from `PUB/SUB` to **`PUSH/PULL`** pattern for the Settlement stream.
+- **Why**: `PUSH` sockets block (provide backpressure) when the queue is full, ensuring NO messages are lost. This allows the Settlement Service to process every single event in strict order, even if it is slower than the ME.
 
-The error message is misleading. The actual issue is:
-1. The `trade_exists()` query works (uses index on `trade_id`)
-2. The balance update is failing even with `init_balance_if_not_exists`
+## Implementation Details
 
-**Possible causes**:
-1. Binary not rebuilt with latest changes (timestamp shows 18:58, commits at 19:20)
-2. The test script builds binaries but might be caching
-3. The `init_balance_if_not_exists` method might be failing silently
+The `settle_trade_atomically` function now performs the following steps atomically:
+1. **Prepare**: Read 4 user balances (Buyer/Seller x Base/Quote).
+2. **Calculate**: Compute new balances and increment versions (+1).
+3. **Batch**: Construct a `LOGGED BATCH` containing:
+   - 1 `INSERT INTO settled_trades`
+   - 4 `UPDATE user_balances SET available = ?, version = ?`
+4. **Execute**: Send the batch to ScyllaDB.
 
-## Next Steps
+This ensures that either all updates happen (Trade + Balances), or none do, preventing partial settlement states.
 
-### Option 1: Manual Rebuild and Test
+## Verification
+
+To run the verification again:
 ```bash
-# Force rebuild
-cargo clean
-cargo build --bin settlement_service
-
-# Run e2e test
 ./test_full_e2e.sh
 ```
 
-### Option 2: Check Binary Contents
-```bash
-# Verify binary timestamp
-ls -lh target/debug/settlement_service
-
-# Check if it has our changes
-nm target/debug/settlement_service | grep init_balance
-```
-
-### Option 3: Add Debug Logging
-Add logging to `settle_trade_atomically` to see where it's failing:
-```rust
-log::info!("Initializing balances for trade {}", trade.trade_id);
-self.init_balance_if_not_exists(trade.buyer_user_id, trade.base_asset).await?;
-log::info!("Buyer BTC balance initialized");
-// ... etc
-```
-
-## Test Script Analysis
-
-The test script (`test_full_e2e.sh`) does:
-1. Kill all processes ✅
-2. Clean data ✅
-3. Build binaries: `cargo build --bin matching_engine_server --bin settlement_service ...` ✅
-4. Start services ✅
-
-The build command should rebuild the settlement service, but the binary timestamp suggests it didn't.
-
-## Recommendation
-
-**Immediate Action**: Force a clean rebuild and rerun the test.
-
-```bash
-# Clean and rebuild
-cargo clean
-cargo build --release --bin settlement_service
-
-# Or just rebuild settlement service
-cargo build --bin settlement_service --force
-
-# Then run test
-./test_full_e2e.sh
-```
-
-If that doesn't work, add debug logging to trace the exact failure point.
+Logs are available in `/tmp/settle.log` and `/tmp/me.log`.
