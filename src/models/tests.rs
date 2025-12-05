@@ -10,6 +10,8 @@ mod tests {
             client_order_id: Some("cid_001".to_string()),
             user_id: 1,
             symbol: "BTC_USDT".to_string(),
+            side: 1, // Buy
+            order_type: 1, // Limit
             status: OrderStatus::Filled,
             price: 50000,
             qty: 100,
@@ -36,6 +38,8 @@ mod tests {
             client_order_id: None,
             user_id: 2,
             symbol: "ETH_USDT".to_string(),
+            side: 2, // Sell
+            order_type: 2, // Market
             status: OrderStatus::New,
             price: 3000,
             qty: 10,
