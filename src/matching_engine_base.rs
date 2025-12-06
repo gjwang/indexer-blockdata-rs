@@ -395,6 +395,11 @@ impl MatchingEngine {
         Ok(())
     }
 
+    /// Get the current output sequence number
+    pub fn get_output_seq(&self) -> u64 {
+        self.output_seq
+    }
+
     /// Register a symbol at a specific ID
     pub fn register_symbol(
         &mut self,
