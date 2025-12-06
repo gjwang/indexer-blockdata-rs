@@ -21,9 +21,7 @@ use fetcher::zmq_publisher::ZmqPublisher;
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
     command: Option<EngineCommand>,
-    /// Balance operations result (LedgerCommand for deposit/lock/unlock/withdraw)
-    processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
-    /// Atomic output bundles for order processing (EngineOutput flow)
+    /// Atomic output bundles for all operations (EngineOutput flow)
     engine_outputs: std::sync::Mutex<Option<std::sync::Arc<Vec<EngineOutput>>>>,
     kafka_offset: Option<(String, i32, i64)>,
     timestamp: u64,
@@ -71,21 +69,21 @@ impl BalanceProcessor {
         &mut self,
         engine: &mut MatchingEngine,
         req: BalanceRequest,
-    ) -> Result<Vec<LedgerCommand>, anyhow::Error> {
+    ) -> Result<Vec<EngineOutput>, anyhow::Error> {
         let current_time = self.current_time_ms();
         let request_id = req.request_id().to_string();
-        let mut cmds = Vec::new();
+        let mut outputs = Vec::new();
 
         // 1. Validate timestamp
         if !req.is_within_time_window(current_time) {
             println!("❌ REJECTED: Request outside time window: {}", request_id);
-            return Ok(cmds);
+            return Ok(outputs);
         }
 
         // 2. Check duplicate
         if self.recent_requests.contains_key(&request_id) {
             println!("❌ REJECTED: Duplicate request: {}", request_id);
-            return Ok(cmds);
+            return Ok(outputs);
         }
 
         // 3. Process
@@ -93,15 +91,12 @@ impl BalanceProcessor {
             BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
                 println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
 
-                // Direct call, no lock needed!
-                match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
-                    Ok(cmd) => {
+                match engine.transfer_in_and_build_output(user_id, asset_id, amount) {
+                    Ok(output) => {
                         println!("✅ Transfer In success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
-
-                        // Generate command for downstream
-                        cmds.push(cmd);
+                        outputs.push(output);
                     }
                     Err(e) => {
                         println!("❌ Transfer In failed: {}", e);
@@ -110,22 +105,20 @@ impl BalanceProcessor {
             }
             BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
                 println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
-                // Direct call, no lock needed!
-                match engine.transfer_out_from_trading_account(user_id, asset_id, amount) {
-                    Ok(cmd) => {
+
+                match engine.transfer_out_and_build_output(user_id, asset_id, amount) {
+                    Ok(output) => {
                         println!("✅ Transfer Out success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
-
-                        // Generate command for downstream
-                        cmds.push(cmd);
+                        outputs.push(output);
                     }
                     Err(e) => println!("❌ Transfer Out failed: {}", e),
                 }
             }
         }
         self.cleanup_old_requests();
-        Ok(cmds)
+        Ok(outputs)
     }
 }
 
@@ -279,14 +272,9 @@ async fn main() {
         std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
     };
 
-    // Extract Ledger WAL for Output Processor (Consumer 3)
-    let mut ledger_wal = engine.ledger.take_wal().expect("Ledger WAL not found");
-    let mut last_ledger_seq = engine.ledger.last_seq;
-
     // Factory: Create empty events in the ring buffer
     let factory = || OrderEvent {
         command: None,
-        processing_result: std::sync::Mutex::new(None),
         engine_outputs: std::sync::Mutex::new(None),
         kafka_offset: None,
         timestamp: 0,
@@ -456,12 +444,21 @@ async fn main() {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
-                    // Balance requests still use LedgerCommand flow (TODO: migrate to EngineOutput)
+                    // Balance requests now use EngineOutput flow
                     match balance_processor.process_balance_request(&mut engine, req.clone()) {
-                        Ok(cmds) => {
-                            if !cmds.is_empty() {
-                                *event.processing_result.lock().unwrap() =
-                                    Some(std::sync::Arc::new(cmds));
+                        Ok(outputs) => {
+                            if !outputs.is_empty() {
+                                // Append to existing engine_outputs or create new
+                                let mut guard = event.engine_outputs.lock().unwrap();
+                                if let Some(ref mut existing) = *guard {
+                                    // In practice, balance requests are processed separately
+                                    // so this shouldn't happen, but handle it gracefully
+                                    let mut combined = (*existing).as_ref().clone();
+                                    combined.extend(outputs);
+                                    *guard = Some(std::sync::Arc::new(combined));
+                                } else {
+                                    *guard = Some(std::sync::Arc::new(outputs));
+                                }
                             }
                         }
                         Err(e) => eprintln!("Balance processing error: {}", e),
@@ -471,24 +468,7 @@ async fn main() {
         }
     };
 
-    // === Consumer 3a: Ledger Writer (Writes to Ledger WAL) ===
-    let ledger_writer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
-        if let Some(cmds) = cmds_arc {
-            if !cmds.is_empty() {
-                // Write to Ledger WAL
-                for cmd in cmds.iter() {
-                    last_ledger_seq += 1;
-                    if let Err(e) = ledger_wal.append_no_flush(last_ledger_seq, cmd) {
-                        panic!("CRITICAL: Failed to write to Ledger WAL: {}. Halting.", e);
-                    }
-                }
-            }
-        }
-    };
-
-
-    // === Consumer 3b: ZMQ Publisher (Critical & Fast Path) ===
+    // === Consumer 3: ZMQ Publisher (Critical & Fast Path) ===
     // Publishes EngineOutput bundles to Settlement Service
     let zmq_pub_clone = zmq_publisher.clone();
     let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
@@ -512,33 +492,22 @@ async fn main() {
                 }
             }
         }
-
-        // LEGACY: LedgerCommand publishing for BalanceRequest (still uses processing_result)
-        let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
-        if let Some(cmds) = cmds_arc {
-            for cmd in cmds.iter() {
-                if let Ok(data) = serde_json::to_vec(cmd) {
-                    let _ = zmq_pub_clone.publish_settlement(&data);
-                }
-            }
-        }
     };
 
-    // Build disruptor with 3-Stage Pipeline (Stage 3 is Parallel)
+    // Build disruptor with 3-Stage Pipeline
     // 1. WAL Writer & Matcher run in parallel
-    // 2. Ledger Writer & ZMQ Publisher run in parallel AFTER Matcher
+    // 2. ZMQ Publisher runs AFTER Matcher
     let mut producer = build_single_producer(8192, factory, BusySpin)
         .handle_events_with(wal_writer)
         .handle_events_with(matcher)
         .and_then()
-        .handle_events_with(ledger_writer)
         .handle_events_with(zmq_consumer)
         .build();
 
-    println!(">>> Disruptor initialized with 3-STAGE PIPELINE (Parallel Output):");
+    println!(">>> Disruptor initialized with 3-STAGE PIPELINE:");
     println!(">>> 1. WAL Writer (Parallel)");
     println!(">>> 2. Matcher (Parallel, gated on Writer)");
-    println!(">>> 3. Ledger Writer & ZMQ Publisher (Parallel after Matcher)");
+    println!(">>> 3. ZMQ Publisher (after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
