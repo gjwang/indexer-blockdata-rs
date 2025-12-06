@@ -1216,6 +1216,20 @@ impl SettlementDb {
     }
 
     pub async fn settle_trade_atomically(&self, trade: &MatchExecData) -> Result<()> {
+        // 0. Check if trade already exists (idempotency check)
+        let check_query = "SELECT trade_id FROM settled_trades WHERE trade_date = ? AND trade_id = ?";
+        let trade_date = get_current_date();
+        let existing = self.session
+            .query(check_query, (trade_date as i32, trade.trade_id as i64))
+            .await;
+
+        if let Ok(result) = existing {
+            if result.rows_num()? > 0 {
+                log::warn!("Trade already exists in settled_trades: trade={}", trade.trade_id);
+                return Ok(());
+            }
+        }
+
         // 1. Validate Balances Exist
         // Design Decision: We do NOT initialize balances here.
         // Users must deposit funds (which initializes the balance record) before trading.
@@ -1267,15 +1281,10 @@ impl SettlementDb {
         // Check data integrity: DB version must be predecessor of ME version (ME - 1)
         // Since trade execution increments version by 1.
         if buyer_base_ver >= trade.buyer_base_version as i64 {
-             // Idempotency Check: If DB >= ME, we might have already processed this?
-             // But we are in insert_trade/settle.
-             // If DB = ME, it implies this update was already applied.
-             // Warn and skip?
-             // For strict E2E, strict increment is expected.
              if buyer_base_ver == trade.buyer_base_version as i64 {
-                 log::warn!("Trade seems already applied (Version Match): trade={}", trade.trade_id);
-                 // If already applied, we should probably return Ok?
-                 // But settled_trades insert might fail on PK conflict if we retry.
+                 // Version matches - this can happen if Lock was already applied
+                 // Trade existence was already checked, so we can proceed
+                 log::debug!("Version matches ME (Lock may have been applied): trade={}, buyer_base_ver={}", trade.trade_id, buyer_base_ver);
              } else {
                  anyhow::bail!(
                     "Version mismatch Buyer Base (DB ahead?): DB={} ME={}",
@@ -1332,45 +1341,42 @@ impl SettlementDb {
         let new_seller_quote_ver = seller_quote_ver + 1;
 
         // 4. Create Batch
-        let mut batch = Batch::new(scylla::batch::BatchType::Logged);
         let now = get_current_timestamp_ms();
         let trade_date = get_current_date();
 
-        // Add Trade Insert
-        batch.append_statement(INSERT_TRADE_CQL);
-
-        // Add Balance Updates
-        // Add Balance Updates
+        // Prepare balance update query
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
             SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
         ";
 
-        batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Base
-        batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Quote
-        batch.append_statement(UPDATE_BALANCE_CQL); // Seller Base
-        batch.append_statement(UPDATE_BALANCE_CQL); // Seller Quote
-
-        // 5. Execute Batch
-        // Values for Trade Insert
-        let trade_values = (
-            trade_date as i32,
-            trade.output_sequence as i64,
-            trade.trade_id as i64,
-            trade.match_seq as i64,
-            trade.buy_order_id as i64,
-            trade.sell_order_id as i64,
-            trade.buyer_user_id as i64,
-            trade.seller_user_id as i64,
-            trade.price as i64,
-            trade.quantity as i64,
-            trade.base_asset_id as i32,
-            trade.quote_asset_id as i32,
-            trade.buyer_refund as i64,
-            trade.seller_refund as i64,
-            trade.settled_at as i64,
-        );
+        // Values for Trade Insert (use Vec since tuple >16 elements not supported by SerializeRow)
+        let trade_values: Vec<&(dyn scylla::frame::value::Value + Sync)> = vec![
+            &(trade_date as i32),
+            &(trade.output_sequence as i64),
+            &(trade.trade_id as i64),
+            &(trade.match_seq as i64),
+            &(trade.buy_order_id as i64),
+            &(trade.sell_order_id as i64),
+            &(trade.buyer_user_id as i64),
+            &(trade.seller_user_id as i64),
+            &(trade.price as i64),
+            &(trade.quantity as i64),
+            &(trade.base_asset_id as i32),
+            &(trade.quote_asset_id as i32),
+            &(trade.buyer_refund as i64),
+            &(trade.seller_refund as i64),
+            &(trade.settled_at as i64),
+            &new_buyer_base_ver,
+            &new_buyer_quote_ver,
+            &new_seller_base_ver,
+            &new_seller_quote_ver,
+            &new_buyer_base,
+            &new_buyer_quote,
+            &new_seller_base,
+            &new_seller_quote,
+        ];
 
         // Values for Balance Updates
         // Values for Balance Updates
@@ -1407,11 +1413,30 @@ impl SettlementDb {
             trade.quote_asset_id as i32,
         );
 
+        // 5. Execute Settlement
+        // Note: We split this into 2 operations because trade_values tuple (23 elements)
+        // exceeds Scylla driver's 16-element SerializeRow limit
+
+        // 5.1 Insert Trade
+        self.session
+            .query(INSERT_TRADE_CQL, trade_values.as_slice())
+            .await
+            .map_err(|e| {
+                log::error!("Trade insert failed: {:?}", e);
+                anyhow::anyhow!("Failed to insert trade: {}", e)
+            })?;
+
+        // 5.2 Update Balances (as batch for atomic)
+        let mut balance_batch = Batch::new(scylla::batch::BatchType::Logged);
+        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Base
+        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Quote
+        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Seller Base
+        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Seller Quote
+
         self.session
             .batch(
-                &batch,
+                &balance_batch,
                 (
-                    trade_values,
                     buyer_base_values,
                     buyer_quote_values,
                     seller_base_values,
@@ -1419,7 +1444,10 @@ impl SettlementDb {
                 ),
             )
             .await
-            .context("Failed to execute settlement batch")?;
+            .map_err(|e| {
+                log::error!("Balance batch update failed: {:?}", e);
+                anyhow::anyhow!("Failed to update balances: {}", e)
+            })?;
 
         log::debug!(
             "Settled trade {} (buyer={}, seller={})",
