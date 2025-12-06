@@ -10,7 +10,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use disruptor::*;
 
-use fetcher::ledger::{LedgerCommand, LedgerEvent, LedgerListener, MatchExecData};
+use fetcher::ledger::LedgerCommand;
 use fetcher::engine_output::EngineOutput;
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::client_order::calculate_checksum;
@@ -21,9 +21,9 @@ use fetcher::zmq_publisher::ZmqPublisher;
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
     command: Option<EngineCommand>,
-    /// Legacy processing result (LedgerCommand flow)
+    /// Balance operations result (LedgerCommand for deposit/lock/unlock/withdraw)
     processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
-    /// New atomic output bundles (EngineOutput flow)
+    /// Atomic output bundles for order processing (EngineOutput flow)
     engine_outputs: std::sync::Mutex<Option<std::sync::Arc<Vec<EngineOutput>>>>,
     kafka_offset: Option<(String, i32, i64)>,
     timestamp: u64,
@@ -451,10 +451,6 @@ async fn main() {
                     if !engine_outputs.is_empty() {
                         *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(engine_outputs));
                     }
-
-                    // LEGACY: Batch processing with LedgerCommand output (commented out)
-                    // let (_, cmds) = engine.add_order_batch(batch.clone());
-                    // *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let _ = engine.cancel_order(*symbol_id, *order_id);

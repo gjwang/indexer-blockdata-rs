@@ -172,7 +172,7 @@ async fn main() {
             continue;
         }
 
-        // Fall back to LedgerCommand (legacy flow)
+        // Fall back to LedgerCommand (balance operations only - trades via EngineOutput)
         match serde_json::from_slice::<LedgerCommand>(&data) {
             Ok(cmd) => {
                 match cmd {
@@ -181,39 +181,8 @@ async fn main() {
                              log::error!(target: LOG_TARGET, "Order History Update Failed: {}", e);
                         }
                     },
-                    LedgerCommand::MatchExecBatch(trades) => {
-                         for trade in trades {
-                             // 1. Settlement Logic
-                             if let Err(e) = settlement_db.settle_trade_atomically(&trade).await {
-                                  log::error!(target: LOG_TARGET, "Settlement Failed for trade {}: {}", trade.trade_id, e);
-                             } else {
-                                  log::info!(target: LOG_TARGET, "✅ Settled trade {}", trade.trade_id);
-
-                                  // StarRocks
-                                  let sr_client = starrocks_client.clone();
-                                  let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
-                                  let sr_trade = StarRocksTrade::from_match_exec(&trade, ts);
-                                  tokio::spawn(async move {
-                                      let _ = sr_client.load_trade(sr_trade).await;
-                                  });
-
-                                  // CSV
-                                  let _ = wtr.serialize(&trade);
-                                  let _ = wtr.flush();
-                             }
-
-                             // 2. Order History Logic (Fills)
-                             if let Err(e) = process_trade_fill(&order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, trade.match_seq).await {
-                                 log::error!(target: LOG_TARGET, "Order History Fill (Buyer) Failed: {}", e);
-                             }
-                             if let Err(e) = process_trade_fill(&order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, trade.match_seq).await {
-                                 log::error!(target: LOG_TARGET, "Order History Fill (Seller) Failed: {}", e);
-                             }
-                         }
-                    },
-                    // Balance Updates via LedgerCommand -> Append-only ledger
+                    // Balance operations via LedgerCommand -> Append-only ledger
                     LedgerCommand::Deposit { user_id, asset_id, amount, balance_after: _, version } => {
-                        // version is seq, ref_id can be 0 for now (no order/trade ref)
                         match settlement_db.deposit(user_id, asset_id, amount, version, 0).await {
                             Ok(bal) => log::info!(target: LOG_TARGET, "Deposit User {} Asset {} -> Seq {}", user_id, asset_id, bal.seq),
                             Err(e) => log::error!(target: LOG_TARGET, "Deposit Failed: {}", e),
