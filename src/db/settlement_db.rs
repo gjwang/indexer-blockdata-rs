@@ -663,7 +663,8 @@ impl SettlementDb {
     // =====================================================
 
     /// Get current balance from append-only ledger (latest entry)
-    pub async fn get_current_balance(&self, user_id: u64, asset_id: u32) -> Result<CurrentBalance> {
+    /// Returns None if no balance exists (user hasn't deposited yet)
+    pub async fn get_current_balance(&self, user_id: u64, asset_id: u32) -> Result<Option<CurrentBalance>> {
         let result = self.session
             .query(SELECT_LATEST_BALANCE_CQL, (user_id as i64, asset_id as i32))
             .await?;
@@ -672,17 +673,17 @@ impl SettlementDb {
             if let Some(row) = rows.into_iter().next() {
                 let (seq, avail, frozen, created_at): (i64, i64, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
-                return Ok(CurrentBalance {
+                return Ok(Some(CurrentBalance {
                     seq,
-                    avail: avail,
-                    frozen: frozen,
+                    avail,
+                    frozen,
                     updated_at: created_at,
-                });
+                }));
             }
         }
 
-        // No balance yet - return default (seq=0, avail=0, frozen=0)
-        Ok(CurrentBalance::default())
+        // No balance exists - user must deposit first
+        Ok(None)
     }
 
     /// Append a balance event to the ledger (immutable insert)
@@ -728,8 +729,8 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        // Get current balance
-        let current = self.get_current_balance(user_id, asset_id).await?;
+        // Get current balance (None = first deposit)
+        let current = self.get_current_balance(user_id, asset_id).await?.unwrap_or_default();
 
         // Idempotency check
         if new_seq <= current.seq as u64 {
@@ -771,7 +772,8 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -811,7 +813,8 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -851,7 +854,8 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -1046,7 +1050,8 @@ impl SettlementDb {
         let mut attempts = 0;
         loop {
             // Use new append-only balance ledger
-            let current = self.get_current_balance(user_id, asset_id).await?;
+            let current = self.get_current_balance(user_id, asset_id).await?
+                .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} - deposit required first", user_id, asset_id))?;
             let (bal, frozen, ver) = (current.avail, current.frozen, current.seq);
 
             // If version matches (or is newer), we are good.
