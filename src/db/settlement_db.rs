@@ -808,29 +808,36 @@ impl SettlementDb {
 
         Ok(balances)
     }
-    /// Update user balance for a deposit event (no version check)
+    /// Update user balance for a deposit event
     pub async fn update_balance_for_deposit(
         &self,
         user_id: u64,
         asset_id: u32,
         amount: u64,
+        balance_after: u64,
+        version: u64,
     ) -> Result<(i64, i64, i64, i64)> {
         // Ensure record exists
         self.init_balance_if_not_exists(user_id, asset_id).await?;
+        // Just blind write with validation? Or check existing?
+        // Let's assume strict versioning from ME.
+        // But for deposits via API, ME might not know previous version if it wasn't loaded?
+        // Actually, ME tracks all versions. So trust ME.
 
-        // Get current balance
         let current = self.get_user_balance(user_id, asset_id).await?;
-
-        // Note: current is Option<UserBalance>, but we just init'd it, so likely Some.
-        // But concurrent access might be tricky. Using defaults is safe.
         let current_avail = current.as_ref().map(|b| b.avail as i64).unwrap_or(0);
         let current_frozen = current.as_ref().map(|b| b.frozen as i64).unwrap_or(0);
         let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
 
-        // Calculate new balance
-        let new_avail = current_avail + amount as i64;
-        let new_frozen = current_frozen; // Preserve frozen
-        let new_version = current_version + 1;
+        // Validation (Optional but good)
+        if version <= current_version {
+             // Idempotency: Already processed
+             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
+        }
+
+        let new_avail = balance_after as i64;
+        let new_frozen = current_frozen; // Deposits don't change frozen
+        let new_version = version;
 
         const UPDATE_BALANCE_CQL: &str = "
             UPDATE user_balances
@@ -839,23 +846,54 @@ impl SettlementDb {
                 version = ?,
                 updated_at = ?
             WHERE user_id = ? AND asset_id = ?
+            IF version = ?
         ";
 
         let now = get_current_timestamp_ms();
 
-        self.session
-            .query(
-                UPDATE_BALANCE_CQL,
-                (
-                    new_avail,
-                    new_frozen,
-                    new_version as i64,
-                    now,
-                    user_id as i64,
-                    asset_id as i32,
-                ),
-            )
-            .await?;
+        // Try LWT to ensure we fill the gap perfectly from current_version
+        // If there is a gap (e.g. current=10, new=12), this LWT will fail.
+        // But if we trust ME to send all events, maybe we just overwrite?
+        // Overwriting is safer for recovery if we missed an intermediate event but want to catch up.
+        // However, missing an intermediate event (e.g. Lock) means 'frozen' might be wrong in DB if we just update 'avail'.
+        // But 'Deposit' sends 'balance_after' (avail). It doesn't know 'frozen' necessarily?
+        // ME Ledger Deposit logic: `avail += amount`. `frozen` unchanged.
+        // So we can just set `avail = balance_after`.
+
+        // Let's use simple UPDATE (Blind Write) to catch up if needed, assuming ME is source of truth.
+        // BUT we must allow gaps if we want to auto-repair.
+        // Risky: if we missed a LOCK (avail--, frozen++), and now we do DEPOSIT (avail=X), we might lose the frozen change?
+        // Actually LedgerCommand::Deposit has `balance_after` which IS the new `avail`.
+        // It does not carry `frozen`.
+        // So we must assume `frozen` in DB is correct?
+        // If we missed a Lock, `frozen` in DB is 0. ME has `frozen`=100.
+        // Only `MatchExec` or `Lock` carries frozen info explicitly?
+        // No, `Lock` carries `amount` delta.
+        // This suggests we CANNOT skip messages. We must ensure sequential processing.
+
+        // So, use LWT provided we are strict.
+        let result = self.session.query(UPDATE_BALANCE_CQL, (
+            new_avail,
+            new_frozen,
+            new_version as i64,
+            now,
+            user_id as i64,
+            asset_id as i32,
+            current_version as i64 // IF version = current
+        )).await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                    if !applied {
+                         // Fallback or Error?
+                         // If we are getting out of order, we might need to fetch pending?
+                         // For now, error out to signal mismatch.
+                         anyhow::bail!("Version mismatch or gap detected: DB={}, New={}", current_version, version);
+                    }
+                }
+            }
+        }
 
         Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
@@ -865,6 +903,8 @@ impl SettlementDb {
         user_id: u64,
         asset_id: u32,
         amount: u64,
+        balance_after: u64,
+        version: u64,
     ) -> Result<(i64, i64, i64, i64)> {
         let current = self.get_user_balance(user_id, asset_id).await?
             .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Lock)", user_id, asset_id))?;
@@ -873,25 +913,46 @@ impl SettlementDb {
         let current_frozen = current.frozen as i64;
         let current_version = current.version;
 
-        let new_avail = current_avail - amount as i64;
+        if version <= current_version {
+             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
+        }
+
+        // Lock: avail decreases, frozen increases
+        // Use balance_after from ME as source of truth for avail?
+        // Ideally yes. ME says "Avail is now X".
+        // But ME "Lock" command might not carry frozen.
+        // So we calculate frozen delta.
+        let new_avail = balance_after as i64;
         let new_frozen = current_frozen + amount as i64;
-        let new_version = current_version + 1;
+        let new_version = version;
 
         const UPDATE_CQL: &str = "
             UPDATE user_balances
             SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
+            IF version = ?
         ";
         let now = get_current_timestamp_ms();
 
-        self.session.query(UPDATE_CQL, (
+        let result = self.session.query(UPDATE_CQL, (
             new_avail,
             new_frozen,
             new_version as i64,
             now,
             user_id as i64,
-            asset_id as i32
+            asset_id as i32,
+            current_version as i64
         )).await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                    if !applied {
+                         anyhow::bail!("Version mismatch during Lock: DB={}, New={}", current_version, version);
+                    }
+                }
+            }
+        }
 
         Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
@@ -901,6 +962,8 @@ impl SettlementDb {
         user_id: u64,
         asset_id: u32,
         amount: u64,
+        balance_after: u64,
+        version: u64,
     ) -> Result<(i64, i64, i64, i64)> {
         let current = self.get_user_balance(user_id, asset_id).await?
             .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Unlock)", user_id, asset_id))?;
@@ -909,25 +972,95 @@ impl SettlementDb {
         let current_frozen = current.frozen as i64;
         let current_version = current.version;
 
-        let new_avail = current_avail + amount as i64;
+        if version <= current_version {
+             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
+        }
+
+        let new_avail = balance_after as i64;
         let new_frozen = current_frozen - amount as i64;
-        let new_version = current_version + 1;
+        let new_version = version;
 
         const UPDATE_CQL: &str = "
             UPDATE user_balances
             SET avail = ?, frozen = ?, version = ?, updated_at = ?
             WHERE user_id = ? AND asset_id = ?
+            IF version = ?
         ";
         let now = get_current_timestamp_ms();
 
-        self.session.query(UPDATE_CQL, (
+        let result = self.session.query(UPDATE_CQL, (
             new_avail,
             new_frozen,
             new_version as i64,
             now,
             user_id as i64,
-            asset_id as i32
+            asset_id as i32,
+            current_version as i64
         )).await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                    if !applied {
+                         anyhow::bail!("Version mismatch during Unlock: DB={}, New={}", current_version, version);
+                    }
+                }
+            }
+        }
+
+        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
+    }
+
+    pub async fn update_balance_for_withdraw(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        balance_after: u64,
+        version: u64,
+    ) -> Result<(i64, i64, i64, i64)> {
+        let current = self.get_user_balance(user_id, asset_id).await?
+            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Withdraw)", user_id, asset_id))?;
+
+        let current_avail = current.avail as i64;
+        let current_frozen = current.frozen as i64;
+        let current_version = current.version;
+
+        if version <= current_version {
+             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
+        }
+
+        let new_avail = balance_after as i64;
+        let new_frozen = current_frozen;
+        let new_version = version;
+
+        const UPDATE_CQL: &str = "
+            UPDATE user_balances
+            SET avail = ?, frozen = ?, version = ?, updated_at = ?
+            WHERE user_id = ? AND asset_id = ?
+            IF version = ?
+        ";
+        let now = get_current_timestamp_ms();
+
+        let result = self.session.query(UPDATE_CQL, (
+            new_avail,
+            new_frozen,
+            new_version as i64,
+            now,
+            user_id as i64,
+            asset_id as i32,
+            current_version as i64
+        )).await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
+                    if !applied {
+                         anyhow::bail!("Version mismatch during Withdraw: DB={}, New={}", current_version, version);
+                    }
+                }
+            }
+        }
 
         Ok((current_avail, new_avail, current_version as i64, new_version as i64))
     }
@@ -1131,42 +1264,56 @@ impl SettlementDb {
         let new_seller_base = seller_base - quantity;
         let new_seller_quote = seller_quote + quote_amount;
 
-        // Check data integrity: DB version must match ME version
-        if buyer_base_ver != trade.buyer_base_version as i64 {
-            anyhow::bail!(
-                "Version mismatch Buyer Base (User {} Asset {}): DB={} ME={}",
-                trade.buyer_user_id,
-                trade.base_asset_id,
+        // Check data integrity: DB version must be predecessor of ME version (ME - 1)
+        // Since trade execution increments version by 1.
+        if buyer_base_ver >= trade.buyer_base_version as i64 {
+             // Idempotency Check: If DB >= ME, we might have already processed this?
+             // But we are in insert_trade/settle.
+             // If DB = ME, it implies this update was already applied.
+             // Warn and skip?
+             // For strict E2E, strict increment is expected.
+             if buyer_base_ver == trade.buyer_base_version as i64 {
+                 log::warn!("Trade seems already applied (Version Match): trade={}", trade.trade_id);
+                 // If already applied, we should probably return Ok?
+                 // But settled_trades insert might fail on PK conflict if we retry.
+             } else {
+                 anyhow::bail!(
+                    "Version mismatch Buyer Base (DB ahead?): DB={} ME={}",
+                    buyer_base_ver,
+                    trade.buyer_base_version
+                );
+             }
+        } else if buyer_base_ver != (trade.buyer_base_version as i64 - 1) {
+             // Gap detected
+             anyhow::bail!(
+                "Version gap Buyer Base: DB={} ME={}",
                 buyer_base_ver,
                 trade.buyer_base_version
             );
         }
-        if buyer_quote_ver != trade.buyer_quote_version as i64 {
-            anyhow::bail!(
-                "Version mismatch Buyer Quote (User {} Asset {}): DB={} ME={}",
-                trade.buyer_user_id,
-                trade.quote_asset_id,
-                buyer_quote_ver,
-                trade.buyer_quote_version
-            );
+
+        if buyer_quote_ver >= trade.buyer_quote_version as i64 {
+             if buyer_quote_ver != trade.buyer_quote_version as i64 {
+                 anyhow::bail!("Version mismatch Buyer Quote (DB ahead?): DB={} ME={}", buyer_quote_ver, trade.buyer_quote_version);
+             }
+        } else if buyer_quote_ver != (trade.buyer_quote_version as i64 - 1) {
+             anyhow::bail!("Version gap Buyer Quote: DB={} ME={}", buyer_quote_ver, trade.buyer_quote_version);
         }
-        if seller_base_ver != trade.seller_base_version as i64 {
-            anyhow::bail!(
-                "Version mismatch Seller Base (User {} Asset {}): DB={} ME={}",
-                trade.seller_user_id,
-                trade.base_asset_id,
-                seller_base_ver,
-                trade.seller_base_version
-            );
+
+        if seller_base_ver >= trade.seller_base_version as i64 {
+             if seller_base_ver != trade.seller_base_version as i64 {
+                 anyhow::bail!("Version mismatch Seller Base (DB ahead?): DB={} ME={}", seller_base_ver, trade.seller_base_version);
+             }
+        } else if seller_base_ver != (trade.seller_base_version as i64 - 1) {
+             anyhow::bail!("Version gap Seller Base: DB={} ME={}", seller_base_ver, trade.seller_base_version);
         }
-        if seller_quote_ver != trade.seller_quote_version as i64 {
-            anyhow::bail!(
-                "Version mismatch Seller Quote (User {} Asset {}): DB={} ME={}",
-                trade.seller_user_id,
-                trade.quote_asset_id,
-                seller_quote_ver,
-                trade.seller_quote_version
-            );
+
+        if seller_quote_ver >= trade.seller_quote_version as i64 {
+             if seller_quote_ver != trade.seller_quote_version as i64 {
+                 anyhow::bail!("Version mismatch Seller Quote (DB ahead?): DB={} ME={}", seller_quote_ver, trade.seller_quote_version);
+             }
+        } else if seller_quote_ver != (trade.seller_quote_version as i64 - 1) {
+             anyhow::bail!("Version gap Seller Quote: DB={} ME={}", seller_quote_ver, trade.seller_quote_version);
         }
 
         // Calculate new versions

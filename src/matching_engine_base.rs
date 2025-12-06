@@ -704,68 +704,25 @@ impl MatchingEngine {
         &mut self,
         requests: Vec<(u32, u64, Side, OrderType, u64, u64, u64, u64)>,
     ) -> (Vec<Result<u64, OrderError>>, Vec<LedgerCommand>) {
-        let start_total = std::time::Instant::now();
-        let mut results = vec![Err(OrderError::Other("Not processed".to_string())); requests.len()];
-        let mut valid_indices = Vec::with_capacity(requests.len());
+        let _start_total = std::time::Instant::now();
+        let mut results = Vec::with_capacity(requests.len());
+        let mut output_cmds = Vec::new();
 
-        // 1. Validate and Log to Input WAL
-        for (i, (symbol_id, order_id, side, _order_type, price, quantity, user_id, _timestamp)) in
-            requests.iter().enumerate()
-        {
-            let wal_side = *side;
-            let (base_asset_id, quote_asset_id) = match self.asset_map.get(symbol_id) {
-                Some(&pair) => pair,
+        for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in requests {
+            // 1. Validation (Asset Map)
+            let _pair = match self.asset_map.get(&symbol_id) {
+                Some(p) => p,
                 None => {
-                    results[i] = Err(OrderError::AssetMapNotFound { symbol_id: *symbol_id });
+                    results.push(Err(OrderError::AssetMapNotFound { symbol_id }));
                     continue;
                 }
             };
-            let (required_asset, required_amount) = match side {
-                Side::Buy => (quote_asset_id, price * quantity),
-                Side::Sell => (base_asset_id, *quantity),
-            };
 
-            let accounts = self.ledger.get_accounts();
-            let balance = accounts
-                .get(user_id)
-                .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
-                .map(|(_, b)| b.avail)
-                .unwrap_or(0);
+            // 2. Per-Order Atomic Processing with Shadow Ledger
+            // COW (Copy-On-Write): Create a fresh shadow ledger for valid input isolation
+            let mut shadow = ShadowLedger::new(&self.ledger);
 
-// DISABLE BALANCE CHECK FOR E2E TESTING
-            // if balance < required_amount {
-            //     results[i] = Err(OrderError::InsufficientFunds {
-            //         user_id: *user_id,
-            //         asset_id: required_asset,
-            //         required: required_amount,
-            //         avail: balance,
-            //     });
-            //     continue;
-            // }
-
-            // Log to Order WAL (No Flush)
-            if let Some(wal) = &mut self.order_wal {
-                if let Err(e) = wal.log_place_order_no_flush(
-                    *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
-                ) {
-                    results[i] = Err(OrderError::Other(e.to_string()));
-                    continue;
-                }
-            }
-
-            valid_indices.push(i);
-        }
-
-        let t_input = start_total.elapsed();
-
-        // 3. Process Valid Orders (Shadow Mode)
-        let t_process_start = std::time::Instant::now();
-        let mut shadow = ShadowLedger::new(&self.ledger);
-
-        for i in valid_indices {
-            let (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) =
-                requests[i];
-            match Self::process_order_logic(
+            let res = Self::process_order_logic(
                 &mut shadow,
                 &mut self.order_books,
                 &self.asset_map,
@@ -779,41 +736,26 @@ impl MatchingEngine {
                 quantity,
                 user_id,
                 timestamp,
-            ) {
+            );
+
+            match res {
                 Ok(oid) => {
-                    results[i] = Ok(oid);
+                    // Success: Commit the shadow delta to main memory immediately
+                    // This ensures the next order in the batch sees the updated state (e.g. locked funds)
+                    if !shadow.pending_commands.is_empty() {
+                        let (delta, mut cmds) = shadow.into_delta();
+                        self.ledger.apply_delta_to_memory(delta);
+                        output_cmds.append(&mut cmds);
+                    }
+                    results.push(Ok(oid));
                 }
                 Err(e) => {
-                    println!("[MatchingEngine] process_order_logic failed: {:?}", e);
-                    results[i] = Err(e);
+                    // Failure: Discard the shadow ledger
+                    // The main ledger is untouched, so this invalid input is cleanly skipped
+                    // println!("[MatchingEngine] Order {} failed: {:?}", order_id, e);
+                    results.push(Err(e));
                 }
             }
-        }
-        let t_process = t_process_start.elapsed();
-
-        // 4. Commit Batch (Memory Only) - Return commands for persistence
-        let t_commit_start = std::time::Instant::now();
-        let mut output_cmds = Vec::new();
-
-        if !shadow.pending_commands.is_empty() {
-            let (delta, cmds) = shadow.into_delta();
-            // Apply to memory immediately so next batch sees correct state
-            self.ledger.apply_delta_to_memory(delta);
-            output_cmds = cmds;
-        }
-
-
-        let t_commit = t_commit_start.elapsed();
-
-        if requests.len() > 0 {
-            println!(
-                "[PERF] Match: {} orders. Input: {:?}, Process: {:?}, Commit(Mem): {:?}. Total: {:?}",
-                requests.len(),
-                t_input,
-                t_process,
-                t_commit,
-                start_total.elapsed()
-            );
         }
 
         (results, output_cmds)
