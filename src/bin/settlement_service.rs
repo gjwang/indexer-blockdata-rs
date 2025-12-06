@@ -413,11 +413,9 @@ async fn process_engine_output<W: std::io::Write>(
     let d_total = t_start.elapsed();
 
     // Log timing if slow (>50ms) or has trades
-    if d_total.as_millis() > 50 || !output.trades.is_empty() {
-        log::debug!(target: LOG_TARGET,
-            "[PROFILE] seq={} total={:?} log={:?} bal={:?} trade={:?} order={:?} persist={:?}",
-            output.output_seq, d_total, d_log, d_balance, d_trade, d_order, d_persist);
-    }
+    log::info!(target: LOG_TARGET,
+        "[PROFILE] seq={} total={:?} log={:?} bal={:?} trade={:?} order={:?} persist={:?}",
+        output.output_seq, d_total, d_log, d_balance, d_trade, d_order, d_persist);
 
     Ok(())
 }
