@@ -63,8 +63,8 @@ CREATE TABLE IF NOT EXISTS balance_ledger (
     seq bigint,                    -- Sequence number (version), monotonically increasing
     delta_avail bigint,            -- Change to available
     delta_frozen bigint,           -- Change to frozen
-    balance_avail bigint,          -- Running balance after this event
-    balance_frozen bigint,         -- Running frozen after this event
+    avail bigint,          -- Running balance after this event
+    frozen bigint,         -- Running frozen after this event
     event_type text,               -- 'deposit', 'withdraw', 'lock', 'unlock', 'trade_debit', 'trade_credit', 'refund'
     ref_id bigint,                 -- Reference ID (trade_id, order_id, etc.)
     created_at bigint,             -- Unix timestamp in milliseconds
