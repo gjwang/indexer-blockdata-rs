@@ -254,6 +254,8 @@ async fn process_engine_output<W: std::io::Write>(
     csv_writer: &mut csv::Writer<W>,
     event_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let t_start = std::time::Instant::now();
+
     // 1. Idempotency: Skip if already processed
     if output.output_seq <= *last_output_seq && *last_output_seq > 0 {
         log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
@@ -284,12 +286,15 @@ async fn process_engine_output<W: std::io::Write>(
 
     // === SOURCE OF TRUTH: Write EngineOutput FIRST ===
     // This is the ONLY authoritative record. All derived state can be rebuilt from this.
+    let t_log = std::time::Instant::now();
     settlement_db.write_engine_output(output).await
         .map_err(|e| format!("Failed to write engine_output: {}", e))?;
+    let d_log = t_log.elapsed();
 
     // === DERIVED STATE: All operations below derive from the logged output ===
 
     // 5. Process balance events - FAIL on ANY error
+    let t_balance = std::time::Instant::now();
     for balance_event in &output.balance_events {
         settlement_db.append_balance_event(
             balance_event.user_id,
@@ -306,8 +311,10 @@ async fn process_engine_output<W: std::io::Write>(
             balance_event.user_id, balance_event.asset_id, balance_event.event_type, e
         ))?;
     }
+    let d_balance = t_balance.elapsed();
 
     // 6. Process trades - FAIL on ANY error
+    let t_trade = std::time::Instant::now();
     for trade in &output.trades {
         let match_exec = fetcher::ledger::MatchExecData {
             trade_id: trade.trade_id,
@@ -354,8 +361,10 @@ async fn process_engine_output<W: std::io::Write>(
         process_trade_fill(order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, event_id).await?;
         process_trade_fill(order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, event_id).await?;
     }
+    let d_trade = t_trade.elapsed();
 
     // 7. Process order update (if present) - FAIL on error
+    let t_order = std::time::Instant::now();
     if let InputData::PlaceOrder(ref place_order) = output.input.data {
         if let Some(ref order_update) = output.order_update {
             let status = match order_update.status {
@@ -386,6 +395,7 @@ async fn process_engine_output<W: std::io::Write>(
             process_order_update(order_history_db, &ledger_order_update, event_id).await?;
         }
     }
+    let d_order = t_order.elapsed();
 
     // 8. Flush CSV
     csv_writer.flush()?;
@@ -395,8 +405,19 @@ async fn process_engine_output<W: std::io::Write>(
     *last_output_seq = output.output_seq;
 
     // 10. PERSIST chain state to DB for crash recovery
+    let t_persist = std::time::Instant::now();
     settlement_db.save_chain_state(*last_output_seq, *last_processed_hash).await
         .map_err(|e| format!("Failed to persist chain state: {}", e))?;
+    let d_persist = t_persist.elapsed();
+
+    let d_total = t_start.elapsed();
+
+    // Log timing if slow (>50ms) or has trades
+    if d_total.as_millis() > 50 || !output.trades.is_empty() {
+        log::debug!(target: LOG_TARGET,
+            "[PROFILE] seq={} total={:?} log={:?} bal={:?} trade={:?} order={:?} persist={:?}",
+            output.output_seq, d_total, d_log, d_balance, d_trade, d_order, d_persist);
+    }
 
     Ok(())
 }
