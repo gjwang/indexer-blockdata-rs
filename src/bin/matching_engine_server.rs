@@ -327,72 +327,30 @@ async fn main() {
 
         // Check for messages outside our tracked dedup window
         if msg_dedup.is_outside_tracked_window(msg_ts) {
-            println!("[ME] OUTSIDE TRACKED WINDOW - skipping (ts={} older than oldest tracked={})",
+            println!("[ME] OUTSIDE TRACKED WINDOW - ts={} < oldest={}",
                 msg_ts, msg_dedup.get_oldest_ts());
             return;
         }
 
-        // Process commands - extract unique ID and check dedup at MESSAGE level
         if let Some(ref cmd) = event.command {
-            // Extract unique message ID(s) from command
-            let msg_ids: Vec<i64> = match cmd {
-                EngineCommand::PlaceOrderBatch(batch) => {
-                    batch.iter().map(|(_, order_id, ..)| *order_id as i64).collect()
-                }
-                EngineCommand::CancelOrder { order_id, .. } => {
-                    vec![*order_id as i64]
-                }
-                EngineCommand::BalanceRequest(req) => {
-                    // Use request_id hash as unique ID
-                    vec![req.request_id().parse::<i64>().unwrap_or_else(|_| {
-                        use std::hash::{Hash, Hasher};
-                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                        req.request_id().hash(&mut hasher);
-                        hasher.finish() as i64
-                    })]
-                }
-            };
-
-            // Check for duplicate message IDs
-            let all_duplicates = msg_ids.iter().all(|id| msg_dedup.is_duplicate(*id));
-            if all_duplicates && !msg_ids.is_empty() {
-                println!("[ME] DUPLICATE MESSAGE - skipping (all IDs already processed)");
-                return;
-            }
-
-            // Mark all IDs as processed BEFORE attempting
-            for id in &msg_ids {
-                msg_dedup.mark_processed(*id, msg_ts);
-            }
-
-            // Now process the command
             match cmd {
+                // Batch: check each order_id individually
                 EngineCommand::PlaceOrderBatch(batch) => {
                     let mut engine_outputs = Vec::with_capacity(batch.len());
                     let mut input_seq = engine.get_output_seq();
 
                     for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch.iter() {
-                        input_seq += 1;
-                        let cid = format!("kafka_{}", order_id);
+                        let msg_id = *order_id as i64;
+                        if msg_dedup.is_duplicate(msg_id) { continue; }
+                        msg_dedup.mark_processed(msg_id, msg_ts);
 
-                        match engine.add_order_and_build_output(
-                            input_seq,
-                            *symbol_id,
-                            *order_id,
-                            *side,
-                            *order_type,
-                            *price,
-                            *quantity,
-                            *user_id,
-                            *timestamp,
-                            cid,
+                        input_seq += 1;
+                        if let Ok((_, output)) = engine.add_order_and_build_output(
+                            input_seq, *symbol_id, *order_id, *side, *order_type,
+                            *price, *quantity, *user_id, *timestamp,
+                            format!("kafka_{}", order_id),
                         ) {
-                            Ok((_, output)) => {
-                                engine_outputs.push(output);
-                            }
-                            Err(e) => {
-                                eprintln!("[ME] EngineOutput error for order {}: {:?}", order_id, e);
-                            }
+                            engine_outputs.push(output);
                         }
                     }
 
@@ -400,27 +358,27 @@ async fn main() {
                         *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(engine_outputs));
                     }
                 }
+                // Single ID: check once at top
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
+                    let msg_id = *order_id as i64;
+                    if msg_dedup.is_duplicate(msg_id) { return; }
+                    msg_dedup.mark_processed(msg_id, msg_ts);
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
+                // Single ID: check once at top
                 EngineCommand::BalanceRequest(req) => {
-                    match balance_processor.process_balance_request(&mut engine, req.clone()) {
-                        Ok(outputs) => {
-                            if !outputs.is_empty() {
-                                // Append to existing engine_outputs or create new
-                                let mut guard = event.engine_outputs.lock().unwrap();
-                                if let Some(ref mut existing) = *guard {
-                                    // In practice, balance requests are processed separately
-                                    // so this shouldn't happen, but handle it gracefully
-                                    let mut combined = (*existing).as_ref().clone();
-                                    combined.extend(outputs);
-                                    *guard = Some(std::sync::Arc::new(combined));
-                                } else {
-                                    *guard = Some(std::sync::Arc::new(outputs));
-                                }
-                            }
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    req.request_id().hash(&mut h);
+                    let msg_id = h.finish() as i64;
+
+                    if msg_dedup.is_duplicate(msg_id) { return; }
+                    msg_dedup.mark_processed(msg_id, msg_ts);
+
+                    if let Ok(outputs) = balance_processor.process_balance_request(&mut engine, req.clone()) {
+                        if !outputs.is_empty() {
+                            *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(outputs));
                         }
-                        Err(e) => eprintln!("Balance processing error: {}", e),
                     }
                 }
             }
