@@ -719,13 +719,19 @@ impl SettlementDb {
             .context("Failed to insert balance event")?;
 
         // 2. Update user_balances snapshot table for easy querying
-        self.session
+        log::info!("Updating user_balances: user={} asset={} avail={} frozen={} version={}",
+            user_id, asset_id, avail, frozen, seq);
+
+        if let Err(e) = self.session
             .query(
                 "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (user_id as i64, asset_id as i32, avail, frozen, seq as i64, now as i64),
             )
             .await
-            .context("Failed to update user_balances")?;
+        {
+            log::error!("Failed to update user_balances: user={} asset={}: {}", user_id, asset_id, e);
+            return Err(e.into());
+        }
 
         Ok(())
     }
