@@ -613,47 +613,45 @@ impl SettlementDb {
     }
 
 
-    /// Initialize balance record if it doesn't exist
-    async fn init_balance_if_not_exists(&self, user_id: u64, asset_id: u32) -> Result<()> {
-        const INIT_BALANCE_CQL: &str = "
-            INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at)
-            VALUES (?, ?, 0, 0, 0, ?)
-            IF NOT EXISTS
-        ";
-
-        let now = get_current_timestamp_ms();
-
-        self.session.query(INIT_BALANCE_CQL, (user_id as i64, asset_id as i32, now)).await?;
-
-        Ok(())
-    }
-
-    /// Get all balances for a user
+    /// Get all balances for a user (from balance_ledger - latest entry per asset)
     pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
-        const GET_ALL_BALANCES_CQL: &str = "
-            SELECT asset_id, avail, frozen, version, updated_at
-            FROM user_balances
+        // Query all distinct assets for this user, getting latest seq per asset
+        const QUERY: &str = "
+            SELECT asset_id, avail, frozen, seq, created_at
+            FROM balance_ledger
             WHERE user_id = ?
         ";
 
-        let result = self.session.query(GET_ALL_BALANCES_CQL, (user_id as i64,)).await?;
+        let result = self.session.query(QUERY, (user_id as i64,)).await?;
 
-        let mut balances = Vec::new();
+        // Group by asset_id, keep only latest seq
+        let mut latest: std::collections::HashMap<i32, (i64, i64, i64, i64, i64)> = std::collections::HashMap::new();
+
         if let Some(rows) = result.rows {
             for row in rows.into_iter() {
-                let (asset_id, avail, frozen, version, updated_at): (i32, i64, i64, i64, i64) =
+                let (asset_id, avail, frozen, seq, created_at): (i32, i64, i64, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
 
-                balances.push(UserBalance {
+                // Keep latest seq per asset
+                let entry = latest.entry(asset_id).or_insert((seq, avail, frozen, seq, created_at));
+                if seq > entry.0 {
+                    *entry = (seq, avail, frozen, seq, created_at);
+                }
+            }
+        }
+
+        let balances: Vec<UserBalance> = latest.into_iter()
+            .map(|(asset_id, (_, avail, frozen, version, updated_at))| {
+                UserBalance {
                     user_id,
                     asset_id: asset_id as u32,
                     avail: avail as u64,
                     frozen: frozen as u64,
                     version: version as u64,
                     updated_at: updated_at as u64,
-                });
-            }
-        }
+                }
+            })
+            .collect();
 
         Ok(balances)
     }
@@ -1193,16 +1191,9 @@ impl SettlementDb {
         let new_seller_base_ver = seller_base_ver + seller_base_inc;
         let new_seller_quote_ver = seller_quote_ver + 1;
 
-        // 4. Create Batch
-        let now = get_current_timestamp_ms();
+        // 4. Prepare Trade Insert
+        let _now = get_current_timestamp_ms();
         let trade_date = get_current_date();
-
-        // Prepare balance update query
-        const UPDATE_BALANCE_CQL: &str = "
-            UPDATE user_balances
-            SET avail = ?, frozen = ?, version = ?, updated_at = ?
-            WHERE user_id = ? AND asset_id = ?
-        ";
 
         // Values for Trade Insert (15 columns - within tuple limit)
         let trade_values = (
@@ -1221,41 +1212,6 @@ impl SettlementDb {
             trade.buyer_refund as i64,
             trade.seller_refund as i64,
             trade.settled_at as i64,
-        );
-
-        // Values for Balance Updates
-        // Values for Balance Updates
-        let buyer_base_values = (
-            new_buyer_base,
-            buyer_base_frozen, // Preserve frozen
-            new_buyer_base_ver,
-            now,
-            trade.buyer_user_id as i64,
-            trade.base_asset_id as i32,
-        );
-        let buyer_quote_values = (
-            new_buyer_quote,
-            buyer_quote_frozen, // Preserve frozen
-            new_buyer_quote_ver,
-            now,
-            trade.buyer_user_id as i64,
-            trade.quote_asset_id as i32,
-        );
-        let seller_base_values = (
-            new_seller_base,
-            seller_base_frozen, // Preserve frozen
-            new_seller_base_ver,
-            now,
-            trade.seller_user_id as i64,
-            trade.base_asset_id as i32,
-        );
-        let seller_quote_values = (
-            new_seller_quote,
-            seller_quote_frozen, // Preserve frozen
-            new_seller_quote_ver,
-            now,
-            trade.seller_user_id as i64,
-            trade.quote_asset_id as i32,
         );
 
         // 5. Execute Settlement
