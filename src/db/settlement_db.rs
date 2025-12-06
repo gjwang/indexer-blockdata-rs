@@ -875,7 +875,7 @@ impl SettlementDb {
     // =====================================================
 
     /// Get current balance from append-only ledger (latest entry)
-    pub async fn get_current_balance_v2(&self, user_id: u64, asset_id: u32) -> Result<CurrentBalance> {
+    pub async fn get_current_balance(&self, user_id: u64, asset_id: u32) -> Result<CurrentBalance> {
         let result = self.session
             .query(SELECT_LATEST_BALANCE_CQL, (user_id as i64, asset_id as i32))
             .await?;
@@ -932,7 +932,7 @@ impl SettlementDb {
     }
 
     /// Deposit - append-only version (v2)
-    pub async fn deposit_v2(
+    pub async fn deposit(
         &self,
         user_id: u64,
         asset_id: u32,
@@ -941,7 +941,7 @@ impl SettlementDb {
         ref_id: u64,
     ) -> Result<CurrentBalance> {
         // Get current balance
-        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?;
 
         // Idempotency check
         if new_seq <= current.seq as u64 {
@@ -975,7 +975,7 @@ impl SettlementDb {
     }
 
     /// Lock - append-only version (v2)
-    pub async fn lock_v2(
+    pub async fn lock(
         &self,
         user_id: u64,
         asset_id: u32,
@@ -983,7 +983,7 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -1015,7 +1015,7 @@ impl SettlementDb {
     }
 
     /// Unlock - append-only version (v2)
-    pub async fn unlock_v2(
+    pub async fn unlock(
         &self,
         user_id: u64,
         asset_id: u32,
@@ -1023,7 +1023,7 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -1055,7 +1055,7 @@ impl SettlementDb {
     }
 
     /// Withdraw - append-only version (v2)
-    pub async fn withdraw_v2(
+    pub async fn withdraw(
         &self,
         user_id: u64,
         asset_id: u32,
@@ -1063,7 +1063,7 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+        let current = self.get_current_balance(user_id, asset_id).await?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -1258,7 +1258,7 @@ impl SettlementDb {
         let mut attempts = 0;
         loop {
             // Use new append-only balance ledger
-            let current = self.get_current_balance_v2(user_id, asset_id).await?;
+            let current = self.get_current_balance(user_id, asset_id).await?;
             let (bal, frozen, ver) = (current.avail, current.frozen, current.seq);
 
             // If version matches (or is newer), we are good.
