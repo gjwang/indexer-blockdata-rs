@@ -20,7 +20,7 @@ mod order_lifecycle_integration_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place order
@@ -52,7 +52,7 @@ mod order_lifecycle_integration_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place order
@@ -100,7 +100,7 @@ mod order_lifecycle_integration_tests {
         for user_id in 1..=3 {
             engine
                 .ledger
-                .apply(&LedgerCommand::Deposit { user_id, asset: 200, amount: 100000, balance_after: 0, version: 0 })
+                .apply(&LedgerCommand::Deposit { user_id, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
                 .unwrap();
         }
 

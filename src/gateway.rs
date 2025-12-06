@@ -432,7 +432,7 @@ async fn get_trade_history(
                 let base = info.base_asset_id;
                 let quote = info.quote_asset_id;
 
-                if t.base_asset == base && t.quote_asset == quote {
+                if t.base_asset_id == base && t.quote_asset_id == quote {
                     let role = if t.buyer_user_id == user_id { "BUYER" } else { "SELLER" };
 
                     DisplayTradeHistoryResponse::new(
@@ -509,7 +509,7 @@ async fn get_order_history(
             let base = info.base_asset_id;
             let quote = info.quote_asset_id;
 
-            if t.base_asset != base || t.quote_asset != quote {
+            if t.base_asset_id != base || t.quote_asset_id != quote {
                 continue;
             }
 

@@ -245,10 +245,10 @@ impl ClientOrder {
         let price = balance_manager.to_internal_price(&self.symbol, self.price)?;
 
         // Convert quantity to integer representation (Base Asset)
-        let base_asset_name = symbol_manager
+        let base_asset_id_name = symbol_manager
             .get_asset_name(symbol_info.base_asset_id)
             .ok_or_else(|| format!("Unknown base asset ID: {}", symbol_info.base_asset_id))?;
-        let (_, quantity) = balance_manager.to_internal_amount(&base_asset_name, self.quantity)?;
+        let (_, quantity) = balance_manager.to_internal_amount(&base_asset_id_name, self.quantity)?;
         let quantity_decimals =
             symbol_manager.get_asset_decimal(symbol_info.base_asset_id).unwrap_or(8);
 

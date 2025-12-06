@@ -10,23 +10,23 @@ pub const ETH: u32 = 3;
 /// Get symbol name from base and quote asset IDs
 ///
 /// # Arguments
-/// * `base_asset` - Base asset ID (e.g., BTC = 1)
-/// * `quote_asset` - Quote asset ID (e.g., USDT = 2)
+/// * `base_asset_id` - Base asset ID (e.g., BTC = 1)
+/// * `quote_asset_id` - Quote asset ID (e.g., USDT = 2)
 ///
 /// # Returns
 /// * Symbol name in format "base_quote" (e.g., "btc_usdt")
-pub fn get_symbol_from_assets(base_asset: u32, quote_asset: u32) -> Result<String> {
-    let base_name = match base_asset {
+pub fn get_symbol_from_assets(base_asset_id: u32, quote_asset_id: u32) -> Result<String> {
+    let base_name = match base_asset_id {
         BTC => "btc",
         ETH => "eth",
-        _ => bail!("Unknown base asset: {}", base_asset),
+        _ => bail!("Unknown base asset: {}", base_asset_id),
     };
 
-    let quote_name = match quote_asset {
+    let quote_name = match quote_asset_id {
         USDT => "usdt",
         BTC => "btc",
         ETH => "eth",
-        _ => bail!("Unknown quote asset: {}", quote_asset),
+        _ => bail!("Unknown quote asset: {}", quote_asset_id),
     };
 
     Ok(format!("{}_{}", base_name, quote_name))

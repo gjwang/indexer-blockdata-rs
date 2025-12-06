@@ -16,11 +16,11 @@ mod tests {
     fn fund_user(engine: &mut MatchingEngine, user_id: u64, amount_base: u64, amount_quote: u64) {
         // Fund Base Asset (ID 1)
         if amount_base > 0 {
-             engine.ledger.apply(&LedgerCommand::Deposit { user_id, asset: 1, amount: amount_base, balance_after: 0, version: 0 }).unwrap();
+             engine.ledger.apply(&LedgerCommand::Deposit { user_id, asset_id: 1, amount: amount_base, balance_after: 0, version: 0 }).unwrap();
         }
         // Fund Quote Asset (ID 2)
         if amount_quote > 0 {
-             engine.ledger.apply(&LedgerCommand::Deposit { user_id, asset: 2, amount: amount_quote, balance_after: 0, version: 0 }).unwrap();
+             engine.ledger.apply(&LedgerCommand::Deposit { user_id, asset_id: 2, amount: amount_quote, balance_after: 0, version: 0 }).unwrap();
         }
     }
 
