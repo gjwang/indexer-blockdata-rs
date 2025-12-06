@@ -51,12 +51,8 @@ const INSERT_TRADE_CQL: &str = "
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
         price, quantity, base_asset_id, quote_asset_id,
-        buyer_refund, seller_refund, settled_at,
-        buyer_base_version, buyer_quote_version,
-        seller_base_version, seller_quote_version,
-        buyer_base_balance_after, buyer_quote_balance_after,
-        seller_base_balance_after, seller_quote_balance_after
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        buyer_refund, seller_refund, settled_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 const INSERT_LEDGER_EVENT_CQL: &str = "
@@ -1351,32 +1347,24 @@ impl SettlementDb {
             WHERE user_id = ? AND asset_id = ?
         ";
 
-        // Values for Trade Insert (use Vec since tuple >16 elements not supported by SerializeRow)
-        let trade_values: Vec<&(dyn scylla::frame::value::Value + Sync)> = vec![
-            &(trade_date as i32),
-            &(trade.output_sequence as i64),
-            &(trade.trade_id as i64),
-            &(trade.match_seq as i64),
-            &(trade.buy_order_id as i64),
-            &(trade.sell_order_id as i64),
-            &(trade.buyer_user_id as i64),
-            &(trade.seller_user_id as i64),
-            &(trade.price as i64),
-            &(trade.quantity as i64),
-            &(trade.base_asset_id as i32),
-            &(trade.quote_asset_id as i32),
-            &(trade.buyer_refund as i64),
-            &(trade.seller_refund as i64),
-            &(trade.settled_at as i64),
-            &new_buyer_base_ver,
-            &new_buyer_quote_ver,
-            &new_seller_base_ver,
-            &new_seller_quote_ver,
-            &new_buyer_base,
-            &new_buyer_quote,
-            &new_seller_base,
-            &new_seller_quote,
-        ];
+        // Values for Trade Insert (15 columns - within tuple limit)
+        let trade_values = (
+            trade_date as i32,
+            trade.output_sequence as i64,
+            trade.trade_id as i64,
+            trade.match_seq as i64,
+            trade.buy_order_id as i64,
+            trade.sell_order_id as i64,
+            trade.buyer_user_id as i64,
+            trade.seller_user_id as i64,
+            trade.price as i64,
+            trade.quantity as i64,
+            trade.base_asset_id as i32,
+            trade.quote_asset_id as i32,
+            trade.buyer_refund as i64,
+            trade.seller_refund as i64,
+            trade.settled_at as i64,
+        );
 
         // Values for Balance Updates
         // Values for Balance Updates
@@ -1419,7 +1407,7 @@ impl SettlementDb {
 
         // 5.1 Insert Trade
         self.session
-            .query(INSERT_TRADE_CQL, trade_values.as_slice())
+            .query(INSERT_TRADE_CQL, trade_values)
             .await
             .map_err(|e| {
                 log::error!("Trade insert failed: {:?}", e);
