@@ -20,9 +20,9 @@ sleep 2
 echo ""
 echo "=== Step 2: Cleaning all data ==="
 rm -rf me_wal_data me_snapshots || true
-docker exec scylla cqlsh -e "TRUNCATE settlement.settled_trades;" 2>/dev/null || true
-docker exec scylla cqlsh -e "TRUNCATE settlement.user_balances;" 2>/dev/null || true
-docker exec scylla cqlsh -e "TRUNCATE settlement.ledger_events;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.settled_trades;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.user_balances;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.ledger_events;" 2>/dev/null || true
 rm -f /tmp/*.log
 echo "✅ All data cleaned"
 
@@ -87,7 +87,7 @@ sleep 1
 
 echo ""
 echo "=== Step 8: Verifying initial balances ==="
-docker exec scylla cqlsh -e "SELECT user_id, asset_id, available, version FROM settlement.user_balances WHERE user_id IN (1001, 1002, 1003) ALLOW FILTERING;" 2>/dev/null
+docker exec scylla cqlsh -e "SELECT user_id, asset_id, avail, version FROM trading.user_balances WHERE user_id IN (1001, 1002, 1003) ALLOW FILTERING;" 2>/dev/null
 
 echo ""
 echo "=== Step 8.5: Verify Balance API Response ==="
@@ -114,15 +114,15 @@ tail -30 /tmp/settle.log
 echo ""
 echo "=== Database Stats ==="
 echo "1. Settled Trades:"
-docker exec scylla cqlsh -e "SELECT COUNT(*) FROM settlement.settled_trades;" 2>/dev/null
+docker exec scylla cqlsh -e "SELECT COUNT(*) FROM trading.settled_trades;" 2>/dev/null
 
 echo ""
 echo "2. User Balances (test users):"
-docker exec scylla cqlsh -e "SELECT user_id, asset_id, available, frozen, version FROM settlement.user_balances WHERE user_id IN (1001, 1002, 1003) ALLOW FILTERING;" 2>/dev/null
+docker exec scylla cqlsh -e "SELECT user_id, asset_id, avail, frozen, version FROM trading.user_balances WHERE user_id IN (1001, 1002, 1003) ALLOW FILTERING;" 2>/dev/null
 
 echo ""
 echo "3. All User Balances Count:"
-docker exec scylla cqlsh -e "SELECT COUNT(*) FROM settlement.user_balances;" 2>/dev/null
+docker exec scylla cqlsh -e "SELECT COUNT(*) FROM trading.user_balances;" 2>/dev/null
 
 echo ""
 echo "=== Balance Update Statistics ==="

@@ -157,26 +157,29 @@ async fn main() {
                          }
                     },
                     // Balance Updates via LedgerCommand
-                    LedgerCommand::Deposit { user_id, asset_id, amount, .. } => {
-                        match settlement_db.update_balance_for_deposit(user_id, asset_id, amount).await {
+                    LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version } => {
+                        match settlement_db.update_balance_for_deposit(user_id, asset_id, amount, balance_after, version).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Deposit User {} Asset {} -> Version {}", user_id, asset_id, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Deposit Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Lock { user_id, asset_id, amount, .. } => {
-                        match settlement_db.update_balance_for_lock(user_id, asset_id, amount).await {
+                    LedgerCommand::Lock { user_id, asset_id, amount, balance_after, version } => {
+                        match settlement_db.update_balance_for_lock(user_id, asset_id, amount, balance_after, version).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Lock User {} Asset {} -> Version {}", user_id, asset_id, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Lock Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Unlock { user_id, asset_id, amount, .. } => {
-                        match settlement_db.update_balance_for_unlock(user_id, asset_id, amount).await {
+                    LedgerCommand::Unlock { user_id, asset_id, amount, balance_after, version } => {
+                        match settlement_db.update_balance_for_unlock(user_id, asset_id, amount, balance_after, version).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Unlock User {} Asset {} -> Version {}", user_id, asset_id, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Unlock Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Withdraw { .. } => {
-                        // Implement if needed, similar to Deposit
+                    LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version } => {
+                        match settlement_db.update_balance_for_withdraw(user_id, asset_id, amount, balance_after, version).await {
+                            Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Withdraw User {} Asset {} -> Version {}", user_id, asset_id, v),
+                            Err(e) => log::error!(target: LOG_TARGET, "Withdraw Failed: {}", e),
+                        }
                     },
                     _ => {}
                 }
