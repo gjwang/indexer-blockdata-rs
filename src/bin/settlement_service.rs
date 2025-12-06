@@ -313,14 +313,15 @@ async fn process_engine_output<W: std::io::Write>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t_start = std::time::Instant::now();
 
-    //TODO profile verify too
     // 1. Idempotency: Skip if already processed
     if output.output_seq <= *last_output_seq && *last_output_seq > 0 {
         log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
         return Ok(());
     }
 
-    // 2. Verify chain integrity (hash chain)
+    // 2-4. Verification (hash chain, output integrity, sequence)
+    let t_verify = std::time::Instant::now();
+
     if !output.verify_prev_hash(*last_processed_hash) {
         return Err(format!(
             "Chain verification failed: expected prev_hash={}, got={}",
@@ -328,7 +329,6 @@ async fn process_engine_output<W: std::io::Write>(
         ).into());
     }
 
-    // 3. Verify output integrity
     if !output.verify() {
         return Err(format!(
             "Output hash verification failed for seq={}",
@@ -336,35 +336,35 @@ async fn process_engine_output<W: std::io::Write>(
         ).into());
     }
 
-    // 4. Verify sequence continuity
     if output.output_seq != *last_output_seq + 1 {
         log::warn!(target: LOG_TARGET,
             "Sequence gap: expected {}, got {}", *last_output_seq + 1, output.output_seq);
     }
+    let d_verify = t_verify.elapsed();
+    // === PARALLEL DB WRITES ===
+    // All these write to different tables, so can run concurrently
+    let t_db = std::time::Instant::now();
 
-    // === SOURCE OF TRUTH: Write EngineOutput FIRST ===
-    // This is the ONLY authoritative record. All derived state can be rebuilt from this.
-    let t_log = std::time::Instant::now();
-    settlement_db.write_engine_output(output).await
-        .map_err(|e| format!("Failed to write engine_output: {}", e))?;
-    let d_log = t_log.elapsed();
+    let output_seq = output.output_seq;
+    let output_hash = output.hash;
 
-    // === DERIVED STATE: All operations below derive from the logged output ===
+    // Run all DB writes in parallel
+    let (log_result, bal_result, trade_result) = tokio::join!(
+        settlement_db.write_engine_output(output),
+        settlement_db.append_balance_events_batch(&output.balance_events),
+        settlement_db.insert_trades_batch(&output.trades, output_seq),
+    );
 
-    // 5. Process balance events - BATCH for performance
-    let t_balance = std::time::Instant::now();
-    settlement_db.append_balance_events_batch(&output.balance_events).await
-        .map_err(|e| format!("Balance events batch failed: {}", e))?;
-    let d_balance = t_balance.elapsed();
+    // Check results
+    log_result.map_err(|e| format!("Failed to write engine_output: {}", e))?;
+    bal_result.map_err(|e| format!("Balance events batch failed: {}", e))?;
+    trade_result.map_err(|e| format!("Trades batch insert failed: {}", e))?;
 
-    // 6. Process trades - BATCH for performance
+    let d_log = t_db.elapsed(); // Combined time for all parallel ops
+    let d_balance = std::time::Duration::ZERO; // Included in d_log
+
+    // 6. StarRocks (async, fire-and-forget for all trades)
     let t_trade = std::time::Instant::now();
-
-    // 6a. Batch insert all trades to ScyllaDB
-    settlement_db.insert_trades_batch(&output.trades, output.output_seq).await
-        .map_err(|e| format!("Trades batch insert failed: {}", e))?;
-
-    // 6b. StarRocks (async, fire-and-forget for all trades)
     for trade in &output.trades {
         let sr_client = starrocks_client.clone();
         let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
@@ -399,8 +399,7 @@ async fn process_engine_output<W: std::io::Write>(
         tokio::spawn(async move { let _ = sr_client.load_trade(sr_trade).await; });
     }
 
-    // 6c. Order fills - do in background (non-critical for settlement)
-    // Note: These are "nice to have" for order history, not critical for settlement
+    // Order fills - do in background (non-critical for settlement)
     let ohs_db = order_history_db.clone();
     let trades_for_fills: Vec<_> = output.trades.iter().map(|t| (t.buyer_user_id, t.buy_order_id, t.seller_user_id, t.sell_order_id, t.quantity)).collect();
     tokio::spawn(async move {
@@ -461,8 +460,8 @@ async fn process_engine_output<W: std::io::Write>(
     csv_writer.flush()?;
 
     // 9. Update chain state (only after ALL success)
-    *last_processed_hash = output.hash;
-    *last_output_seq = output.output_seq;
+    *last_processed_hash = output_hash;
+    *last_output_seq = output_seq;
 
     // 10. PERSIST chain state to DB for crash recovery
     let t_persist = std::time::Instant::now();
@@ -472,10 +471,10 @@ async fn process_engine_output<W: std::io::Write>(
 
     let d_total = t_start.elapsed();
 
-    // Log timing if slow (>50ms) or has trades
+    // Log timing
     log::info!(target: LOG_TARGET,
-        "[PROFILE] seq={} total={:?} log={:?} bal={:?} trade={:?} order={:?} persist={:?}",
-        output.output_seq, d_total, d_log, d_balance, d_trade, d_order, d_persist);
+        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?} order={:?} persist={:?}",
+        output_seq, d_total, d_verify, d_log, d_trade, d_order, d_persist);
 
     Ok(())
 }
