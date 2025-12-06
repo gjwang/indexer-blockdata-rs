@@ -10,6 +10,7 @@ async fn setup_db() -> Result<Session> {
 }
 
 #[tokio::test]
+#[ignore] // Integration test - requires ScyllaDB running
 async fn test_invalid_version_increment_cql() -> Result<()> {
     let session = setup_db().await?;
 
@@ -35,6 +36,7 @@ async fn test_invalid_version_increment_cql() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore] // Integration test - requires ScyllaDB running
 async fn test_valid_version_update_cql() -> Result<()> {
     let session = setup_db().await?;
 
