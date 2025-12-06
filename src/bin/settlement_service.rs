@@ -342,28 +342,58 @@ async fn process_engine_output<W: std::io::Write>(
     }
     let d_verify = t_verify.elapsed();
 
-    // === PARALLEL DB WRITES ===
-    // All these write to different tables, so can run concurrently
+    // === PARALLEL DB WRITES WITH RETRY ===
     let t_db = std::time::Instant::now();
 
     let output_seq = output.output_seq;
     let output_hash = output.hash;
 
-    // Run ALL DB writes in parallel (including chain state persist)
-    let (log_result, bal_result, trade_result, persist_result) = tokio::join!(
-        settlement_db.write_engine_output(output),
-        settlement_db.append_balance_events_batch(&output.balance_events),
-        settlement_db.insert_trades_batch(&output.trades, output_seq),
-        settlement_db.save_chain_state(output_seq, output_hash),
-    );
+    const MAX_RETRIES: u32 = 3;
+    const INITIAL_DELAY_MS: u64 = 100;
 
-    // Check results
-    log_result.map_err(|e| format!("Failed to write engine_output: {}", e))?;
-    bal_result.map_err(|e| format!("Balance events batch failed: {}", e))?;
-    trade_result.map_err(|e| format!("Trades batch insert failed: {}", e))?;
-    persist_result.map_err(|e| format!("Failed to persist chain state: {}", e))?;
+    let mut last_error: Option<String> = None;
 
-    let d_db = t_db.elapsed(); // Combined time for all parallel ops
+    for attempt in 0..MAX_RETRIES {
+        if attempt > 0 {
+            let delay = INITIAL_DELAY_MS * (1 << (attempt - 1)); // Exponential backoff
+            log::warn!(target: LOG_TARGET, "Retrying DB writes (attempt {}/{}), waiting {}ms...",
+                attempt + 1, MAX_RETRIES, delay);
+            tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
+        }
+
+        // Run ALL DB writes in parallel
+        let (log_result, bal_result, trade_result, persist_result) = tokio::join!(
+            settlement_db.write_engine_output(output),
+            settlement_db.append_balance_events_batch(&output.balance_events),
+            settlement_db.insert_trades_batch(&output.trades, output_seq),
+            settlement_db.save_chain_state(output_seq, output_hash),
+        );
+
+        // Check if all succeeded
+        let log_ok = log_result.is_ok();
+        let bal_ok = bal_result.is_ok();
+        let trade_ok = trade_result.is_ok();
+        let persist_ok = persist_result.is_ok();
+
+        if log_ok && bal_ok && trade_ok && persist_ok {
+            last_error = None;
+            break;
+        }
+
+        // Build error message for failed operations
+        let mut errors = Vec::new();
+        if let Err(e) = log_result { errors.push(format!("log: {}", e)); }
+        if let Err(e) = bal_result { errors.push(format!("bal: {}", e)); }
+        if let Err(e) = trade_result { errors.push(format!("trade: {}", e)); }
+        if let Err(e) = persist_result { errors.push(format!("persist: {}", e)); }
+        last_error = Some(errors.join(", "));
+    }
+
+    if let Some(err) = last_error {
+        return Err(format!("DB writes failed after {} retries: {}", MAX_RETRIES, err).into());
+    }
+
+    let d_db = t_db.elapsed();
 
     // Update in-memory chain state after successful persist
     *last_processed_hash = output_hash;
