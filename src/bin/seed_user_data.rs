@@ -13,8 +13,8 @@ async fn main() {
     };
 
     let user_id = 1001;
-    let base_asset = 1; // BTC
-    let quote_asset = 2; // USDT
+    let base_asset_id = 1; // BTC
+    let quote_asset_id = 2; // USDT
 
     println!("Seeding data for user {}", user_id);
 
@@ -24,7 +24,7 @@ async fn main() {
         sequence_id: 1,
         event_type: "DEPOSIT".to_string(),
         amount: 150_000_000, // 1.5 BTC
-        currency: base_asset,
+        currency: base_asset_id,
         related_id: 0,
         created_at: Utc::now().timestamp_millis(),
     };
@@ -36,7 +36,7 @@ async fn main() {
         sequence_id: 2,
         event_type: "DEPOSIT".to_string(),
         amount: 1_000_000_000_000, // 10,000 USDT
-        currency: quote_asset,
+        currency: quote_asset_id,
         related_id: 0,
         created_at: Utc::now().timestamp_millis(),
     };
@@ -51,8 +51,8 @@ async fn main() {
         seller_user_id: 2000,
         price: 50_000_000_000_000, // 50,000.00
         quantity: 10_000_000,      // 0.1 BTC
-        base_asset: base_asset,
-        quote_asset: quote_asset,
+        base_asset_id: base_asset_id,
+        quote_asset_id: quote_asset_id,
         buyer_refund: 0,
         seller_refund: 0,
         match_seq: 10,

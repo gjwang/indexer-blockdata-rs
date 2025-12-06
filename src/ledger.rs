@@ -42,7 +42,7 @@ pub struct Snapshot {
 pub enum LedgerCommand {
     Deposit {
         user_id: UserId,
-        asset: AssetId,
+        asset_id: AssetId,
         amount: u64,
         // Added for clearing log
         balance_after: u64,
@@ -50,7 +50,7 @@ pub enum LedgerCommand {
     },
     Withdraw {
         user_id: UserId,
-        asset: AssetId,
+        asset_id: AssetId,
         amount: u64,
         // Added for clearing log
         balance_after: u64,
@@ -58,7 +58,7 @@ pub enum LedgerCommand {
     },
     Lock {
         user_id: UserId,
-        asset: AssetId,
+        asset_id: AssetId,
         amount: u64,
         // Added for clearing log
         balance_after: u64,
@@ -66,7 +66,7 @@ pub enum LedgerCommand {
     },
     Unlock {
         user_id: UserId,
-        asset: AssetId,
+        asset_id: AssetId,
         amount: u64,
         // Added for clearing log
         balance_after: u64,
@@ -74,9 +74,9 @@ pub enum LedgerCommand {
     },
     TradeSettle {
         user_id: UserId,
-        spend_asset: AssetId,
+        spend_asset_id: AssetId,
         spend_amount: u64,
-        gain_asset: AssetId,
+        gain_asset_id: AssetId,
         gain_amount: u64,
     },
     MatchExec(MatchExecData),
@@ -94,18 +94,18 @@ pub struct MatchExecData {
     pub seller_user_id: UserId,
     pub price: u64,
     pub quantity: u64,
-    pub base_asset: AssetId,
-    pub quote_asset: AssetId,
+    pub base_asset_id: AssetId,
+    pub quote_asset_id: AssetId,
     pub buyer_refund: u64,
     pub seller_refund: u64,
     pub match_seq: u64,
     pub output_sequence: u64,
     pub settled_at: u64,
     // Balance versions from matching engine (for idempotent settlement)
-    pub buyer_quote_version: u64,  // buyer's quote_asset balance version
-    pub buyer_base_version: u64,   // buyer's base_asset balance version
-    pub seller_base_version: u64,  // seller's base_asset balance version
-    pub seller_quote_version: u64, // seller's quote_asset balance version
+    pub buyer_quote_version: u64,  // buyer's quote_asset_id balance version
+    pub buyer_base_version: u64,   // buyer's base_asset_id balance version
+    pub seller_base_version: u64,  // seller's base_asset_id balance version
+    pub seller_quote_version: u64, // seller's quote_asset_id balance version
 
     // Balance snapshots for clearing log
     pub buyer_quote_balance_after: u64,
@@ -927,76 +927,76 @@ impl GlobalLedger {
         cmd: &LedgerCommand,
     ) -> Result<()> {
         match cmd {
-            LedgerCommand::Deposit { user_id, asset, amount, .. } => {
+            LedgerCommand::Deposit { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
-                let bal = user.get_balance_mut(*asset);
+                let bal = user.get_balance_mut(*asset_id);
                 bal.deposit(*amount).map_err(|e| {
-                    anyhow::anyhow!("Deposit failed for User {} Asset {}: {}", user_id, asset, e)
+                    anyhow::anyhow!("Deposit failed for User {} Asset {}: {}", user_id, asset_id, e)
                 })?;
             }
-            LedgerCommand::Withdraw { user_id, asset, amount, .. } => {
+            LedgerCommand::Withdraw { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
-                let bal = user.get_balance_mut(*asset);
+                let bal = user.get_balance_mut(*asset_id);
                 bal.withdraw(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient funds for withdraw: User {} Asset {}",
                         user_id,
-                        asset
+                        asset_id
                     )
                 })?;
             }
-            LedgerCommand::Lock { user_id, asset, amount, .. } => {
+            LedgerCommand::Lock { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
-                let bal = user.get_balance_mut(*asset);
+                let bal = user.get_balance_mut(*asset_id);
                 bal.frozen(*amount).map_err(|_| {
-                    anyhow::anyhow!("Insufficient funds for lock: User {} Asset {}", user_id, asset)
+                    anyhow::anyhow!("Insufficient funds for lock: User {} Asset {}", user_id, asset_id)
                 })?;
             }
-            LedgerCommand::Unlock { user_id, asset, amount, .. } => {
+            LedgerCommand::Unlock { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
-                let bal = user.get_balance_mut(*asset);
+                let bal = user.get_balance_mut(*asset_id);
                 bal.unfrozen(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient frozen funds for unlock: User {} Asset {}",
                         user_id,
-                        asset
+                        asset_id
                     )
                 })?;
             }
             LedgerCommand::TradeSettle {
                 user_id,
-                spend_asset,
+                spend_asset_id,
                 spend_amount,
-                gain_asset,
+                gain_asset_id,
                 gain_amount,
             } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
 
                 // Use indices to avoid multiple mutable borrows
-                let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset);
+                let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset_id);
 
                 if let Some(idx) = spend_idx {
                     user.assets[idx].1.spend_frozen(*spend_amount).map_err(|_| {
                         anyhow::anyhow!(
                             "Insufficient frozen funds for settle: User {} Asset {}",
                             user_id,
-                            spend_asset
+                            spend_asset_id
                         )
                     })?;
                 } else {
                     anyhow::bail!(
                         "Asset not found for spend: User {} Asset {}",
                         user_id,
-                        spend_asset
+                        spend_asset_id
                     );
                 }
 
-                let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset);
+                let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset_id);
                 if let Some(idx) = gain_idx {
                     user.assets[idx].1.deposit(*gain_amount);
                 } else {
                     user.assets.push((
-                        *gain_asset,
+                        *gain_asset_id,
                         Balance { avail: *gain_amount, frozen: 0, version: 1 },
                     ));
                 }
@@ -1036,7 +1036,7 @@ impl GlobalLedger {
             .ok_or_else(|| anyhow::anyhow!("Buyer account {} not found", data.buyer_user_id))?;
 
         buyer
-            .check_buyer_balance(data.quote_asset, quote_amount, data.buyer_refund)
+            .check_buyer_balance(data.quote_asset_id, quote_amount, data.buyer_refund)
             .map_err(|e| anyhow::anyhow!("Buyer check failed: {}", e))?;
 
         // Check Seller
@@ -1045,7 +1045,7 @@ impl GlobalLedger {
             .ok_or_else(|| anyhow::anyhow!("Seller account {} not found", data.seller_user_id))?;
 
         seller
-            .check_seller_balance(data.base_asset, base_amount, data.seller_refund)
+            .check_seller_balance(data.base_asset_id, base_amount, data.seller_refund)
             .map_err(|e| anyhow::anyhow!("Seller check failed: {}", e))?;
 
         // 2. Execute Settlement (Guaranteed to succeed logic-wise)
@@ -1053,8 +1053,8 @@ impl GlobalLedger {
         let buyer = accounts.get_mut(&data.buyer_user_id).unwrap();
         buyer
             .settle_as_buyer(
-                data.quote_asset,
-                data.base_asset,
+                data.quote_asset_id,
+                data.base_asset_id,
                 quote_amount,
                 base_amount,
                 data.buyer_refund,
@@ -1065,8 +1065,8 @@ impl GlobalLedger {
         let seller = accounts.get_mut(&data.seller_user_id).unwrap();
         seller
             .settle_as_seller(
-                data.base_asset,
-                data.quote_asset,
+                data.base_asset_id,
+                data.quote_asset_id,
                 base_amount,
                 quote_amount,
                 data.seller_refund,
@@ -1104,10 +1104,10 @@ mod tests {
     fn setup_user_with_balance(
         ledger: &mut GlobalLedger,
         user_id: UserId,
-        asset: AssetId,
+        asset_id: AssetId,
         amount: u64,
     ) {
-        ledger.apply(&LedgerCommand::Deposit { user_id, asset, amount, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Deposit { user_id, asset_id, amount, balance_after: 0, version: 0 }).unwrap();
     }
 
     // ==========================================
@@ -1126,7 +1126,7 @@ mod tests {
         setup_user_with_balance(&mut ledger, 1, 100, u64::MAX - 100);
 
         // Try to deposit more than would fit
-        let result = ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 200, balance_after: 0, version: 0 });
+        let result = ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 100, amount: 200, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should prevent overflow");
     }
@@ -1138,7 +1138,7 @@ mod tests {
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
 
         let result =
-            ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 1001, balance_after: 0, version: 0 });
+            ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset_id: 100, amount: 1001, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should prevent underflow");
         assert_eq!(ledger.get_balance(1, 100), 1000, "Balance unchanged");
@@ -1150,7 +1150,7 @@ mod tests {
 
         setup_user_with_balance(&mut ledger, 1, 100, 500);
 
-        let result = ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 600, balance_after: 0, version: 0 });
+        let result = ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 100, amount: 600, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should fail with insufficient funds");
     }
@@ -1160,9 +1160,9 @@ mod tests {
         let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
 
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 300, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 100, amount: 300, balance_after: 0, version: 0 }).unwrap();
 
-        let result = ledger.apply(&LedgerCommand::Unlock { user_id: 1, asset: 100, amount: 400, balance_after: 0, version: 0 });
+        let result = ledger.apply(&LedgerCommand::Unlock { user_id: 1, asset_id: 100, amount: 400, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should fail with insufficient frozen");
     }
@@ -1173,10 +1173,10 @@ mod tests {
 
         // Setup with max values
         setup_user_with_balance(&mut ledger, 1, 200, u64::MAX);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 200, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
 
         setup_user_with_balance(&mut ledger, 2, 100, u64::MAX);
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset_id: 100, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
 
         // Try to execute match that would overflow
         let match_data = MatchExecData {
@@ -1187,8 +1187,8 @@ mod tests {
             seller_user_id: 2,
             price: u64::MAX,
             quantity: u64::MAX,
-            base_asset: 100,
-            quote_asset: 200,
+            base_asset_id: 100,
+            quote_asset_id: 200,
             buyer_refund: 0,
             seller_refund: 0,
             match_seq: 1,
@@ -1312,7 +1312,7 @@ mod tests {
         // Create large batch
         let mut batch = Vec::new();
         for i in 1..=100 {
-            batch.push(LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 100, balance_after: 0, version: 0 });
+            batch.push(LedgerCommand::Withdraw { user_id: i, asset_id: 100, amount: 100, balance_after: 0, version: 0 });
         }
 
         let start = std::time::Instant::now();
@@ -1346,7 +1346,7 @@ mod tests {
 
         for i in 1..=50 {
             shadow
-                .apply(&LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 1000, balance_after: 0, version: 0 })
+                .apply(&LedgerCommand::Withdraw { user_id: i, asset_id: 100, amount: 1000, balance_after: 0, version: 0 })
                 .unwrap();
         }
 
@@ -1387,7 +1387,7 @@ mod tests {
 
                 for _ in 0..100 {
                     shadow
-                        .apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 10, balance_after: 0, version: 0 })
+                        .apply(&LedgerCommand::Withdraw { user_id: 1, asset_id: 100, amount: 10, balance_after: 0, version: 0 })
                         .unwrap();
                 }
 
@@ -1415,7 +1415,7 @@ mod tests {
         let start = std::time::Instant::now();
 
         for i in 0..num_ops {
-            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 1, balance_after: 0, version: 0 }).unwrap();
+            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 100, amount: 1, balance_after: 0, version: 0 }).unwrap();
         }
 
         ledger.flush().unwrap();
@@ -1460,10 +1460,10 @@ mod tests {
         setup_user_with_balance(&mut ledger, 2, 100, 50); // Seller with BTC
 
         // Buyer locks quote
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 60000, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 200, amount: 60000, balance_after: 0, version: 0 }).unwrap();
 
         // Seller locks base
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 30, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset_id: 100, amount: 30, balance_after: 0, version: 0 }).unwrap();
 
         // Execute partial fill with refund
         let match_data = MatchExecData {
@@ -1474,8 +1474,8 @@ mod tests {
             seller_user_id: 2,
             price: 2000,
             quantity: 20,
-            base_asset: 100,
-            quote_asset: 200,
+            base_asset_id: 100,
+            quote_asset_id: 200,
             buyer_refund: 20000, // Refund unused quote
             seller_refund: 10,   // Refund unused base
             match_seq: 1,
@@ -1533,7 +1533,7 @@ mod tests {
 
         // Apply some commands
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 100, amount: 500, balance_after: 0, version: 0 }).unwrap();
 
         // Verify listener was called
         let recorded = commands.lock().unwrap();
@@ -1562,7 +1562,7 @@ mod tests {
         let initial_version = balances.iter().find(|(a, _)| *a == 100).unwrap().1.version;
 
         // Perform operation
-        ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 100, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset_id: 100, amount: 100, balance_after: 0, version: 0 }).unwrap();
 
         let balances = ledger.get_user_balances(1).unwrap();
         let new_version = balances.iter().find(|(a, _)| *a == 100).unwrap().1.version;
@@ -1582,11 +1582,11 @@ mod tests {
         // 2. Create a batch of commands
         let cmds = vec![
             // User 1: Lock 500
-            LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500, balance_after: 0, version: 0 },
+            LedgerCommand::Lock { user_id: 1, asset_id: 100, amount: 500, balance_after: 0, version: 0 },
             // User 2: Withdraw 1000
-            LedgerCommand::Withdraw { user_id: 2, asset: 100, amount: 1000, balance_after: 0, version: 0 },
+            LedgerCommand::Withdraw { user_id: 2, asset_id: 100, amount: 1000, balance_after: 0, version: 0 },
             // User 3 (New): Deposit 500
-            LedgerCommand::Deposit { user_id: 3, asset: 100, amount: 500, balance_after: 0, version: 0 },
+            LedgerCommand::Deposit { user_id: 3, asset_id: 100, amount: 500, balance_after: 0, version: 0 },
         ];
 
         // 3. Commit batch (triggers ShadowLedger delta merge)
@@ -1629,9 +1629,9 @@ mod tests {
         ledger.flush().unwrap();
 
         // 2. Pre-lock funds (simulating order placement)
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 1000, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset_id: 200, amount: 1000, balance_after: 0, version: 0 }).unwrap();
 
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset_id: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
 
         // 3. Create MatchExec command (Trade: 5 BTC @ 100 USDT = 500 USDT)
         let match_data = MatchExecData {
@@ -1642,8 +1642,8 @@ mod tests {
             seller_user_id: 2,
             price: 100,
             quantity: 5,
-            base_asset: 100,  // BTC
-            quote_asset: 200, // USDT
+            base_asset_id: 100,  // BTC
+            quote_asset_id: 200, // USDT
             buyer_refund: 0,
             seller_refund: 0,
             match_seq: 1,

@@ -390,8 +390,8 @@ impl MatchingEngine {
         &mut self,
         symbol_id: u32,
         symbol: String,
-        base_asset: u32,
-        quote_asset: u32,
+        base_asset_id: u32,
+        quote_asset_id: u32,
     ) -> Result<(), String> {
         if symbol_id as usize >= self.order_books.len() {
             self.order_books.resize_with(symbol_id as usize + 1, || None);
@@ -399,7 +399,7 @@ impl MatchingEngine {
             return Err(format!("Symbol ID {} is already in use", symbol_id));
         }
         self.order_books[symbol_id as usize] = Some(OrderBook::new(symbol_id));
-        self.asset_map.insert(symbol_id, (base_asset, quote_asset));
+        self.asset_map.insert(symbol_id, (base_asset_id, quote_asset_id));
         Ok(())
     }
 
@@ -418,7 +418,7 @@ impl MatchingEngine {
         let wal_side = side;
 
         // 1. Validate Symbol
-        let (base_asset, quote_asset) =
+        let (base_asset_id, quote_asset_id) =
             *self.asset_map.get(&symbol_id).ok_or(OrderError::InvalidSymbol { symbol_id })?;
 
         if let Some(Some(book)) = self.order_books.get(symbol_id as usize) {
@@ -429,8 +429,8 @@ impl MatchingEngine {
 
         // 2. Validate Balance
         let (required_asset, required_amount) = match side {
-            Side::Buy => (quote_asset, price * quantity),
-            Side::Sell => (base_asset, quantity),
+            Side::Buy => (quote_asset_id, price * quantity),
+            Side::Sell => (base_asset_id, quantity),
         };
 
         let accounts = self.ledger.get_accounts();
@@ -515,14 +515,14 @@ impl MatchingEngine {
     ) -> Result<u64, OrderError> {
         use crate::ledger::{OrderStatus, OrderUpdate};
 
-        let (base_asset, quote_asset) =
+        let (base_asset_id, quote_asset_id) =
             *asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
 
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
-            Side::Buy => (quote_asset, price * quantity),
-            Side::Sell => (base_asset, quantity),
+            Side::Buy => (quote_asset_id, price * quantity),
+            Side::Sell => (base_asset_id, quantity),
         };
 
         // Prepare Lock Command with Snapshots
@@ -538,7 +538,7 @@ impl MatchingEngine {
 
         if let Err(e) = ledger.apply(&LedgerCommand::Lock {
             user_id,
-            asset: lock_asset,
+            asset_id: lock_asset,
             amount: lock_amount,
             balance_after,
             version: new_ver
@@ -643,21 +643,21 @@ impl MatchingEngine {
                 *entry
             };
 
-            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset, buyer_quote_inc);
-            let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset, 1);
-            let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset, 1);
-            let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset, 1);
+            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
+            let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset_id, 1);
+            let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset_id, 1);
+            let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset_id, 1);
 
             // Calculate Balance Snapshots (Avail)
             // Buyer Quote: Avail += Refund
-            let buyer_quote_balance_after = get_and_update_balance(trade.buy_user_id, quote_asset, buyer_refund as i64);
+            let buyer_quote_balance_after = get_and_update_balance(trade.buy_user_id, quote_asset_id, buyer_refund as i64);
             // Buyer Base: Avail += Quantity
-            let buyer_base_balance_after = get_and_update_balance(trade.buy_user_id, base_asset, trade.quantity as i64);
+            let buyer_base_balance_after = get_and_update_balance(trade.buy_user_id, base_asset_id, trade.quantity as i64);
             // Seller Base: Avail += 0 (Already deducted to Frozen)
-            let seller_base_balance_after = get_and_update_balance(trade.sell_user_id, base_asset, 0);
+            let seller_base_balance_after = get_and_update_balance(trade.sell_user_id, base_asset_id, 0);
             // Seller Quote: Avail += Price * Qty
             let cost = trade.price * trade.quantity;
-            let seller_quote_balance_after = get_and_update_balance(trade.sell_user_id, quote_asset, cost as i64);
+            let seller_quote_balance_after = get_and_update_balance(trade.sell_user_id, quote_asset_id, cost as i64);
 
             match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,
@@ -667,8 +667,8 @@ impl MatchingEngine {
                 seller_user_id: trade.sell_user_id,
                 price: trade.price,
                 quantity: trade.quantity,
-                base_asset,
-                quote_asset,
+                base_asset_id: base_asset_id,
+                quote_asset_id: quote_asset_id,
                 buyer_refund,
                 seller_refund: 0,
                 match_seq: trade.match_seq,
@@ -713,7 +713,7 @@ impl MatchingEngine {
             requests.iter().enumerate()
         {
             let wal_side = *side;
-            let (base_asset, quote_asset) = match self.asset_map.get(symbol_id) {
+            let (base_asset_id, quote_asset_id) = match self.asset_map.get(symbol_id) {
                 Some(&pair) => pair,
                 None => {
                     results[i] = Err(OrderError::AssetMapNotFound { symbol_id: *symbol_id });
@@ -721,8 +721,8 @@ impl MatchingEngine {
                 }
             };
             let (required_asset, required_amount) = match side {
-                Side::Buy => (quote_asset, price * quantity),
-                Side::Sell => (base_asset, *quantity),
+                Side::Buy => (quote_asset_id, price * quantity),
+                Side::Sell => (base_asset_id, *quantity),
             };
 
             let accounts = self.ledger.get_accounts();
@@ -856,13 +856,13 @@ impl MatchingEngine {
         let mut commands = Vec::new();
 
         // Get asset info for unlocking funds
-        let (base_asset, quote_asset) = *self.asset_map.get(&symbol_id)
+        let (base_asset_id, quote_asset_id) = *self.asset_map.get(&symbol_id)
             .ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
         // Unlock funds based on order side
         let (unlock_asset, unlock_amount) = match cancelled_order.side {
-            Side::Buy => (quote_asset, cancelled_order.price * cancelled_order.quantity),
-            Side::Sell => (base_asset, cancelled_order.quantity),
+            Side::Buy => (quote_asset_id, cancelled_order.price * cancelled_order.quantity),
+            Side::Sell => (base_asset_id, cancelled_order.quantity),
         };
 
         // Prepare Unlock Command with Snapshots
@@ -874,7 +874,7 @@ impl MatchingEngine {
         // Apply unlock to ledger
         self.ledger.apply(&LedgerCommand::Unlock {
             user_id: cancelled_order.user_id,
-            asset: unlock_asset,
+            asset_id: unlock_asset,
             amount: unlock_amount,
             balance_after,
             version,
@@ -882,7 +882,7 @@ impl MatchingEngine {
 
         commands.push(LedgerCommand::Unlock {
             user_id: cancelled_order.user_id,
-            asset: unlock_asset,
+            asset_id: unlock_asset,
             amount: unlock_amount,
             balance_after,
             version,
@@ -985,7 +985,7 @@ impl MatchingEngine {
         let balance_after = current_bal + amount;
         let version = current_ver + 1;
 
-        let cmd = LedgerCommand::Deposit { user_id, asset: asset_id, amount, balance_after, version };
+        let cmd = LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version };
         self.ledger
             .apply(&cmd)
             .map_err(|e| format!("Failed to transfer in to trading account: {}", e))?;
@@ -1007,7 +1007,7 @@ impl MatchingEngine {
         let balance_after = if current_bal >= amount { current_bal - amount } else { current_bal };
         let version = current_ver + 1;
 
-        let cmd = LedgerCommand::Withdraw { user_id, asset: asset_id, amount, balance_after, version };
+        let cmd = LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version };
         self.ledger
             .apply(&cmd)
             .map_err(|e| format!("Failed to transfer out from trading account: {}", e))?;

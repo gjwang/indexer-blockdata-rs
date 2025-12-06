@@ -24,8 +24,8 @@ pub struct SettledTradeRow {
     pub seller_user_id: i64,
     pub price: i64,
     pub quantity: i64,
-    pub base_asset: i32,
-    pub quote_asset: i32,
+    pub base_asset_id: i32,
+    pub quote_asset_id: i32,
     pub buyer_refund: i64,
     pub seller_refund: i64,
     pub settled_at: i64,
@@ -50,7 +50,7 @@ const INSERT_TRADE_CQL: &str = "
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
-        price, quantity, base_asset, quote_asset,
+        price, quantity, base_asset_id, quote_asset_id,
         buyer_refund, seller_refund, settled_at,
         buyer_base_version, buyer_quote_version,
         seller_base_version, seller_quote_version,
@@ -70,7 +70,7 @@ const SELECT_TRADE_BY_ID_CQL: &str = "
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
-        price, quantity, base_asset, quote_asset,
+        price, quantity, base_asset_id, quote_asset_id,
         buyer_refund, seller_refund, settled_at,
         buyer_base_version, buyer_quote_version,
         seller_base_version, seller_quote_version,
@@ -85,7 +85,7 @@ const SELECT_TRADES_BY_SEQ_CQL: &str = "
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
-        price, quantity, base_asset, quote_asset,
+        price, quantity, base_asset_id, quote_asset_id,
         buyer_refund, seller_refund, settled_at,
         buyer_base_version, buyer_quote_version,
         seller_base_version, seller_quote_version,
@@ -107,7 +107,7 @@ const SELECT_TRADES_BY_BUYER_CQL: &str = "
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
-        price, quantity, base_asset, quote_asset,
+        price, quantity, base_asset_id, quote_asset_id,
         buyer_refund, seller_refund, settled_at,
         buyer_base_version, buyer_quote_version,
         seller_base_version, seller_quote_version,
@@ -124,7 +124,7 @@ const SELECT_TRADES_BY_SELLER_CQL: &str = "
         trade_date, output_sequence, trade_id, match_seq,
         buy_order_id, sell_order_id,
         buyer_user_id, seller_user_id,
-        price, quantity, base_asset, quote_asset,
+        price, quantity, base_asset_id, quote_asset_id,
         buyer_refund, seller_refund, settled_at,
         buyer_base_version, buyer_quote_version,
         seller_base_version, seller_quote_version,
@@ -252,8 +252,8 @@ impl SettlementDb {
                         trade.seller_user_id as i64,
                         trade.price as i64,
                         trade.quantity as i64,
-                        trade.base_asset as i32,
-                        trade.quote_asset as i32,
+                        trade.base_asset_id as i32,
+                        trade.quote_asset_id as i32,
                         trade.buyer_refund as i64,
                         trade.seller_refund as i64,
                         settled_at,
@@ -308,8 +308,8 @@ impl SettlementDb {
                     seller_user_id: trade.seller_user_id as i64,
                     price: trade.price as i64,
                     quantity: trade.quantity as i64,
-                    base_asset: trade.base_asset as i32,
-                    quote_asset: trade.quote_asset as i32,
+                    base_asset_id: trade.base_asset_id as i32,
+                    quote_asset_id: trade.quote_asset_id as i32,
                     buyer_refund: trade.buyer_refund as i64,
                     seller_refund: trade.seller_refund as i64,
                     settled_at,
@@ -533,8 +533,8 @@ impl SettlementDb {
             seller_user_id: r.seller_user_id as u64,
             price: r.price as u64,
             quantity: r.quantity as u64,
-            base_asset: r.base_asset as u32,
-            quote_asset: r.quote_asset as u32,
+            base_asset_id: r.base_asset_id as u32,
+            quote_asset_id: r.quote_asset_id as u32,
             buyer_refund: r.buyer_refund as u64,
             seller_refund: r.seller_refund as u64,
             match_seq: r.match_seq as u64,
@@ -1093,7 +1093,7 @@ impl SettlementDb {
         let (buyer_base, buyer_base_frozen, buyer_base_ver) = self
             .get_consistent_balance(
                 trade.buyer_user_id,
-                trade.base_asset,
+                trade.base_asset_id,
                 trade.buyer_base_version as i64,
             )
             .await?;
@@ -1101,7 +1101,7 @@ impl SettlementDb {
         let (buyer_quote, buyer_quote_frozen, buyer_quote_ver) = self
             .get_consistent_balance(
                 trade.buyer_user_id,
-                trade.quote_asset,
+                trade.quote_asset_id,
                 trade.buyer_quote_version as i64,
             )
             .await?;
@@ -1109,7 +1109,7 @@ impl SettlementDb {
         let (seller_base, seller_base_frozen, seller_base_ver) = self
             .get_consistent_balance(
                 trade.seller_user_id,
-                trade.base_asset,
+                trade.base_asset_id,
                 trade.seller_base_version as i64,
             )
             .await?;
@@ -1117,7 +1117,7 @@ impl SettlementDb {
         let (seller_quote, seller_quote_frozen, seller_quote_ver) = self
             .get_consistent_balance(
                 trade.seller_user_id,
-                trade.quote_asset,
+                trade.quote_asset_id,
                 trade.seller_quote_version as i64,
             )
             .await?;
@@ -1136,7 +1136,7 @@ impl SettlementDb {
             anyhow::bail!(
                 "Version mismatch Buyer Base (User {} Asset {}): DB={} ME={}",
                 trade.buyer_user_id,
-                trade.base_asset,
+                trade.base_asset_id,
                 buyer_base_ver,
                 trade.buyer_base_version
             );
@@ -1145,7 +1145,7 @@ impl SettlementDb {
             anyhow::bail!(
                 "Version mismatch Buyer Quote (User {} Asset {}): DB={} ME={}",
                 trade.buyer_user_id,
-                trade.quote_asset,
+                trade.quote_asset_id,
                 buyer_quote_ver,
                 trade.buyer_quote_version
             );
@@ -1154,7 +1154,7 @@ impl SettlementDb {
             anyhow::bail!(
                 "Version mismatch Seller Base (User {} Asset {}): DB={} ME={}",
                 trade.seller_user_id,
-                trade.base_asset,
+                trade.base_asset_id,
                 seller_base_ver,
                 trade.seller_base_version
             );
@@ -1163,7 +1163,7 @@ impl SettlementDb {
             anyhow::bail!(
                 "Version mismatch Seller Quote (User {} Asset {}): DB={} ME={}",
                 trade.seller_user_id,
-                trade.quote_asset,
+                trade.quote_asset_id,
                 seller_quote_ver,
                 trade.seller_quote_version
             );
@@ -1218,8 +1218,8 @@ impl SettlementDb {
             trade.seller_user_id as i64,
             trade.price as i64,
             trade.quantity as i64,
-            trade.base_asset as i32,
-            trade.quote_asset as i32,
+            trade.base_asset_id as i32,
+            trade.quote_asset_id as i32,
             trade.buyer_refund as i64,
             trade.seller_refund as i64,
             trade.settled_at as i64,
@@ -1233,7 +1233,7 @@ impl SettlementDb {
             new_buyer_base_ver,
             now,
             trade.buyer_user_id as i64,
-            trade.base_asset as i32,
+            trade.base_asset_id as i32,
         );
         let buyer_quote_values = (
             new_buyer_quote,
@@ -1241,7 +1241,7 @@ impl SettlementDb {
             new_buyer_quote_ver,
             now,
             trade.buyer_user_id as i64,
-            trade.quote_asset as i32,
+            trade.quote_asset_id as i32,
         );
         let seller_base_values = (
             new_seller_base,
@@ -1249,7 +1249,7 @@ impl SettlementDb {
             new_seller_base_ver,
             now,
             trade.seller_user_id as i64,
-            trade.base_asset as i32,
+            trade.base_asset_id as i32,
         );
         let seller_quote_values = (
             new_seller_quote,
@@ -1257,7 +1257,7 @@ impl SettlementDb {
             new_seller_quote_ver,
             now,
             trade.seller_user_id as i64,
-            trade.quote_asset as i32,
+            trade.quote_asset_id as i32,
         );
 
         self.session
