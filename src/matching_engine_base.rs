@@ -14,6 +14,7 @@ use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
 use crate::engine_output::{
     EngineOutput, EngineOutputBuilder, InputBundle, InputData, PlaceOrderInput,
+    DepositInput, WithdrawInput,
     BalanceEvent as EOBalanceEvent, TradeOutput, OrderUpdate as EOOrderUpdate,
 };
 
@@ -1537,6 +1538,140 @@ impl MatchingEngine {
             .apply(&cmd)
             .map_err(|e| format!("Failed to transfer out from trading account: {}", e))?;
         Ok(cmd)
+    }
+
+    /// Transfer IN with EngineOutput (new architecture)
+    /// Produces atomic EngineOutput bundle with balance event
+    pub fn transfer_in_and_build_output(
+        &mut self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<EngineOutput, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Build input (use next output_seq as input_seq for deposits)
+        let input_seq = self.output_seq + 1;
+        let input = InputBundle::new(input_seq, InputData::Deposit(DepositInput {
+            user_id,
+            asset_id,
+            amount,
+            created_at: now,
+        }));
+
+        // Get current state before deposit
+        let current_bal = self.ledger.get_balance(user_id, asset_id);
+        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
+        let current_frozen = self.ledger.get_frozen(user_id, asset_id);
+
+        // Apply deposit
+        let balance_after = current_bal + amount;
+        let version = current_ver + 1;
+        let cmd = LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version };
+        self.ledger
+            .apply(&cmd)
+            .map_err(|e| format!("Failed to transfer in: {}", e))?;
+
+        // Build balance event
+        let balance_event = EOBalanceEvent {
+            user_id,
+            asset_id,
+            event_type: "deposit".to_string(),
+            delta_avail: amount as i64,
+            delta_frozen: 0,
+            avail: balance_after as i64,
+            frozen: current_frozen as i64,
+            seq: version,
+            ref_id: 0,
+        };
+
+        // Build EngineOutput
+        self.output_seq += 1;
+        let output = EngineOutput::new(
+            self.output_seq,
+            self.last_output_hash,
+            input,
+            None, // no order_update for deposit
+            vec![], // no trades
+            vec![balance_event],
+        );
+        self.last_output_hash = output.hash;
+
+        Ok(output)
+    }
+
+    /// Transfer OUT with EngineOutput (new architecture)
+    /// Produces atomic EngineOutput bundle with balance event
+    pub fn transfer_out_and_build_output(
+        &mut self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> Result<EngineOutput, String> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Build input (use next output_seq as input_seq for withdraws)
+        let input_seq = self.output_seq + 1;
+        let input = InputBundle::new(input_seq, InputData::Withdraw(WithdrawInput {
+            user_id,
+            asset_id,
+            amount,
+            created_at: now,
+        }));
+
+        // Get current state before withdraw
+        let current_bal = self.ledger.get_balance(user_id, asset_id);
+        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
+        let current_frozen = self.ledger.get_frozen(user_id, asset_id);
+
+        // Validate sufficient balance
+        if current_bal < amount {
+            return Err(format!(
+                "Insufficient balance: have {} need {}",
+                current_bal, amount
+            ));
+        }
+
+        // Apply withdraw
+        let balance_after = current_bal - amount;
+        let version = current_ver + 1;
+        let cmd = LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version };
+        self.ledger
+            .apply(&cmd)
+            .map_err(|e| format!("Failed to transfer out: {}", e))?;
+
+        // Build balance event
+        let balance_event = EOBalanceEvent {
+            user_id,
+            asset_id,
+            event_type: "withdraw".to_string(),
+            delta_avail: -(amount as i64),
+            delta_frozen: 0,
+            avail: balance_after as i64,
+            frozen: current_frozen as i64,
+            seq: version,
+            ref_id: 0,
+        };
+
+        // Build EngineOutput
+        self.output_seq += 1;
+        let output = EngineOutput::new(
+            self.output_seq,
+            self.last_output_hash,
+            input,
+            None, // no order_update for withdraw
+            vec![], // no trades
+            vec![balance_event],
+        );
+        self.last_output_hash = output.hash;
+
+        Ok(output)
     }
 }
 
