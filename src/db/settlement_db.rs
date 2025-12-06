@@ -141,14 +141,14 @@ const INSERT_BALANCE_EVENT_CQL: &str = "
     INSERT INTO balance_ledger (
         user_id, asset_id, seq,
         delta_avail, delta_frozen,
-        balance_avail, balance_frozen,
+        avail, frozen,
         event_type, ref_id, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ";
 
 /// Get latest balance (highest seq) for a user/asset pair
 const SELECT_LATEST_BALANCE_CQL: &str = "
-    SELECT seq, balance_avail, balance_frozen, created_at
+    SELECT seq, avail, frozen, created_at
     FROM balance_ledger
     WHERE user_id = ? AND asset_id = ?
     LIMIT 1
@@ -156,7 +156,7 @@ const SELECT_LATEST_BALANCE_CQL: &str = "
 
 /// Get balance history for a user/asset (most recent first)
 const SELECT_BALANCE_HISTORY_CQL: &str = "
-    SELECT seq, delta_avail, delta_frozen, balance_avail, balance_frozen, event_type, ref_id, created_at
+    SELECT seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at
     FROM balance_ledger
     WHERE user_id = ? AND asset_id = ?
     LIMIT ?
@@ -181,8 +181,8 @@ pub struct BalanceLedgerEntry {
     pub seq: i64,
     pub delta_avail: i64,
     pub delta_frozen: i64,
-    pub balance_avail: i64,
-    pub balance_frozen: i64,
+    pub avail: i64,
+    pub frozen: i64,
     pub event_type: String,
     pub ref_id: i64,
     pub created_at: i64,
@@ -882,12 +882,12 @@ impl SettlementDb {
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
-                let (seq, balance_avail, balance_frozen, created_at): (i64, i64, i64, i64) =
+                let (seq, avail, frozen, created_at): (i64, i64, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
                 return Ok(CurrentBalance {
                     seq,
-                    avail: balance_avail,
-                    frozen: balance_frozen,
+                    avail: avail,
+                    frozen: frozen,
                     updated_at: created_at,
                 });
             }
@@ -905,8 +905,8 @@ impl SettlementDb {
         seq: u64,
         delta_avail: i64,
         delta_frozen: i64,
-        balance_avail: i64,
-        balance_frozen: i64,
+        avail: i64,
+        frozen: i64,
         event_type: &str,
         ref_id: u64,
     ) -> Result<()> {
@@ -919,8 +919,8 @@ impl SettlementDb {
                 seq as i64,
                 delta_avail,
                 delta_frozen,
-                balance_avail,
-                balance_frozen,
+                avail,
+                frozen,
                 event_type,
                 ref_id as i64,
                 now,
@@ -1107,7 +1107,7 @@ impl SettlementDb {
         let mut entries = Vec::new();
         if let Some(rows) = result.rows {
             for row in rows {
-                let (seq, delta_avail, delta_frozen, balance_avail, balance_frozen, event_type, ref_id, created_at):
+                let (seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at):
                     (i64, i64, i64, i64, i64, String, i64, i64) = row.into_typed()?;
                 entries.push(BalanceLedgerEntry {
                     user_id: user_id as i64,
@@ -1115,8 +1115,8 @@ impl SettlementDb {
                     seq,
                     delta_avail,
                     delta_frozen,
-                    balance_avail,
-                    balance_frozen,
+                    avail,
+                    frozen,
                     event_type,
                     ref_id,
                     created_at,
