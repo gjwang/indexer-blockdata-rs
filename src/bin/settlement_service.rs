@@ -364,11 +364,8 @@ async fn process_engine_output<W: std::io::Write>(
     settlement_db.insert_trades_batch(&output.trades, output.output_seq).await
         .map_err(|e| format!("Trades batch insert failed: {}", e))?;
 
-    // 6b. StarRocks, CSV, and order fills (still sequential but after batch)
+    // 6b. StarRocks (async, fire-and-forget for all trades)
     for trade in &output.trades {
-        log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
-
-        // StarRocks (async, non-blocking)
         let sr_client = starrocks_client.clone();
         let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
         let match_exec = fetcher::ledger::MatchExecData {
@@ -395,19 +392,30 @@ async fn process_engine_output<W: std::io::Write>(
             seller_base_balance_after: 0,
             seller_quote_balance_after: 0,
         };
+        // CSV (non-critical, can fail silently)
+        let _ = csv_writer.serialize(&match_exec);
+
         let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
         tokio::spawn(async move { let _ = sr_client.load_trade(sr_trade).await; });
+    }
 
-        // CSV
-        csv_writer.serialize(&match_exec)?;
+    // 6c. Order fills - do in background (non-critical for settlement)
+    // Note: These are "nice to have" for order history, not critical for settlement
+    let ohs_db = order_history_db.clone();
+    let trades_for_fills: Vec<_> = output.trades.iter().map(|t| (t.buyer_user_id, t.buy_order_id, t.seller_user_id, t.sell_order_id, t.quantity)).collect();
+    tokio::spawn(async move {
+        for (buyer_id, buy_oid, seller_id, sell_oid, qty) in trades_for_fills {
+            let _ = process_trade_fill(&ohs_db, buyer_id, buy_oid, qty, 0).await;
+            let _ = process_trade_fill(&ohs_db, seller_id, sell_oid, qty, 0).await;
+        }
+    });
 
-        // Order history fills - FAIL on error
-        process_trade_fill(order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, event_id).await?;
-        process_trade_fill(order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, event_id).await?;
+    if !output.trades.is_empty() {
+        log::info!(target: LOG_TARGET, "✅ Recorded {} trades from EngineOutput", output.trades.len());
     }
     let d_trade = t_trade.elapsed();
 
-    // 7. Process order update (if present) - FAIL on error
+    // 7. Process order update (if present) - Background (not critical for settlement)
     let t_order = std::time::Instant::now();
     if let InputData::PlaceOrder(ref place_order) = output.input.data {
         if let Some(ref order_update) = output.order_update {
@@ -436,7 +444,15 @@ async fn process_engine_output<W: std::io::Write>(
                 match_id: None,
             };
 
-            process_order_update(order_history_db, &ledger_order_update, event_id).await?;
+            // Spawn to background - order history is "nice to have", not critical
+            let ohs_db = order_history_db.clone();
+            tokio::spawn(async move {
+                if let Err(e) = process_order_update(&ohs_db, &ledger_order_update, 0).await {
+                    log::warn!("Order history update failed: {}", e);
+                } else {
+                    log::info!(target: "settlement", "Processed Fill Order #{}", ledger_order_update.order_id);
+                }
+            });
         }
     }
     let d_order = t_order.elapsed();
