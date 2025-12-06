@@ -135,21 +135,18 @@ async fn main() {
             .expect("Failed to bind ZMQ sockets"),
     );
 
-    let wal_dir_str = std::env::var("APP_WAL_DIR").unwrap_or_else(|_| "me_wal_data".to_string());
+    // Snapshot directory for engine state persistence
     let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
-    let wal_dir = Path::new(&wal_dir_str);
     let snap_dir = Path::new(&snap_dir_str);
 
-    // Clean up previous run (Optional: maybe we want to recover?)
-    // For this demo refactor, let's keep it clean to avoid state issues during dev.
-    if wal_dir.exists() {
-        let _ = fs::remove_dir_all(wal_dir);
-    }
+    // Clean up previous run (development mode)
     if snap_dir.exists() {
         let _ = fs::remove_dir_all(snap_dir);
     }
 
-    let mut engine = MatchingEngine::new(wal_dir, snap_dir, config.enable_local_wal)
+    // Create engine without WAL (EngineOutput provides deterministic replay)
+    let dummy_wal_dir = Path::new("/tmp/unused_wal");
+    let mut engine = MatchingEngine::new(dummy_wal_dir, snap_dir, false)
         .expect("Failed to create engine");
 
     // === Initialize Symbols & Funds (Hardcoded for Demo) ===
@@ -230,10 +227,9 @@ async fn main() {
     println!("  Orders Topic:      {}", config.kafka.topics.orders);
     println!("  Trades Topic:      {}", config.kafka.topics.trades);
     println!("  Consumer Group:    {}", config.kafka.group_id);
-    println!("  WAL Directory:     {:?}", wal_dir);
     println!("  Snapshot Dir:      {:?}", snap_dir);
     println!("--------------------------------------------------");
-    println!(">>> Matching Engine Server Started (Pipelined)");
+    println!(">>> Matching Engine Server Started (EngineOutput Mode)");
 
     // === Wait for Settlement Service to be ready ===
     println!(">>> Waiting for Settlement Service READY signal...");
@@ -263,15 +259,7 @@ async fn main() {
 
     let batch_poll_count = 1000;
 
-    // === True Pipeline Architecture with Disruptor ===
-    // Extract OrderWal from Engine to give to WAL Writer thread
-    let mut order_wal = engine.take_order_wal();
-    let progress_handle = if let Some(wal) = &order_wal {
-        wal.get_progress_handle()
-    } else {
-        std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0))
-    };
-
+    // === Disruptor Pipeline Architecture ===
     // Factory: Create empty events in the ring buffer
     let factory = || OrderEvent {
         command: None,
@@ -280,129 +268,23 @@ async fn main() {
         timestamp: 0,
     };
 
-    // === Consumer 1: WAL Writer (writes to WAL, updates progress) ===
-    let progress_for_writer = progress_handle.clone();
-    let mut batch_start = std::time::Instant::now();
-    let mut batch_count = 0;
-    let consumer_for_writer = consumer.clone();
-
-    let wal_writer = move |event: &OrderEvent, sequence: Sequence, end_of_batch: bool| {
-        if batch_count == 0 {
-            batch_start = std::time::Instant::now();
-        }
-        batch_count += 1;
-
-        if let Some(wal) = &mut order_wal {
-            if let Some(ref cmd) = event.command {
-                match cmd {
-                    EngineCommand::PlaceOrderBatch(batch) => {
-                        for (
-                            symbol_id,
-                            order_id,
-                            side,
-                            _order_type,
-                            price,
-                            quantity,
-                            user_id,
-                            _timestamp,
-                        ) in batch
-                        {
-                            let wal_side = *side;
-                            if let Err(e) = wal.log_place_order_no_flush(
-                                *order_id, *user_id, *symbol_id, wal_side, *price, *quantity,
-                            ) {
-                                panic!("CRITICAL: Failed to write to Order WAL: {}. Halting.", e);
-                            }
-                        }
-                        wal.current_seq = sequence as u64;
-                    }
-                    EngineCommand::CancelOrder { order_id, .. } => {
-                        if let Err(e) = wal.log_cancel_order_no_flush(*order_id) {
-                            panic!(
-                                "CRITICAL: Failed to write Cancel to Order WAL: {}. Halting.",
-                                e
-                            );
-                        }
-                        wal.current_seq = sequence as u64;
-                    }
-                    EngineCommand::BalanceRequest(_) => {
-                        wal.current_seq = sequence as u64;
-                    }
-                }
-            }
-
-            // Flush WAL at end of batch and update progress
-            if end_of_batch {
-                let start_flush = std::time::Instant::now();
-                if let Err(e) = wal.flush() {
-                    panic!("CRITICAL: Failed to flush Order WAL: {}. Halting.", e);
-                }
-                let flush_time = start_flush.elapsed();
-
-                // Only print if there was actual work (batch_count > 0)
-                if batch_count > 0 {
-                    println!(
-                        "[PERF] WAL Writer: {} events. Total: {:?}, Flush: {:?}",
-                        batch_count,
-                        batch_start.elapsed(),
-                        flush_time
-                    );
-                }
-                batch_count = 0;
-
-                progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
-
-                // Commit Kafka offset only after WAL flush
-                if let Some((topic, partition, offset)) = &event.kafka_offset {
-                    if let Err(e) =
-                        consumer_for_writer.store_offset(topic, *partition, *offset)
-                    {
-                        eprintln!("Failed to store offset: {}", e);
-                    }
-                }
-            }
-        } else {
-            // No WAL: Just update progress and commit offset immediately
-            if end_of_batch {
-                progress_for_writer.store(sequence as u64, std::sync::atomic::Ordering::Release);
-                if let Some((topic, partition, offset)) = &event.kafka_offset {
-                    if let Err(e) =
-                        consumer_for_writer.store_offset(topic, *partition, *offset)
-                    {
-                        eprintln!("Failed to store offset: {}", e);
-                    }
-                }
-            }
-        }
-
+    // === Consumer 1: Kafka Offset Committer (commits offsets at end of batch) ===
+    let consumer_for_committer = consumer.clone();
+    let offset_committer = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
+        // Commit Kafka offset at end of batch
         if end_of_batch {
-            // Metrics (Optional)
-            if batch_count >= batch_poll_count {
-                batch_count = 0;
+            if let Some((topic, partition, offset)) = &event.kafka_offset {
+                if let Err(e) = consumer_for_committer.store_offset(topic, *partition, *offset) {
+                    eprintln!("Failed to store offset: {}", e);
+                }
             }
         }
     };
 
-    // === Consumer 2: Matcher (waits for progress, matches, updates memory) ===
-    let progress_for_matcher = progress_handle.clone();
-    let matcher = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
-        // Wait until this sequence is persisted in WAL
-        let mut spins = 0;
-        loop {
-            let progress = progress_for_matcher.load(std::sync::atomic::Ordering::Acquire);
-            if (sequence as u64) <= progress {
-                break; // Safe to process
-            }
 
-            if spins < 10000 {
-                std::hint::spin_loop();
-                spins += 1;
-            } else {
-                std::thread::yield_now();
-            }
-        }
-
-        // Now safe to process - WAL is guaranteed to be flushed
+    // === Consumer 2: Matcher (processes orders and produces EngineOutput) ===
+    let matcher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        // Process commands and produce EngineOutput bundles
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
@@ -494,20 +376,19 @@ async fn main() {
         }
     };
 
-    // Build disruptor with 3-Stage Pipeline
-    // 1. WAL Writer & Matcher run in parallel
-    // 2. ZMQ Publisher runs AFTER Matcher
+    // Build disruptor with 2-Stage Pipeline
+    // Stage 1: Matcher & Offset Committer run in parallel
+    // Stage 2: ZMQ Publisher runs AFTER Matcher
     let mut producer = build_single_producer(8192, factory, BusySpin)
-        .handle_events_with(wal_writer)
+        .handle_events_with(offset_committer)
         .handle_events_with(matcher)
         .and_then()
         .handle_events_with(zmq_consumer)
         .build();
 
-    println!(">>> Disruptor initialized with 3-STAGE PIPELINE:");
-    println!(">>> 1. WAL Writer (Parallel)");
-    println!(">>> 2. Matcher (Parallel, gated on Writer)");
-    println!(">>> 3. ZMQ Publisher (after Matcher)");
+    println!(">>> Disruptor initialized with 2-STAGE PIPELINE:");
+    println!(">>> 1. Matcher + Offset Committer (Parallel)");
+    println!(">>> 2. ZMQ Publisher (after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
