@@ -43,7 +43,8 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS settled_trades_by_sequence AS
     WHERE output_sequence IS NOT NULL AND trade_id IS NOT NULL
     PRIMARY KEY (output_sequence, trade_id);
 
--- User Balances Table
+
+-- User Balances Table (legacy - keeping for backward compatibility)
 CREATE TABLE IF NOT EXISTS user_balances (
     user_id bigint,
     asset_id int,
@@ -53,6 +54,25 @@ CREATE TABLE IF NOT EXISTS user_balances (
     updated_at bigint,
     PRIMARY KEY (user_id, asset_id)
 );
+
+-- Balance Ledger: Append-only log of all balance changes
+-- Each row is immutable - insert only, never update
+CREATE TABLE IF NOT EXISTS balance_ledger (
+    user_id bigint,
+    asset_id int,
+    seq bigint,                    -- Sequence number (version), monotonically increasing
+    delta_avail bigint,            -- Change to available
+    delta_frozen bigint,           -- Change to frozen
+    balance_avail bigint,          -- Running balance after this event
+    balance_frozen bigint,         -- Running frozen after this event
+    event_type text,               -- 'deposit', 'withdraw', 'lock', 'unlock', 'trade_debit', 'trade_credit', 'refund'
+    ref_id bigint,                 -- Reference ID (trade_id, order_id, etc.)
+    created_at bigint,             -- Unix timestamp in milliseconds
+    PRIMARY KEY ((user_id, asset_id), seq)
+) WITH CLUSTERING ORDER BY (seq DESC);
+
+CREATE INDEX IF NOT EXISTS idx_balance_ledger_event ON balance_ledger (event_type);
+CREATE INDEX IF NOT EXISTS idx_balance_ledger_ref ON balance_ledger (ref_id);
 
 -- Ledger Events
 CREATE TABLE IF NOT EXISTS ledger_events (

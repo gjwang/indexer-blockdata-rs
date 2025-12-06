@@ -869,262 +869,6 @@ impl SettlementDb {
 
         Ok(balances)
     }
-    /// Update user balance for a deposit event
-    pub async fn update_balance_for_deposit(
-        &self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-        balance_after: u64,
-        version: u64,
-    ) -> Result<(i64, i64, i64, i64)> {
-        // Ensure record exists
-        self.init_balance_if_not_exists(user_id, asset_id).await?;
-        // Just blind write with validation? Or check existing?
-        // Let's assume strict versioning from ME.
-        // But for deposits via API, ME might not know previous version if it wasn't loaded?
-        // Actually, ME tracks all versions. So trust ME.
-
-        let current = self.get_user_balance(user_id, asset_id).await?;
-        let current_avail = current.as_ref().map(|b| b.avail as i64).unwrap_or(0);
-        let current_frozen = current.as_ref().map(|b| b.frozen as i64).unwrap_or(0);
-        let current_version = current.as_ref().map(|b| b.version).unwrap_or(0);
-
-        // Validation (Optional but good)
-        if version <= current_version {
-             // Idempotency: Already processed
-             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
-        }
-
-        let new_avail = balance_after as i64;
-        let new_frozen = current_frozen; // Deposits don't change frozen
-        let new_version = version;
-
-        const UPDATE_BALANCE_CQL: &str = "
-            UPDATE user_balances
-            SET avail = ?,
-                frozen = ?,
-                version = ?,
-                updated_at = ?
-            WHERE user_id = ? AND asset_id = ?
-            IF version = ?
-        ";
-
-        let now = get_current_timestamp_ms();
-
-        // Try LWT to ensure we fill the gap perfectly from current_version
-        // If there is a gap (e.g. current=10, new=12), this LWT will fail.
-        // But if we trust ME to send all events, maybe we just overwrite?
-        // Overwriting is safer for recovery if we missed an intermediate event but want to catch up.
-        // However, missing an intermediate event (e.g. Lock) means 'frozen' might be wrong in DB if we just update 'avail'.
-        // But 'Deposit' sends 'balance_after' (avail). It doesn't know 'frozen' necessarily?
-        // ME Ledger Deposit logic: `avail += amount`. `frozen` unchanged.
-        // So we can just set `avail = balance_after`.
-
-        // Let's use simple UPDATE (Blind Write) to catch up if needed, assuming ME is source of truth.
-        // BUT we must allow gaps if we want to auto-repair.
-        // Risky: if we missed a LOCK (avail--, frozen++), and now we do DEPOSIT (avail=X), we might lose the frozen change?
-        // Actually LedgerCommand::Deposit has `balance_after` which IS the new `avail`.
-        // It does not carry `frozen`.
-        // So we must assume `frozen` in DB is correct?
-        // If we missed a Lock, `frozen` in DB is 0. ME has `frozen`=100.
-        // Only `MatchExec` or `Lock` carries frozen info explicitly?
-        // No, `Lock` carries `amount` delta.
-        // This suggests we CANNOT skip messages. We must ensure sequential processing.
-
-        // So, use LWT provided we are strict.
-        let result = self.session.query(UPDATE_BALANCE_CQL, (
-            new_avail,
-            new_frozen,
-            new_version as i64,
-            now,
-            user_id as i64,
-            asset_id as i32,
-            current_version as i64 // IF version = current
-        )).await?;
-
-        if let Some(rows) = result.rows {
-            if let Some(row) = rows.into_iter().next() {
-                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
-                    if !applied {
-                         // Fallback or Error?
-                         // If we are getting out of order, we might need to fetch pending?
-                         // For now, error out to signal mismatch.
-                         anyhow::bail!("Version mismatch or gap detected: DB={}, New={}", current_version, version);
-                    }
-                }
-            }
-        }
-
-        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
-    }
-
-    pub async fn update_balance_for_lock(
-        &self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-        balance_after: u64,
-        version: u64,
-    ) -> Result<(i64, i64, i64, i64)> {
-        let current = self.get_user_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Lock)", user_id, asset_id))?;
-
-        let current_avail = current.avail as i64;
-        let current_frozen = current.frozen as i64;
-        let current_version = current.version;
-
-        if version <= current_version {
-             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
-        }
-
-        // Lock: avail decreases, frozen increases
-        // Use balance_after from ME as source of truth for avail?
-        // Ideally yes. ME says "Avail is now X".
-        // But ME "Lock" command might not carry frozen.
-        // So we calculate frozen delta.
-        let new_avail = balance_after as i64;
-        let new_frozen = current_frozen + amount as i64;
-        let new_version = version;
-
-        const UPDATE_CQL: &str = "
-            UPDATE user_balances
-            SET avail = ?, frozen = ?, version = ?, updated_at = ?
-            WHERE user_id = ? AND asset_id = ?
-            IF version = ?
-        ";
-        let now = get_current_timestamp_ms();
-
-        let result = self.session.query(UPDATE_CQL, (
-            new_avail,
-            new_frozen,
-            new_version as i64,
-            now,
-            user_id as i64,
-            asset_id as i32,
-            current_version as i64
-        )).await?;
-
-        if let Some(rows) = result.rows {
-            if let Some(row) = rows.into_iter().next() {
-                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
-                    if !applied {
-                         anyhow::bail!("Version mismatch during Lock: DB={}, New={}", current_version, version);
-                    }
-                }
-            }
-        }
-
-        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
-    }
-
-    pub async fn update_balance_for_unlock(
-        &self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-        balance_after: u64,
-        version: u64,
-    ) -> Result<(i64, i64, i64, i64)> {
-        let current = self.get_user_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Unlock)", user_id, asset_id))?;
-
-        let current_avail = current.avail as i64;
-        let current_frozen = current.frozen as i64;
-        let current_version = current.version;
-
-        if version <= current_version {
-             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
-        }
-
-        let new_avail = balance_after as i64;
-        let new_frozen = current_frozen - amount as i64;
-        let new_version = version;
-
-        const UPDATE_CQL: &str = "
-            UPDATE user_balances
-            SET avail = ?, frozen = ?, version = ?, updated_at = ?
-            WHERE user_id = ? AND asset_id = ?
-            IF version = ?
-        ";
-        let now = get_current_timestamp_ms();
-
-        let result = self.session.query(UPDATE_CQL, (
-            new_avail,
-            new_frozen,
-            new_version as i64,
-            now,
-            user_id as i64,
-            asset_id as i32,
-            current_version as i64
-        )).await?;
-
-        if let Some(rows) = result.rows {
-            if let Some(row) = rows.into_iter().next() {
-                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
-                    if !applied {
-                         anyhow::bail!("Version mismatch during Unlock: DB={}, New={}", current_version, version);
-                    }
-                }
-            }
-        }
-
-        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
-    }
-
-    pub async fn update_balance_for_withdraw(
-        &self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-        balance_after: u64,
-        version: u64,
-    ) -> Result<(i64, i64, i64, i64)> {
-        let current = self.get_user_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} (Withdraw)", user_id, asset_id))?;
-
-        let current_avail = current.avail as i64;
-        let current_frozen = current.frozen as i64;
-        let current_version = current.version;
-
-        if version <= current_version {
-             return Ok((current_avail, current_avail, current_version as i64, current_version as i64));
-        }
-
-        let new_avail = balance_after as i64;
-        let new_frozen = current_frozen;
-        let new_version = version;
-
-        const UPDATE_CQL: &str = "
-            UPDATE user_balances
-            SET avail = ?, frozen = ?, version = ?, updated_at = ?
-            WHERE user_id = ? AND asset_id = ?
-            IF version = ?
-        ";
-        let now = get_current_timestamp_ms();
-
-        let result = self.session.query(UPDATE_CQL, (
-            new_avail,
-            new_frozen,
-            new_version as i64,
-            now,
-            user_id as i64,
-            asset_id as i32,
-            current_version as i64
-        )).await?;
-
-        if let Some(rows) = result.rows {
-            if let Some(row) = rows.into_iter().next() {
-                if let Ok((applied,)) = row.into_typed::<(bool,)>() {
-                    if !applied {
-                         anyhow::bail!("Version mismatch during Withdraw: DB={}, New={}", current_version, version);
-                    }
-                }
-            }
-        }
-
-        Ok((current_avail, new_avail, current_version as i64, new_version as i64))
-    }
 
     // =====================================================
     // APPEND-ONLY BALANCE LEDGER METHODS
@@ -1513,11 +1257,9 @@ impl SettlementDb {
     ) -> Result<(i64, i64, i64)> {
         let mut attempts = 0;
         loop {
-            let res = self.get_user_balance(user_id, asset_id).await?;
-            let (bal, frozen, ver) = match res {
-                Some(b) => (b.avail as i64, b.frozen as i64, b.version as i64),
-                None => (0, 0, 0),
-            };
+            // Use new append-only balance ledger
+            let current = self.get_current_balance_v2(user_id, asset_id).await?;
+            let (bal, frozen, ver) = (current.avail, current.frozen, current.seq);
 
             // If version matches (or is newer), we are good.
             if ver >= expected_ver {
@@ -1736,28 +1478,60 @@ impl SettlementDb {
                 anyhow::anyhow!("Failed to insert trade: {}", e)
             })?;
 
-        // 5.2 Update Balances (as batch for atomic)
-        let mut balance_batch = Batch::new(scylla::batch::BatchType::Logged);
-        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Base
-        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Buyer Quote
-        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Seller Base
-        balance_batch.append_statement(UPDATE_BALANCE_CQL); // Seller Quote
+        // 5.2 Append balance events to ledger (append-only)
+        let trade_ref_id = trade.trade_id;
 
-        self.session
-            .batch(
-                &balance_batch,
-                (
-                    buyer_base_values,
-                    buyer_quote_values,
-                    seller_base_values,
-                    seller_quote_values,
-                ),
-            )
-            .await
-            .map_err(|e| {
-                log::error!("Balance batch update failed: {:?}", e);
-                anyhow::anyhow!("Failed to update balances: {}", e)
-            })?;
+        // Buyer Base: Receives base asset
+        self.append_balance_event(
+            trade.buyer_user_id,
+            trade.base_asset_id,
+            new_buyer_base_ver as u64,
+            quantity,
+            0, // No change to frozen for receiving
+            new_buyer_base,
+            buyer_base_frozen, // Keep frozen as is
+            balance_event_types::TRADE_CREDIT,
+            trade_ref_id,
+        ).await?;
+
+        // Buyer Quote: Spent quote asset (from frozen)
+        self.append_balance_event(
+            trade.buyer_user_id,
+            trade.quote_asset_id,
+            new_buyer_quote_ver as u64,
+            0, // avail doesn't change (was already locked)
+            -quote_amount, // frozen decreases
+            new_buyer_quote,
+            buyer_quote_frozen - quote_amount, // Update frozen
+            balance_event_types::TRADE_DEBIT,
+            trade_ref_id,
+        ).await?;
+
+        // Seller Base: Spent base asset (from frozen)
+        self.append_balance_event(
+            trade.seller_user_id,
+            trade.base_asset_id,
+            new_seller_base_ver as u64,
+            0, // avail doesn't change (was already locked)
+            -quantity, // frozen decreases
+            new_seller_base,
+            seller_base_frozen - quantity, // Update frozen
+            balance_event_types::TRADE_DEBIT,
+            trade_ref_id,
+        ).await?;
+
+        // Seller Quote: Receives quote asset
+        self.append_balance_event(
+            trade.seller_user_id,
+            trade.quote_asset_id,
+            new_seller_quote_ver as u64,
+            quote_amount, // avail increases
+            0, // frozen stays same
+            new_seller_quote,
+            seller_quote_frozen,
+            balance_event_types::TRADE_CREDIT,
+            trade_ref_id,
+        ).await?;
 
         log::debug!(
             "Settled trade {} (buyer={}, seller={})",
