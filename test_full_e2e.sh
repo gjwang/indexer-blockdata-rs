@@ -23,6 +23,9 @@ rm -rf me_wal_data me_snapshots || true
 docker exec scylla cqlsh -e "TRUNCATE trading.settled_trades;" 2>/dev/null || true
 docker exec scylla cqlsh -e "TRUNCATE trading.user_balances;" 2>/dev/null || true
 docker exec scylla cqlsh -e "TRUNCATE trading.ledger_events;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.balance_ledger;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.settlement_state;" 2>/dev/null || true
+docker exec scylla cqlsh -e "TRUNCATE trading.engine_output_log;" 2>/dev/null || true
 rm -f /tmp/*.log
 echo "✅ All data cleaned"
 

@@ -1358,4 +1358,34 @@ impl SettlementDb {
 
         Ok(())
     }
+
+    /// Write EngineOutput to log (Source of Truth)
+    /// This MUST be called FIRST before any derived state updates
+    pub async fn write_engine_output(&self, output: &crate::engine_output::EngineOutput) -> Result<()> {
+        const QUERY: &str = "INSERT INTO engine_output_log (output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?)";
+
+        let output_bytes = serde_json::to_vec(output)
+            .context("Failed to serialize EngineOutput")?;
+        let now = get_current_timestamp_ms();
+
+        self.session.query(QUERY, (
+            output.output_seq as i64,
+            output.hash as i64,
+            output.prev_hash as i64,
+            output_bytes,
+            now as i64,
+        )).await.context("Failed to write engine_output_log")?;
+
+        Ok(())
+    }
+
+    /// Check if EngineOutput already exists in log (for idempotency)
+    pub async fn engine_output_exists(&self, output_seq: u64) -> Result<bool> {
+        const QUERY: &str = "SELECT output_seq FROM engine_output_log WHERE output_seq = ? LIMIT 1";
+
+        let result = self.session.query(QUERY, (output_seq as i64,)).await
+            .context("Failed to check engine_output_log")?;
+
+        Ok(result.rows.is_some() && !result.rows.unwrap().is_empty())
+    }
 }

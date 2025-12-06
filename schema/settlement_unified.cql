@@ -166,3 +166,16 @@ CREATE TABLE IF NOT EXISTS settlement_state (
     updated_at bigint,
     PRIMARY KEY (partition_key)
 );
+
+-- Engine Output Log (Source of Truth)
+-- Append-only log of all EngineOutputs for replay/audit
+-- Write this FIRST before any derived state
+CREATE TABLE IF NOT EXISTS engine_output_log (
+    output_seq bigint,
+    hash bigint,
+    prev_hash bigint,
+    input_data blob,        -- serialized InputBundle
+    output_data blob,       -- serialized EngineOutput (full)
+    created_at bigint,
+    PRIMARY KEY (output_seq)
+);

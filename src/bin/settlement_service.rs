@@ -282,7 +282,12 @@ async fn process_engine_output<W: std::io::Write>(
             "Sequence gap: expected {}, got {}", *last_output_seq + 1, output.output_seq);
     }
 
-    // === ATOMIC SECTION: All must succeed ===
+    // === SOURCE OF TRUTH: Write EngineOutput FIRST ===
+    // This is the ONLY authoritative record. All derived state can be rebuilt from this.
+    settlement_db.write_engine_output(output).await
+        .map_err(|e| format!("Failed to write engine_output: {}", e))?;
+
+    // === DERIVED STATE: All operations below derive from the logged output ===
 
     // 5. Process balance events - FAIL on ANY error
     for balance_event in &output.balance_events {
