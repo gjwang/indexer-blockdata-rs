@@ -315,7 +315,7 @@ impl MatchingEngine {
         let ledger_snap_path = snap_dir.join("ledger_snapshots");
 
         // 2. Initialize Ledger from State
-        let mut ledger =
+        let ledger =
             GlobalLedger::new(&ledger_wal_path, &ledger_snap_path).map_err(|e| e.to_string())?;
 
         // 3. Replay WAL (Only if enabled)
@@ -389,7 +389,7 @@ impl MatchingEngine {
     pub fn register_symbol(
         &mut self,
         symbol_id: u32,
-        symbol: String,
+        _symbol: String,
         base_asset_id: u32,
         quote_asset_id: u32,
     ) -> Result<(), String> {
@@ -709,16 +709,10 @@ impl MatchingEngine {
         let mut output_cmds = Vec::new();
 
         for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in requests {
-            // 2. Per-Order Atomic Processing with Shadow Ledger
-            // COW (Copy-On-Write): Create a fresh shadow ledger for valid input isolation
-            let mut shadow = ShadowLedger::new(&self.ledger);
-
-            let res = Self::process_order_logic(
-                &mut shadow,
-                &mut self.order_books,
-                &self.asset_map,
-                &mut self.trade_id_gen,
-                &mut self.output_seq,
+            // Per-Order Atomic Processing
+            // We create a shadow ledger here, but pass it to the logic function.
+            // Using a helper method that handles the logic and returns the populated shadow if successful.
+            let process_result = self.process_order_atomic(
                 symbol_id,
                 order_id,
                 side,
@@ -729,26 +723,22 @@ impl MatchingEngine {
                 timestamp,
             );
 
-            match res {
-                Ok(oid) => {
-                    // Success (or handled failure like insufficient funds): Commit shadow
-                    if !shadow.pending_commands.is_empty() {
-                        let (delta, mut cmds) = shadow.into_delta();
+            match process_result {
+                Ok((oid, final_shadow)) => {
+                    // Success: Commit the shadow state
+                    if !final_shadow.pending_commands.is_empty() {
+                        let (delta, mut cmds) = final_shadow.into_delta();
                         self.ledger.apply_delta_to_memory(delta);
                         output_cmds.append(&mut cmds);
                     }
                     results.push(Ok(oid));
                 }
                 Err(e) => {
-                    // Unhandled Failure (e.g. invalid symbol, duplicate ID, internal error)
-                    // 1. Discard the primary shadow (Rolling back any partial locks/state changes)
-                    drop(shadow);
+                    // Logic Error (e.g. Duplicate ID, Invalid Symbol)
+                    // The shadow ledger used inside process_order_atomic is discarded on error,
+                    // so partial state (Lock funds, etc) is rolled back automatically.
 
-                    // 2. Treat as "Normal" Rejection: Create a new event to notify downstream
-                    // This ensures the order stream is continuous and clients receive NACKs.
-                    // Only do this if we can verify the feedback loop (e.g. we have basic order info).
-                    // We have the order details from the loop variables.
-
+                    // Generate a Safe Rejection Event
                     let rejection = crate::ledger::OrderUpdate {
                         order_id,
                         client_order_id: None,
@@ -767,8 +757,7 @@ impl MatchingEngine {
                     };
 
                     let mut rejection_shadow = ShadowLedger::new(&self.ledger);
-                    // We must ignore errors here (e.g. if Ledger fails to record update, we really are stuck)
-                    // But apply on OrderUpdate is usually infallible in memory.
+                    // Rejections are safe to apply
                     let _ = rejection_shadow.apply(&LedgerCommand::OrderUpdate(rejection));
 
                     if !rejection_shadow.pending_commands.is_empty() {
@@ -776,22 +765,47 @@ impl MatchingEngine {
                          self.ledger.apply_delta_to_memory(delta);
                          output_cmds.append(&mut cmds);
                     }
-
-                    // Return Ok to API because we successfully processed it as a Rejection
-                    // Or keep as Err?
-                    // If we return Err, the caller (gRPC/HTTP) might receive 500.
-                    // But we PUBLISHED a Rejection event.
-                    // So we should probably return Ok(order_id) or specific Err that means "See Event".
-                    // The `results` vector matches input requests.
-                    // If we return Ok(order_id), the client thinks "Accepted".
-                    // But status is Rejected.
-                    // Ideally we return Ok.
                     results.push(Ok(order_id));
                 }
             }
         }
 
         (results, output_cmds)
+    }
+
+    /// Internal wrapper for atomic order processing.
+    /// Creates a ShadowLedger, executes logic, and returns it if successful.
+    fn process_order_atomic(
+        &mut self,
+        symbol_id: u32,
+        order_id: u64,
+        side: Side,
+        order_type: OrderType,
+        price: u64,
+        quantity: u64,
+        user_id: u64,
+        timestamp: u64,
+    ) -> Result<(u64, ShadowLedger<'_>), OrderError> {
+        let mut shadow = ShadowLedger::new(&self.ledger);
+
+        // Pass the shadow ledger to the core logic
+        Self::process_order_logic(
+            &mut shadow,
+            &mut self.order_books,
+            &self.asset_map,
+            &mut self.trade_id_gen,
+            &mut self.output_seq,
+            symbol_id,
+            order_id,
+            side,
+            order_type,
+            price,
+            quantity,
+            user_id,
+            timestamp,
+        )?;
+
+        Ok((order_id, shadow))
     }
 
     /// Public API: Cancel Order (Writes to WAL, then processes)
