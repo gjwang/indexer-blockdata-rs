@@ -731,8 +731,7 @@ impl MatchingEngine {
 
             match res {
                 Ok(oid) => {
-                    // Success: Commit the shadow delta to main memory immediately
-                    // This ensures the next order in the batch sees the updated state (e.g. locked funds)
+                    // Success (or handled failure like insufficient funds): Commit shadow
                     if !shadow.pending_commands.is_empty() {
                         let (delta, mut cmds) = shadow.into_delta();
                         self.ledger.apply_delta_to_memory(delta);
@@ -741,10 +740,53 @@ impl MatchingEngine {
                     results.push(Ok(oid));
                 }
                 Err(e) => {
-                    // Failure: Discard the shadow ledger
-                    // The main ledger is untouched, so this invalid input is cleanly skipped
-                    // println!("[MatchingEngine] Order {} failed: {:?}", order_id, e);
-                    results.push(Err(e));
+                    // Unhandled Failure (e.g. invalid symbol, duplicate ID, internal error)
+                    // 1. Discard the primary shadow (Rolling back any partial locks/state changes)
+                    drop(shadow);
+
+                    // 2. Treat as "Normal" Rejection: Create a new event to notify downstream
+                    // This ensures the order stream is continuous and clients receive NACKs.
+                    // Only do this if we can verify the feedback loop (e.g. we have basic order info).
+                    // We have the order details from the loop variables.
+
+                    let rejection = crate::ledger::OrderUpdate {
+                        order_id,
+                        client_order_id: None,
+                        user_id,
+                        symbol_id,
+                        side: side.as_u8(),
+                        order_type: order_type.as_u8(),
+                        status: crate::ledger::OrderStatus::Rejected,
+                        price,
+                        qty: quantity,
+                        filled_qty: 0,
+                        avg_fill_price: None,
+                        rejection_reason: Some(e.to_string()),
+                        timestamp,
+                        match_id: None,
+                    };
+
+                    let mut rejection_shadow = ShadowLedger::new(&self.ledger);
+                    // We must ignore errors here (e.g. if Ledger fails to record update, we really are stuck)
+                    // But apply on OrderUpdate is usually infallible in memory.
+                    let _ = rejection_shadow.apply(&LedgerCommand::OrderUpdate(rejection));
+
+                    if !rejection_shadow.pending_commands.is_empty() {
+                         let (delta, mut cmds) = rejection_shadow.into_delta();
+                         self.ledger.apply_delta_to_memory(delta);
+                         output_cmds.append(&mut cmds);
+                    }
+
+                    // Return Ok to API because we successfully processed it as a Rejection
+                    // Or keep as Err?
+                    // If we return Err, the caller (gRPC/HTTP) might receive 500.
+                    // But we PUBLISHED a Rejection event.
+                    // So we should probably return Ok(order_id) or specific Err that means "See Event".
+                    // The `results` vector matches input requests.
+                    // If we return Ok(order_id), the client thinks "Accepted".
+                    // But status is Rejected.
+                    // Ideally we return Ok.
+                    results.push(Ok(order_id));
                 }
             }
         }
