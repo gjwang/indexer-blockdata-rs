@@ -418,36 +418,49 @@ async fn main() {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    // Process orders using the existing batch method
-                    // This updates the engine state and returns LedgerCommands
-                    let (_, cmds) = engine.add_order_batch(batch.clone());
+                    // Process each order individually, producing EngineOutput bundles
+                    // Each output is chain-linked to the previous for integrity verification
+                    let mut engine_outputs = Vec::with_capacity(batch.len());
+                    let mut input_seq = engine.get_output_seq();
 
-                    // Pass LedgerCommands to downstream consumers (Legacy flow)
-                    *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
+                    for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch.iter() {
+                        input_seq += 1;
+                        let cid = format!("kafka_{}", order_id);
 
-                    // TODO: Future migration to EngineOutput flow
-                    // When ready to fully migrate to atomic EngineOutput bundles:
-                    // 1. Remove the add_order_batch call above
-                    // 2. Process each order individually with add_order_and_build_output()
-                    // 3. Store results in event.engine_outputs
-                    // 4. Update ZMQ consumer to publish EngineOutput instead of LedgerCommands
-                    //
-                    // Example single-order processing:
-                    // for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch {
-                    //     let cid = format!("kafka_{}", order_id);
-                    //     if let Ok((_, output)) = engine.add_order_and_build_output(
-                    //         input_seq, *symbol_id, *order_id, *side, *order_type,
-                    //         *price, *quantity, *user_id, *timestamp, cid
-                    //     ) {
-                    //         outputs.push(output);
-                    //     }
-                    // }
-                    // *event.engine_outputs.lock().unwrap() = Some(Arc::new(outputs));
+                        match engine.add_order_and_build_output(
+                            input_seq,
+                            *symbol_id,
+                            *order_id,
+                            *side,
+                            *order_type,
+                            *price,
+                            *quantity,
+                            *user_id,
+                            *timestamp,
+                            cid,
+                        ) {
+                            Ok((_, output)) => {
+                                engine_outputs.push(output);
+                            }
+                            Err(e) => {
+                                eprintln!("[ME] EngineOutput error for order {}: {:?}", order_id, e);
+                            }
+                        }
+                    }
+
+                    if !engine_outputs.is_empty() {
+                        *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(engine_outputs));
+                    }
+
+                    // LEGACY: Batch processing with LedgerCommand output (commented out)
+                    // let (_, cmds) = engine.add_order_batch(batch.clone());
+                    // *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
+                    // Balance requests still use LedgerCommand flow (TODO: migrate to EngineOutput)
                     match balance_processor.process_balance_request(&mut engine, req.clone()) {
                         Ok(cmds) => {
                             if !cmds.is_empty() {
@@ -480,74 +493,36 @@ async fn main() {
 
 
     // === Consumer 3b: ZMQ Publisher (Critical & Fast Path) ===
-    //
-    // Current: Publishes LedgerCommand variants to Settlement Service
-    // Future: Will publish EngineOutput bundles for atomic, verified processing
-    //
-    // Migration path:
-    // 1. Check event.engine_outputs first (new flow)
-    // 2. For each EngineOutput, call zmq_pub_clone.publish_engine_output(&output)
-    // 3. Keep LedgerCommand path as fallback for backward compatibility
-    //
+    // Publishes EngineOutput bundles to Settlement Service
     let zmq_pub_clone = zmq_publisher.clone();
     let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        // TODO: When EngineOutput flow is enabled, publish those first:
-        // if let Some(outputs) = event.engine_outputs.lock().unwrap().as_ref() {
-        //     for output in outputs.iter() {
-        //         let _ = zmq_pub_clone.publish_engine_output(output);
-        //     }
-        //     return;
-        // }
+        // Publish EngineOutput bundles
+        let outputs_arc = { event.engine_outputs.lock().unwrap().as_ref().cloned() };
+        if let Some(outputs) = outputs_arc {
+            for output in outputs.iter() {
+                // Publish market data (trades) from EngineOutput
+                for trade in &output.trades {
+                    if let Ok(data) = serde_json::to_vec(trade) {
+                        let _ = zmq_pub_clone.publish_market_data(&data);
+                    }
+                }
 
-        // Legacy: Publish LedgerCommand variants
+                // Publish EngineOutput bundle to Settlement
+                if let Err(e) = zmq_pub_clone.publish_engine_output(output) {
+                    eprintln!("[ZMQ ERROR] Failed to publish EngineOutput: {}", e);
+                } else {
+                    println!("[ZMQ] Published EngineOutput seq={} trades={} balance_events={}",
+                        output.output_seq, output.trades.len(), output.balance_events.len());
+                }
+            }
+        }
+
+        // LEGACY: LedgerCommand publishing for BalanceRequest (still uses processing_result)
         let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             for cmd in cmds.iter() {
-                // 1. Publish Market Data (Trades)
-                match cmd {
-                    LedgerCommand::MatchExec(match_data) => {
-                        if let Ok(data) = serde_json::to_vec(match_data) {
-                            let _ = zmq_pub_clone.publish_market_data(&data);
-                        }
-                    }
-                    LedgerCommand::MatchExecBatch(batch) => {
-                        for match_data in batch {
-                            if let Ok(data) = serde_json::to_vec(match_data) {
-                                let _ = zmq_pub_clone.publish_market_data(&data);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
-                // 2. Publish Settlement Data (All Commands)
-                // We send the LedgerCommand enum directly so consumers (Order History, Settlement)
-                // can deserialize the enum and handle variants relevant to them.
                 if let Ok(data) = serde_json::to_vec(cmd) {
-                     // Debug logging for ALL commands
-                     match cmd {
-                         LedgerCommand::OrderUpdate(ou) => {
-                             println!("[ZMQ] Publishing OrderUpdate: id={}, status={:?}", ou.order_id, ou.status);
-                         }
-                         LedgerCommand::Deposit { user_id, asset_id, .. } => {
-                             println!("[ZMQ] Publishing Deposit: user={}, asset={}", user_id, asset_id);
-                         }
-                         LedgerCommand::Lock { user_id, asset_id, .. } => {
-                             println!("[ZMQ] Publishing Lock: user={}, asset={}", user_id, asset_id);
-                         }
-                         _ => {}
-                     }
-                     if let Err(e) = zmq_pub_clone.publish_settlement(&data) {
-                         eprintln!("[ZMQ ERROR] Failed to publish settlement command: {}", e);
-                     } else {
-                         // Add delay for first few messages to prevent ZMQ slow subscriber drops
-                         static MSG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                         let count = MSG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                         if count < 5 {
-                             println!("[ZMQ] Message #{} - adding 200ms delay", count);
-                             std::thread::sleep(std::time::Duration::from_millis(200));
-                         }
-                     }
+                    let _ = zmq_pub_clone.publish_settlement(&data);
                 }
             }
         }
