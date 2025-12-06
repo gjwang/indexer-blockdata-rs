@@ -62,6 +62,10 @@ async fn main() {
         buyer_base_version: 0,
         seller_base_version: 0,
         seller_quote_version: 0,
+        buyer_quote_balance_after: 0,
+        buyer_base_balance_after: 0,
+        seller_base_balance_after: 0,
+        seller_quote_balance_after: 0,
     };
 
     db.insert_trade(&trade).await.expect("Failed to insert trade");

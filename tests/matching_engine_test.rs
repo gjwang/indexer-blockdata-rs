@@ -29,22 +29,22 @@ fn setup_engine(test_name: &str) -> (MatchingEngine, PathBuf, PathBuf) {
     // User 1: Seller (Base Asset 1)
     engine
         .ledger
-        .apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1_000_000 })
+        .apply(&LedgerCommand::Deposit { user_id: 1, asset: 1, amount: 1_000_000, balance_after: 0, version: 0 })
         .unwrap();
     // User 2: Seller (Base Asset 1)
     engine
         .ledger
-        .apply(&LedgerCommand::Deposit { user_id: 2, asset: 1, amount: 1_000_000 })
+        .apply(&LedgerCommand::Deposit { user_id: 2, asset: 1, amount: 1_000_000, balance_after: 0, version: 0 })
         .unwrap();
     // User 3: Buyer (Quote Asset 2)
     engine
         .ledger
-        .apply(&LedgerCommand::Deposit { user_id: 3, asset: 2, amount: 10_000_000 })
+        .apply(&LedgerCommand::Deposit { user_id: 3, asset: 2, amount: 10_000_000, balance_after: 0, version: 0 })
         .unwrap();
     // User 4: Buyer (Quote Asset 2)
     engine
         .ledger
-        .apply(&LedgerCommand::Deposit { user_id: 4, asset: 2, amount: 10_000_000 })
+        .apply(&LedgerCommand::Deposit { user_id: 4, asset: 2, amount: 10_000_000, balance_after: 0, version: 0 })
         .unwrap();
 
     (engine, wal_dir, snap_dir)
@@ -141,7 +141,7 @@ fn test_dynamic_symbol_registration() {
 
     // Trade on new symbol
     // Need deposit for User 1 Asset 4 (SOL)
-    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 4, amount: 1000 }).unwrap();
+    engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 4, amount: 1000, balance_after: 0, version: 0 }).unwrap();
 
     assert!(engine.add_order(new_id, 100, Side::Sell, OrderType::Limit, 50, 100, 1, 0).is_ok());
 

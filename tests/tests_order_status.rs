@@ -23,7 +23,7 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Deposit funds for User 1: 500 Asset 2 (Quote)
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 500 }).unwrap();
+        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 500, balance_after: 0, version: 0 }).unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
         // This should fail due to insufficient funds
@@ -47,7 +47,7 @@ mod tests {
         // Deposit funds for User 1: 1000 Asset 2 (Quote)
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 1000 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 2, amount: 1000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place Buy Order: 10 BTC @ 100 USDT = 1000 USDT required
