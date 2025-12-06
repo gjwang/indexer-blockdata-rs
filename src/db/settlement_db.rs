@@ -136,7 +136,7 @@ const SELECT_TRADES_BY_SELLER_CQL: &str = "
 // Each row is immutable - insert only, never update
 // Current balance = latest row with highest seq
 
-/// Insert a new balance event (append-only)
+/// Insert a new balance event (append-only, idempotent with IF NOT EXISTS)
 const INSERT_BALANCE_EVENT_CQL: &str = "
     INSERT INTO balance_ledger (
         user_id, asset_id, seq,
@@ -144,6 +144,7 @@ const INSERT_BALANCE_EVENT_CQL: &str = "
         avail, frozen,
         event_type, ref_id, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    IF NOT EXISTS
 ";
 
 /// Get latest balance (highest seq) for a user/asset pair
