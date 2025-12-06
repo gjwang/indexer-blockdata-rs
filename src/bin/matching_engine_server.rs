@@ -38,6 +38,43 @@ enum EngineCommand {
 const TIME_WINDOW_MS: u64 = 60_000;
 /// Time window for tracking request IDs (5 minutes)
 const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5;
+/// Max order IDs to track for deduplication
+const MAX_TRACKED_ORDERS: usize = 100_000;
+
+/// Tracks recently processed order IDs to detect duplicates
+/// Critical for at-least-once delivery: Kafka may redeliver on crash recovery
+struct OrderDeduplicator {
+    recent_orders: std::collections::HashSet<u64>,
+    order_queue: VecDeque<u64>,
+}
+
+impl OrderDeduplicator {
+    fn new() -> Self {
+        Self {
+            recent_orders: std::collections::HashSet::with_capacity(MAX_TRACKED_ORDERS),
+            order_queue: VecDeque::with_capacity(MAX_TRACKED_ORDERS),
+        }
+    }
+
+    /// Check if order was already processed. Returns true if duplicate.
+    fn is_duplicate(&self, order_id: u64) -> bool {
+        self.recent_orders.contains(&order_id)
+    }
+
+    /// Mark order as processed
+    fn mark_processed(&mut self, order_id: u64) {
+        if self.recent_orders.insert(order_id) {
+            self.order_queue.push_back(order_id);
+
+            // Evict oldest if over limit
+            while self.order_queue.len() > MAX_TRACKED_ORDERS {
+                if let Some(oldest) = self.order_queue.pop_front() {
+                    self.recent_orders.remove(&oldest);
+                }
+            }
+        }
+    }
+}
 
 struct BalanceProcessor {
     recent_requests: HashMap<String, u64>,
@@ -139,13 +176,21 @@ async fn main() {
     let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
     let snap_dir = Path::new(&snap_dir_str);
 
-    // Clean up previous run (development mode)
+    // Clean up previous run (development mode - fresh start each time)
     if snap_dir.exists() {
         let _ = fs::remove_dir_all(snap_dir);
     }
+    // Also clean ledger WAL to prevent recovery from stale state
+    let ledger_wal_dir = Path::new("ledger_wal");
+    if ledger_wal_dir.exists() {
+        let _ = fs::remove_dir_all(ledger_wal_dir);
+    }
 
     // Create engine without WAL (EngineOutput provides deterministic replay)
-    let dummy_wal_dir = Path::new("/tmp/unused_wal");
+    let dummy_wal_dir = Path::new("/tmp/me_dummy_wal");
+    if dummy_wal_dir.exists() {
+        let _ = fs::remove_dir_all(dummy_wal_dir);
+    }
     let mut engine = MatchingEngine::new(dummy_wal_dir, snap_dir, false)
         .expect("Failed to create engine");
 
@@ -260,6 +305,9 @@ async fn main() {
     let batch_poll_count = 1000;
 
     // === Disruptor Pipeline Architecture ===
+    // Order deduplicator for at-least-once delivery safety
+    let mut order_dedup = OrderDeduplicator::new();
+
     // Factory: Create empty events in the ring buffer
     let factory = || OrderEvent {
         command: None,
@@ -268,21 +316,7 @@ async fn main() {
         timestamp: 0,
     };
 
-    // === Consumer 1: Kafka Offset Committer (commits offsets at end of batch) ===
-    let consumer_for_committer = consumer.clone();
-    let offset_committer = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
-        // Commit Kafka offset at end of batch
-        if end_of_batch {
-            if let Some((topic, partition, offset)) = &event.kafka_offset {
-                if let Err(e) = consumer_for_committer.store_offset(topic, *partition, *offset) {
-                    eprintln!("Failed to store offset: {}", e);
-                }
-            }
-        }
-    };
-
-
-    // === Consumer 2: Matcher (processes orders and produces EngineOutput) ===
+    // === Consumer 1: Matcher (processes orders and produces EngineOutput) ===
     let matcher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
         // Process commands and produce EngineOutput bundles
         if let Some(ref cmd) = event.command {
@@ -290,10 +324,17 @@ async fn main() {
                 EngineCommand::PlaceOrderBatch(batch) => {
                     // Process each order individually, producing EngineOutput bundles
                     // Each output is chain-linked to the previous for integrity verification
+                    // IMPORTANT: Check for duplicates to handle Kafka redelivery safely
                     let mut engine_outputs = Vec::with_capacity(batch.len());
                     let mut input_seq = engine.get_output_seq();
 
                     for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch.iter() {
+                        // Check for duplicate order (Kafka may redeliver after crash)
+                        if order_dedup.is_duplicate(*order_id) {
+                            println!("[ME] DUPLICATE ORDER {} - skipping (already processed)", order_id);
+                            continue;
+                        }
+
                         input_seq += 1;
                         let cid = format!("kafka_{}", order_id);
 
@@ -310,6 +351,8 @@ async fn main() {
                             cid,
                         ) {
                             Ok((_, output)) => {
+                                // Mark as processed AFTER successful execution
+                                order_dedup.mark_processed(*order_id);
                                 engine_outputs.push(output);
                             }
                             Err(e) => {
@@ -350,11 +393,12 @@ async fn main() {
         }
     };
 
-    // === Consumer 3: ZMQ Publisher (Critical & Fast Path) ===
-    // Publishes EngineOutput bundles to Settlement Service
+    // === Consumer 2: ZMQ Publisher + Offset Committer (AFTER Matcher) ===
+    // CRITICAL: Offset must be committed AFTER processing to prevent message loss
     let zmq_pub_clone = zmq_publisher.clone();
-    let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        // Publish EngineOutput bundles
+    let consumer_for_commit = consumer.clone();
+    let zmq_and_commit = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
+        // 1. Publish EngineOutput bundles
         let outputs_arc = { event.engine_outputs.lock().unwrap().as_ref().cloned() };
         if let Some(outputs) = outputs_arc {
             for output in outputs.iter() {
@@ -374,21 +418,31 @@ async fn main() {
                 }
             }
         }
+
+        // 2. Commit Kafka offset AFTER processing and publishing
+        // This ensures at-least-once delivery: if we crash before commit,
+        // Kafka will redeliver the message on restart
+        if end_of_batch {
+            if let Some((topic, partition, offset)) = &event.kafka_offset {
+                if let Err(e) = consumer_for_commit.store_offset(topic, *partition, *offset) {
+                    eprintln!("Failed to store offset: {}", e);
+                }
+            }
+        }
     };
 
     // Build disruptor with 2-Stage Pipeline
-    // Stage 1: Matcher & Offset Committer run in parallel
-    // Stage 2: ZMQ Publisher runs AFTER Matcher
+    // Stage 1: Matcher processes orders
+    // Stage 2: ZMQ Publisher + Offset Commit (AFTER Matcher - safe ordering)
     let mut producer = build_single_producer(8192, factory, BusySpin)
-        .handle_events_with(offset_committer)
         .handle_events_with(matcher)
         .and_then()
-        .handle_events_with(zmq_consumer)
+        .handle_events_with(zmq_and_commit)
         .build();
 
     println!(">>> Disruptor initialized with 2-STAGE PIPELINE:");
-    println!(">>> 1. Matcher + Offset Committer (Parallel)");
-    println!(">>> 2. ZMQ Publisher (after Matcher)");
+    println!(">>> 1. Matcher (processes orders)");
+    println!(">>> 2. ZMQ Publisher + Offset Commit (after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
