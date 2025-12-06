@@ -23,7 +23,7 @@ mod order_lifecycle_tests {
         // Fund user
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place order
@@ -112,7 +112,7 @@ mod order_lifecycle_tests {
         for user_id in 1..=3 {
             engine
                 .ledger
-                .apply(&LedgerCommand::Deposit { user_id, asset: 200, amount: 100000 })
+                .apply(&LedgerCommand::Deposit { user_id, asset: 200, amount: 100000, balance_after: 0, version: 0 })
                 .unwrap();
         }
 
@@ -151,7 +151,7 @@ mod order_lifecycle_tests {
         // Fund user
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place order
@@ -187,7 +187,7 @@ mod order_lifecycle_tests {
         // Fund user with 100,000 USDT
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000 })
+            .apply(&LedgerCommand::Deposit { user_id: 1, asset: 200, amount: 100000, balance_after: 0, version: 0 })
             .unwrap();
 
         // Place order (locks 50,000 USDT)

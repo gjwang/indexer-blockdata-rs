@@ -157,19 +157,19 @@ async fn main() {
                          }
                     },
                     // Balance Updates via LedgerCommand
-                    LedgerCommand::Deposit { user_id, asset, amount } => {
+                    LedgerCommand::Deposit { user_id, asset, amount, .. } => {
                         match settlement_db.update_balance_for_deposit(user_id, asset, amount).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Deposit User {} Asset {} -> Version {}", user_id, asset, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Deposit Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Lock { user_id, asset, amount } => {
+                    LedgerCommand::Lock { user_id, asset, amount, .. } => {
                         match settlement_db.update_balance_for_lock(user_id, asset, amount).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Lock User {} Asset {} -> Version {}", user_id, asset, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Lock Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Unlock { user_id, asset, amount } => {
+                    LedgerCommand::Unlock { user_id, asset, amount, .. } => {
                         match settlement_db.update_balance_for_unlock(user_id, asset, amount).await {
                             Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Unlock User {} Asset {} -> Version {}", user_id, asset, v),
                             Err(e) => log::error!(target: LOG_TARGET, "Unlock Failed: {}", e),

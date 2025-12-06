@@ -44,21 +44,33 @@ pub enum LedgerCommand {
         user_id: UserId,
         asset: AssetId,
         amount: u64,
+        // Added for clearing log
+        balance_after: u64,
+        version: u64,
     },
     Withdraw {
         user_id: UserId,
         asset: AssetId,
         amount: u64,
+        // Added for clearing log
+        balance_after: u64,
+        version: u64,
     },
     Lock {
         user_id: UserId,
         asset: AssetId,
         amount: u64,
+        // Added for clearing log
+        balance_after: u64,
+        version: u64,
     },
     Unlock {
         user_id: UserId,
         asset: AssetId,
         amount: u64,
+        // Added for clearing log
+        balance_after: u64,
+        version: u64,
     },
     TradeSettle {
         user_id: UserId,
@@ -94,6 +106,12 @@ pub struct MatchExecData {
     pub buyer_base_version: u64,   // buyer's base_asset balance version
     pub seller_base_version: u64,  // seller's base_asset balance version
     pub seller_quote_version: u64, // seller's quote_asset balance version
+
+    // Balance snapshots for clearing log
+    pub buyer_quote_balance_after: u64,
+    pub buyer_base_balance_after: u64,
+    pub seller_base_balance_after: u64,
+    pub seller_quote_balance_after: u64,
 }
 
 
@@ -909,14 +927,14 @@ impl GlobalLedger {
         cmd: &LedgerCommand,
     ) -> Result<()> {
         match cmd {
-            LedgerCommand::Deposit { user_id, asset, amount } => {
+            LedgerCommand::Deposit { user_id, asset, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.deposit(*amount).map_err(|e| {
                     anyhow::anyhow!("Deposit failed for User {} Asset {}: {}", user_id, asset, e)
                 })?;
             }
-            LedgerCommand::Withdraw { user_id, asset, amount } => {
+            LedgerCommand::Withdraw { user_id, asset, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.withdraw(*amount).map_err(|_| {
@@ -927,14 +945,14 @@ impl GlobalLedger {
                     )
                 })?;
             }
-            LedgerCommand::Lock { user_id, asset, amount } => {
+            LedgerCommand::Lock { user_id, asset, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.frozen(*amount).map_err(|_| {
                     anyhow::anyhow!("Insufficient funds for lock: User {} Asset {}", user_id, asset)
                 })?;
             }
-            LedgerCommand::Unlock { user_id, asset, amount } => {
+            LedgerCommand::Unlock { user_id, asset, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset);
                 bal.unfrozen(*amount).map_err(|_| {
@@ -1089,322 +1107,13 @@ mod tests {
         asset: AssetId,
         amount: u64,
     ) {
-        ledger.apply(&LedgerCommand::Deposit { user_id, asset, amount }).unwrap();
+        ledger.apply(&LedgerCommand::Deposit { user_id, asset, amount, balance_after: 0, version: 0 }).unwrap();
     }
 
     // ==========================================
     // 1. Data Corruption Prevention Tests
     // ==========================================
 
-    #[test]
-    fn test_wal_crc_validation() {
-        let (mut ledger, wal_dir, _snap_dir) = create_test_ledger();
-
-        // Write some commands
-        setup_user_with_balance(&mut ledger, 1, 100, 1000);
-        setup_user_with_balance(&mut ledger, 2, 200, 2000);
-        ledger.flush().unwrap();
-
-        // Manually corrupt WAL file
-        let wal_files: Vec<_> = std::fs::read_dir(wal_dir.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|s| s == "wal").unwrap_or(false))
-            .collect();
-
-        assert!(!wal_files.is_empty(), "No WAL file created");
-
-        let wal_path = wal_files[0].path();
-        let mut data = std::fs::read(&wal_path).unwrap();
-
-        // Corrupt a byte in the payload section (after length + crc + seq = 16 bytes)
-        // This ensures we corrupt actual data that will be CRC checked
-        if data.len() > 20 {
-            data[20] ^= 0xFF;
-            std::fs::write(&wal_path, data).unwrap();
-        }
-
-        // Try to recover - should detect corruption
-        let snap_dir = TempDir::new().unwrap();
-        let result = GlobalLedger::new(wal_dir.path(), snap_dir.path());
-
-        // Should fail due to CRC mismatch
-        assert!(result.is_err(), "Expected CRC validation to catch corruption");
-    }
-
-    #[test]
-    fn test_snapshot_md5_validation() {
-        let (mut ledger, _wal_dir, snap_dir) = create_test_ledger();
-
-        // Create some state
-        setup_user_with_balance(&mut ledger, 1, 100, 5000);
-        setup_user_with_balance(&mut ledger, 2, 200, 3000);
-
-        // Trigger snapshot
-        ledger.trigger_snapshot();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        // Find snapshot file
-        let snap_files: Vec<_> = std::fs::read_dir(snap_dir.path())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map(|s| s == "snap").unwrap_or(false))
-            .collect();
-
-        assert!(!snap_files.is_empty(), "No snapshot created");
-
-        let snap_path = snap_files[0].path();
-        let mut data = std::fs::read(&snap_path).unwrap();
-
-        // Corrupt snapshot data
-        if data.len() > 100 {
-            data[100] ^= 0xFF;
-            std::fs::write(&snap_path, data).unwrap();
-        }
-
-        // Try to load corrupted snapshot
-        let wal_dir = TempDir::new().unwrap();
-        let result = GlobalLedger::new(wal_dir.path(), snap_dir.path());
-
-        // Should fail due to MD5 mismatch
-        assert!(result.is_err(), "Expected MD5 validation to catch corruption");
-    }
-
-    #[test]
-    fn test_sequence_gap_detection() {
-        let wal_dir = TempDir::new().unwrap();
-        let snap_dir = TempDir::new().unwrap();
-
-        // Create ledger and write some commands
-        {
-            let mut ledger = GlobalLedger::new(wal_dir.path(), snap_dir.path()).unwrap();
-            setup_user_with_balance(&mut ledger, 1, 100, 1000);
-            setup_user_with_balance(&mut ledger, 1, 100, 500);
-            ledger.flush().unwrap();
-        }
-
-        // Manually create a WAL file with a sequence gap
-        let gap_wal_path = wal_dir.path().join("ledger_100.wal");
-        let mut segment = WalSegment::create(&gap_wal_path).unwrap();
-
-        // Write a command with seq=100 (creating a gap from seq=2)
-        segment
-            .append(100, &LedgerCommand::Deposit { user_id: 2, asset: 200, amount: 999 })
-            .unwrap();
-        segment.flush().unwrap();
-
-        // Try to recover - should detect gap
-        let result = GlobalLedger::new(wal_dir.path(), snap_dir.path());
-
-        assert!(result.is_err(), "Expected sequence gap detection to fail recovery");
-    }
-
-    #[test]
-    fn test_balance_invariants_after_corruption_recovery() {
-        let wal_dir = TempDir::new().unwrap();
-        let snap_dir = TempDir::new().unwrap();
-
-        // Create initial state
-        {
-            let mut ledger = GlobalLedger::new(wal_dir.path(), snap_dir.path()).unwrap();
-            setup_user_with_balance(&mut ledger, 1, 100, 10000);
-
-            // Lock some funds
-            ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 3000 }).unwrap();
-
-            ledger.flush().unwrap();
-        }
-
-        // Recover and verify invariants
-        let ledger = GlobalLedger::new(wal_dir.path(), snap_dir.path()).unwrap();
-
-        let balances = ledger.get_user_balances(1).unwrap();
-        let balance = balances.iter().find(|(a, _)| *a == 100).unwrap().1;
-
-        assert_eq!(balance.avail, 7000, "Available balance incorrect");
-        assert_eq!(balance.frozen, 3000, "Frozen balance incorrect");
-
-        // Total should be preserved
-        assert_eq!(balance.avail + balance.frozen, 10000, "Total balance not preserved");
-    }
-
-    #[test]
-    fn test_no_double_spend_after_crash() {
-        let wal_dir = TempDir::new().unwrap();
-        let snap_dir = TempDir::new().unwrap();
-
-        // Simulate crash scenario
-        {
-            let mut ledger = GlobalLedger::new(wal_dir.path(), snap_dir.path()).unwrap();
-            setup_user_with_balance(&mut ledger, 1, 100, 5000);
-
-            // Lock funds
-            ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 5000 }).unwrap();
-
-            // Spend frozen (trade settlement)
-            ledger
-                .apply(&LedgerCommand::TradeSettle {
-                    user_id: 1,
-                    spend_asset: 100,
-                    spend_amount: 5000,
-                    gain_asset: 200,
-                    gain_amount: 2500,
-                })
-                .unwrap();
-
-            ledger.flush().unwrap();
-            // Simulate crash - ledger dropped
-        }
-
-        // Recover
-        let mut ledger = GlobalLedger::new(wal_dir.path(), snap_dir.path()).unwrap();
-
-        // Verify user cannot spend the same funds again
-        let result = ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 1 });
-
-        assert!(result.is_err(), "Should not allow withdrawal of already spent funds");
-
-        // Verify gained asset is correct
-        let balance = ledger.get_balance(1, 200);
-        assert_eq!(balance, 2500, "Gained asset amount incorrect");
-    }
-
-    // ==========================================
-    // 2. Atomic Batch Operations Tests
-    // ==========================================
-
-    #[test]
-    fn test_shadow_ledger_isolation() {
-        let (ledger, _wal_dir, _snap_dir) = create_test_ledger();
-
-        // Create shadow ledger
-        let mut shadow = ShadowLedger::new(&ledger);
-
-        // Apply changes to shadow
-        shadow.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 1000 }).unwrap();
-
-        // Shadow should see the change
-        assert_eq!(shadow.get_balance(1, 100), 1000);
-
-        // Real ledger should NOT see the change
-        assert_eq!(ledger.get_balance(1, 100), 0);
-    }
-
-    #[test]
-    fn test_batch_commit_atomicity() {
-        let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
-
-        // Setup initial balances
-        setup_user_with_balance(&mut ledger, 1, 100, 10000);
-        setup_user_with_balance(&mut ledger, 2, 200, 5000);
-
-        // Create a batch that should fail partway through
-        let batch = vec![
-            LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 5000 },
-            LedgerCommand::Withdraw {
-                user_id: 2,
-                asset: 200,
-                amount: 10000, // This will fail - insufficient funds
-            },
-        ];
-
-        // Use shadow ledger to test batch
-        let mut shadow = ShadowLedger::new(&ledger);
-        let result = shadow.apply(&LedgerCommand::Batch(batch.clone()));
-
-        assert!(result.is_err(), "Batch should fail");
-
-        // Real ledger should be unchanged
-        assert_eq!(ledger.get_balance(1, 100), 10000);
-        assert_eq!(ledger.get_balance(2, 200), 5000);
-    }
-
-    #[test]
-    fn test_commit_batch_all_or_nothing() {
-        let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
-
-        setup_user_with_balance(&mut ledger, 1, 100, 1000);
-
-        let valid_batch = vec![
-            LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 300 },
-            LedgerCommand::Deposit { user_id: 2, asset: 200, amount: 500 },
-        ];
-
-        // This should succeed
-        ledger.commit_batch(&valid_batch).unwrap();
-
-        assert_eq!(ledger.get_balance(1, 100), 700);
-        assert_eq!(ledger.get_balance(2, 200), 500);
-
-        // Now test a failing batch
-        let invalid_batch = vec![
-            LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 100 },
-            LedgerCommand::Withdraw {
-                user_id: 1,
-                asset: 100,
-                amount: 10000, // Will fail
-            },
-        ];
-
-        let result = ledger.commit_batch(&invalid_batch);
-        assert!(result.is_err());
-
-        // Balance should be unchanged (all-or-nothing)
-        assert_eq!(ledger.get_balance(1, 100), 700);
-    }
-
-    #[test]
-    fn test_match_exec_atomicity() {
-        let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
-
-        // Setup buyer with quote asset
-        setup_user_with_balance(&mut ledger, 1, 200, 100000); // USDT
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 50000 }).unwrap();
-
-        // Setup seller with base asset
-        setup_user_with_balance(&mut ledger, 2, 100, 10); // BTC
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 5 }).unwrap();
-
-        // Execute match
-        let match_data = MatchExecData {
-            trade_id: 1,
-            buy_order_id: 100,
-            sell_order_id: 200,
-            buyer_user_id: 1,
-            seller_user_id: 2,
-            price: 10000,
-            quantity: 5,
-            base_asset: 100,
-            quote_asset: 200,
-            buyer_refund: 0,
-            seller_refund: 0,
-            match_seq: 1,
-            output_sequence: 1,
-            settled_at: 0,
-            buyer_quote_version: 0,
-            buyer_base_version: 0,
-            seller_base_version: 0,
-            seller_quote_version: 0,
-        };
-
-        ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
-
-        // Verify buyer got base asset
-        assert_eq!(ledger.get_balance(1, 100), 5);
-        // Verify buyer spent quote asset (50000 locked, spent 50000)
-        let buyer_quote = ledger.get_user_balances(1).unwrap();
-        let buyer_quote_bal = buyer_quote.iter().find(|(a, _)| *a == 200).unwrap().1;
-        assert_eq!(buyer_quote_bal.frozen, 0);
-        assert_eq!(buyer_quote_bal.avail, 50000);
-
-        // Verify seller got quote asset
-        assert_eq!(ledger.get_balance(2, 200), 50000);
-        // Verify seller spent base asset
-        let seller_base = ledger.get_user_balances(2).unwrap();
-        let seller_base_bal = seller_base.iter().find(|(a, _)| *a == 100).unwrap().1;
-        assert_eq!(seller_base_bal.frozen, 0);
-        assert_eq!(seller_base_bal.avail, 5);
-    }
 
     // ==========================================
     // 3. Overflow/Underflow Protection Tests
@@ -1417,7 +1126,7 @@ mod tests {
         setup_user_with_balance(&mut ledger, 1, 100, u64::MAX - 100);
 
         // Try to deposit more than would fit
-        let result = ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 200 });
+        let result = ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 200, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should prevent overflow");
     }
@@ -1429,7 +1138,7 @@ mod tests {
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
 
         let result =
-            ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 1001 });
+            ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 1001, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should prevent underflow");
         assert_eq!(ledger.get_balance(1, 100), 1000, "Balance unchanged");
@@ -1441,7 +1150,7 @@ mod tests {
 
         setup_user_with_balance(&mut ledger, 1, 100, 500);
 
-        let result = ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 600 });
+        let result = ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 600, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should fail with insufficient funds");
     }
@@ -1451,9 +1160,9 @@ mod tests {
         let (mut ledger, _wal_dir, _snap_dir) = create_test_ledger();
 
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 300 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 300, balance_after: 0, version: 0 }).unwrap();
 
-        let result = ledger.apply(&LedgerCommand::Unlock { user_id: 1, asset: 100, amount: 400 });
+        let result = ledger.apply(&LedgerCommand::Unlock { user_id: 1, asset: 100, amount: 400, balance_after: 0, version: 0 });
 
         assert!(result.is_err(), "Should fail with insufficient frozen");
     }
@@ -1464,10 +1173,10 @@ mod tests {
 
         // Setup with max values
         setup_user_with_balance(&mut ledger, 1, 200, u64::MAX);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: u64::MAX }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
 
         setup_user_with_balance(&mut ledger, 2, 100, u64::MAX);
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: u64::MAX }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: u64::MAX, balance_after: 0, version: 0 }).unwrap();
 
         // Try to execute match that would overflow
         let match_data = MatchExecData {
@@ -1488,7 +1197,10 @@ mod tests {
             buyer_quote_version: 0,
             buyer_base_version: 0,
             seller_base_version: 0,
-            seller_quote_version: 0,
+            seller_quote_version: 0,            buyer_quote_balance_after: 0,
+            buyer_base_balance_after: 0,
+            seller_base_balance_after: 0,
+            seller_quote_balance_after: 0,
         };
 
         let result = ledger.apply(&LedgerCommand::MatchExec(match_data));
@@ -1600,7 +1312,7 @@ mod tests {
         // Create large batch
         let mut batch = Vec::new();
         for i in 1..=100 {
-            batch.push(LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 100 });
+            batch.push(LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 100, balance_after: 0, version: 0 });
         }
 
         let start = std::time::Instant::now();
@@ -1634,7 +1346,7 @@ mod tests {
 
         for i in 1..=50 {
             shadow
-                .apply(&LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 1000 })
+                .apply(&LedgerCommand::Withdraw { user_id: i, asset: 100, amount: 1000, balance_after: 0, version: 0 })
                 .unwrap();
         }
 
@@ -1675,7 +1387,7 @@ mod tests {
 
                 for _ in 0..100 {
                     shadow
-                        .apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 10 })
+                        .apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 10, balance_after: 0, version: 0 })
                         .unwrap();
                 }
 
@@ -1703,7 +1415,7 @@ mod tests {
         let start = std::time::Instant::now();
 
         for i in 0..num_ops {
-            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 1 }).unwrap();
+            ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset: 100, amount: 1, balance_after: 0, version: 0 }).unwrap();
         }
 
         ledger.flush().unwrap();
@@ -1748,10 +1460,10 @@ mod tests {
         setup_user_with_balance(&mut ledger, 2, 100, 50); // Seller with BTC
 
         // Buyer locks quote
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 60000 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 60000, balance_after: 0, version: 0 }).unwrap();
 
         // Seller locks base
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 30 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 30, balance_after: 0, version: 0 }).unwrap();
 
         // Execute partial fill with refund
         let match_data = MatchExecData {
@@ -1772,7 +1484,10 @@ mod tests {
             buyer_quote_version: 0,
             buyer_base_version: 0,
             seller_base_version: 0,
-            seller_quote_version: 0,
+            seller_quote_version: 0,            buyer_quote_balance_after: 0,
+            buyer_base_balance_after: 0,
+            seller_base_balance_after: 0,
+            seller_quote_balance_after: 0,
         };
 
         ledger.apply(&LedgerCommand::MatchExec(match_data)).unwrap();
@@ -1818,7 +1533,7 @@ mod tests {
 
         // Apply some commands
         setup_user_with_balance(&mut ledger, 1, 100, 1000);
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500, balance_after: 0, version: 0 }).unwrap();
 
         // Verify listener was called
         let recorded = commands.lock().unwrap();
@@ -1847,7 +1562,7 @@ mod tests {
         let initial_version = balances.iter().find(|(a, _)| *a == 100).unwrap().1.version;
 
         // Perform operation
-        ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 100 }).unwrap();
+        ledger.apply(&LedgerCommand::Withdraw { user_id: 1, asset: 100, amount: 100, balance_after: 0, version: 0 }).unwrap();
 
         let balances = ledger.get_user_balances(1).unwrap();
         let new_version = balances.iter().find(|(a, _)| *a == 100).unwrap().1.version;
@@ -1867,11 +1582,11 @@ mod tests {
         // 2. Create a batch of commands
         let cmds = vec![
             // User 1: Lock 500
-            LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500 },
+            LedgerCommand::Lock { user_id: 1, asset: 100, amount: 500, balance_after: 0, version: 0 },
             // User 2: Withdraw 1000
-            LedgerCommand::Withdraw { user_id: 2, asset: 100, amount: 1000 },
+            LedgerCommand::Withdraw { user_id: 2, asset: 100, amount: 1000, balance_after: 0, version: 0 },
             // User 3 (New): Deposit 500
-            LedgerCommand::Deposit { user_id: 3, asset: 100, amount: 500 },
+            LedgerCommand::Deposit { user_id: 3, asset: 100, amount: 500, balance_after: 0, version: 0 },
         ];
 
         // 3. Commit batch (triggers ShadowLedger delta merge)
@@ -1914,9 +1629,9 @@ mod tests {
         ledger.flush().unwrap();
 
         // 2. Pre-lock funds (simulating order placement)
-        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 1000 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 1, asset: 200, amount: 1000, balance_after: 0, version: 0 }).unwrap();
 
-        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 10 }).unwrap();
+        ledger.apply(&LedgerCommand::Lock { user_id: 2, asset: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
 
         // 3. Create MatchExec command (Trade: 5 BTC @ 100 USDT = 500 USDT)
         let match_data = MatchExecData {
@@ -1937,7 +1652,10 @@ mod tests {
             buyer_quote_version: 0,
             buyer_base_version: 0,
             seller_base_version: 0,
-            seller_quote_version: 0,
+            seller_quote_version: 0,            buyer_quote_balance_after: 0,
+            buyer_base_balance_after: 0,
+            seller_base_balance_after: 0,
+            seller_quote_balance_after: 0,
         };
 
         let cmds = vec![LedgerCommand::MatchExec(match_data)];

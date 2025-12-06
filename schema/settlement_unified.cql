@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS settled_trades (
     buyer_quote_version bigint,
     seller_base_version bigint,
     seller_quote_version bigint,
+    buyer_base_balance_after bigint,
+    buyer_quote_balance_after bigint,
+    seller_base_balance_after bigint,
+    seller_quote_balance_after bigint,
     PRIMARY KEY (trade_id)
 );
 

@@ -91,13 +91,13 @@ impl BalanceProcessor {
 
                 // Direct call, no lock needed!
                 match engine.transfer_in_to_trading_account(user_id, asset_id, amount) {
-                    Ok(()) => {
+                    Ok(cmd) => {
                         println!("✅ Transfer In success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
 
                         // Generate command for downstream
-                        cmds.push(LedgerCommand::Deposit { user_id, asset: asset_id, amount });
+                        cmds.push(cmd);
                     }
                     Err(e) => {
                         println!("❌ Transfer In failed: {}", e);
@@ -108,13 +108,13 @@ impl BalanceProcessor {
                 println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
                 // Direct call, no lock needed!
                 match engine.transfer_out_from_trading_account(user_id, asset_id, amount) {
-                    Ok(()) => {
+                    Ok(cmd) => {
                         println!("✅ Transfer Out success: {}", request_id);
                         self.recent_requests.insert(request_id.clone(), timestamp);
                         self.request_queue.push_back((request_id, timestamp));
 
                         // Generate command for downstream
-                        cmds.push(LedgerCommand::Withdraw { user_id, asset: asset_id, amount });
+                        cmds.push(cmd);
                     }
                     Err(e) => println!("❌ Transfer Out failed: {}", e),
                 }

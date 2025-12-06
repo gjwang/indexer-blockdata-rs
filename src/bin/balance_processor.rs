@@ -174,7 +174,7 @@ impl BalanceProcessor {
                 // Phase 3: Deposit to trading account via MatchingEngine
                 let mut me = self.matching_engine.lock().unwrap();
                 match me.transfer_in_to_trading_account(user_id, asset_id, amount) {
-                    Ok(()) => {
+                    Ok(_) => {
                         // Success! Funds moved from funding -> trading
                         println!("✅ Transfer In completed: {}", request_id);
                         println!(
@@ -204,7 +204,7 @@ impl BalanceProcessor {
                 // Phase 1: Withdraw from trading account via MatchingEngine
                 let mut me = self.matching_engine.lock().unwrap();
                 match me.transfer_out_from_trading_account(user_id, asset_id, amount) {
-                    Ok(()) => {
+                    Ok(_) => {
                         // Success! Funds withdrawn from trading account
                         println!(
                             "   ✓ Withdrawn {} from user {}'s trading account",
