@@ -103,8 +103,14 @@ echo "=== Step 9: Sending test orders (1 second) ==="
 CLIENT_PID=$!
 sleep 1
 kill $CLIENT_PID || true
-echo "  Waiting for settlement to catch up (30s)..."
-sleep 30
+
+echo "  Waiting for settlement to catch up (60s)..."
+for i in {1..6}; do
+    sleep 10
+    PROCESSED=$(grep -c "Processed.*EngineOutput" /tmp/settle.log 2>/dev/null || echo "0")
+    PUBLISHED=$(grep -c "Published EngineOutput" /tmp/me.log 2>/dev/null || echo "0")
+    echo "    Progress: processed=$PROCESSED / published=$PUBLISHED"
+done
 
 echo ""
 echo "=========================================="

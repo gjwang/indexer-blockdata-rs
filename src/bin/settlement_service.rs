@@ -139,7 +139,7 @@ async fn main() {
     // Reorder buffer for out-of-order ZMQ messages
     // Key: output_seq, Value: EngineOutput
     let mut reorder_buffer: std::collections::BTreeMap<u64, EngineOutput> = std::collections::BTreeMap::new();
-    const MAX_BUFFER_SIZE: usize = 1000; // Max buffered messages before force-processing
+    const MAX_BUFFER_SIZE: usize = 100_000; // Very large - should NEVER hit this with proper back-pressure
 
     let mut msg_count = 0u64;
     loop {
@@ -224,50 +224,14 @@ async fn main() {
                         );
                         reorder_buffer.insert(seq, engine_output);
                     } else {
-                        // Buffer full - force skip the gap and continue
-                        // This prevents getting stuck forever on lost messages
-                        log::warn!(target: LOG_TARGET,
-                            "⚠️ Buffer full! Force-skipping from seq={} to seq={}. Lost {} messages.",
-                            last_output_seq, seq - 1, seq - last_output_seq - 1
+                        // Buffer full - this should NEVER happen with proper back-pressure
+                        // Log critical error but still buffer (we can't lose messages)
+                        log::error!(target: LOG_TARGET,
+                            "🚨 CRITICAL: Reorder buffer full ({} messages)! Expected seq={}, got seq={}. Investigate ZMQ back-pressure!",
+                            reorder_buffer.len(), expected_seq, seq
                         );
-                        // Update state to skip the gap (treat missing as lost)
-                        // IMPORTANT: Also reset hash chain to accept the new sequence
-                        last_output_seq = seq - 1;
-                        last_processed_hash = engine_output.prev_hash; // Accept the incoming chain
-
-                        // Clear obsolete buffered messages (those we've now skipped past)
-                        reorder_buffer.retain(|&s, _| s > last_output_seq);
-
-                        // Try to process this message now
+                        // Still insert - we'd rather use more memory than lose messages
                         reorder_buffer.insert(seq, engine_output);
-                        // Drain what we can
-                        while let Some((&next_seq, _)) = reorder_buffer.first_key_value() {
-                            if next_seq == last_output_seq + 1 {
-                                let buffered = reorder_buffer.remove(&next_seq).unwrap();
-                                if let Err(e) = process_engine_output(
-                                    &settlement_db,
-                                    &order_history_db,
-                                    &starrocks_client,
-                                    &buffered,
-                                    &mut last_processed_hash,
-                                    &mut last_output_seq,
-                                    &mut wtr,
-                                    msg_count,
-                                ).await {
-                                    total_errors += 1;
-                                    log::error!(target: LOG_TARGET, "❌ Gap-skip EngineOutput processing failed: {}", e);
-                                    break;
-                                } else {
-                                    total_settled += buffered.trades.len() as u64;
-                                    log::info!(target: LOG_TARGET,
-                                        "✅ Processed gap-skip EngineOutput seq={} trades={} balance_events={}",
-                                        buffered.output_seq, buffered.trades.len(), buffered.balance_events.len()
-                                    );
-                                }
-                            } else {
-                                break;
-                            }
-                        }
                     }
                 } else {
                     // Past message - already processed, skip (idempotency)
