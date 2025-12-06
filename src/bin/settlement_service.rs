@@ -233,6 +233,7 @@ async fn process_trade_fill(
 }
 
 /// Process EngineOutput bundle atomically with chain verification
+/// ATOMIC: All operations must succeed, or we fail and retry the whole output
 async fn process_engine_output<W: std::io::Write>(
     settlement_db: &std::sync::Arc<SettlementDb>,
     order_history_db: &std::sync::Arc<OrderHistoryDb>,
@@ -243,7 +244,13 @@ async fn process_engine_output<W: std::io::Write>(
     csv_writer: &mut csv::Writer<W>,
     event_id: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // 1. Verify chain integrity
+    // 1. Idempotency: Skip if already processed
+    if output.output_seq <= *last_output_seq && *last_output_seq > 0 {
+        log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
+        return Ok(());
+    }
+
+    // 2. Verify chain integrity (hash chain)
     if !output.verify_prev_hash(*last_processed_hash) {
         return Err(format!(
             "Chain verification failed: expected prev_hash={}, got={}",
@@ -251,7 +258,7 @@ async fn process_engine_output<W: std::io::Write>(
         ).into());
     }
 
-    // 2. Verify output integrity
+    // 3. Verify output integrity
     if !output.verify() {
         return Err(format!(
             "Output hash verification failed for seq={}",
@@ -259,31 +266,17 @@ async fn process_engine_output<W: std::io::Write>(
         ).into());
     }
 
-    // 3. Verify sequence continuity
+    // 4. Verify sequence continuity
     if output.output_seq != *last_output_seq + 1 {
         log::warn!(target: LOG_TARGET,
-            "Sequence gap detected: expected {}, got {}",
-            *last_output_seq + 1, output.output_seq
-        );
-        // Allow processing anyway but log warning
+            "Sequence gap: expected {}, got {}", *last_output_seq + 1, output.output_seq);
     }
 
-    // 4. Process balance events - append to balance_ledger
-    // The EngineOutput contains fully computed balance events with final state
-    for balance_event in &output.balance_events {
-        log::debug!(target: LOG_TARGET,
-            "Balance event: user={} asset={} type={} delta_avail={} delta_frozen={} avail={} frozen={}",
-            balance_event.user_id,
-            balance_event.asset_id,
-            balance_event.event_type,
-            balance_event.delta_avail,
-            balance_event.delta_frozen,
-            balance_event.avail,
-            balance_event.frozen
-        );
+    // === ATOMIC SECTION: All must succeed ===
 
-        // Append all balance events - they contain the computed final state
-        if let Err(e) = settlement_db.append_balance_event(
+    // 5. Process balance events - FAIL on ANY error
+    for balance_event in &output.balance_events {
+        settlement_db.append_balance_event(
             balance_event.user_id,
             balance_event.asset_id,
             balance_event.seq,
@@ -293,18 +286,14 @@ async fn process_engine_output<W: std::io::Write>(
             balance_event.frozen,
             &balance_event.event_type,
             balance_event.ref_id,
-        ).await {
-            log::error!(target: LOG_TARGET,
-                "Failed to append balance event: user={} asset={} type={}: {}",
-                balance_event.user_id, balance_event.asset_id, balance_event.event_type, e);
-        }
+        ).await.map_err(|e| format!(
+            "Balance event failed: user={} asset={} type={}: {}",
+            balance_event.user_id, balance_event.asset_id, balance_event.event_type, e
+        ))?;
     }
 
-    // 5. Process trades
-    // Note: Balance updates were already done via balance_events above
-    // So we just need to record the trade, not update balances again
+    // 6. Process trades - FAIL on ANY error
     for trade in &output.trades {
-        // Build MatchExecData from TradeOutput for trade recording
         let match_exec = fetcher::ledger::MatchExecData {
             trade_id: trade.trade_id,
             buy_order_id: trade.buy_order_id,
@@ -320,7 +309,6 @@ async fn process_engine_output<W: std::io::Write>(
             match_seq: trade.match_seq,
             output_sequence: output.output_seq,
             settled_at: trade.settled_at,
-            // Version and balance fields - not needed for insert_trade
             buyer_quote_version: 0,
             buyer_base_version: 0,
             seller_base_version: 0,
@@ -331,44 +319,35 @@ async fn process_engine_output<W: std::io::Write>(
             seller_quote_balance_after: 0,
         };
 
-        // Just insert the trade record - balances were already updated via balance_events
-        if let Err(e) = settlement_db.insert_trade(&match_exec).await {
-            log::error!(target: LOG_TARGET, "Failed to insert trade {}: {}", trade.trade_id, e);
-        } else {
-            log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
+        // Insert trade - FAIL on error
+        settlement_db.insert_trade(&match_exec).await.map_err(|e|
+            format!("Trade insert failed: trade_id={}: {}", trade.trade_id, e)
+        )?;
 
-            // StarRocks
-            let sr_client = starrocks_client.clone();
-            let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
-            let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
-            tokio::spawn(async move {
-                let _ = sr_client.load_trade(sr_trade).await;
-            });
+        log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
 
-            // CSV
-            let _ = csv_writer.serialize(&match_exec);
-            let _ = csv_writer.flush();
-        }
+        // StarRocks (async, non-blocking)
+        let sr_client = starrocks_client.clone();
+        let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
+        let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
+        tokio::spawn(async move { let _ = sr_client.load_trade(sr_trade).await; });
 
-        // Order history fills
-        if let Err(e) = process_trade_fill(order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, event_id).await {
-            log::error!(target: LOG_TARGET, "Order History Fill (Buyer) Failed: {}", e);
-        }
-        if let Err(e) = process_trade_fill(order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, event_id).await {
-            log::error!(target: LOG_TARGET, "Order History Fill (Seller) Failed: {}", e);
-        }
+        // CSV
+        csv_writer.serialize(&match_exec)?;
+
+        // Order history fills - FAIL on error
+        process_trade_fill(order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, event_id).await?;
+        process_trade_fill(order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, event_id).await?;
     }
 
-    // 6. Process order update from input (for new orders)
+    // 7. Process order update (if present) - FAIL on error
     if let InputData::PlaceOrder(ref place_order) = output.input.data {
         if let Some(ref order_update) = output.order_update {
-            // Convert EngineOutput::OrderUpdate to ledger::OrderUpdate for order history
             let status = match order_update.status {
                 1 => OrderStatus::New,
                 2 => OrderStatus::PartiallyFilled,
                 3 => OrderStatus::Filled,
                 4 => OrderStatus::Cancelled,
-                5 => OrderStatus::Rejected,
                 _ => OrderStatus::Rejected,
             };
 
@@ -389,13 +368,14 @@ async fn process_engine_output<W: std::io::Write>(
                 match_id: None,
             };
 
-            if let Err(e) = process_order_update(order_history_db, &ledger_order_update, event_id).await {
-                log::error!(target: LOG_TARGET, "Order History Update Failed: {}", e);
-            }
+            process_order_update(order_history_db, &ledger_order_update, event_id).await?;
         }
     }
 
-    // 7. Update chain state
+    // 8. Flush CSV
+    csv_writer.flush()?;
+
+    // 9. Update chain state (only after ALL success)
     *last_processed_hash = output.hash;
     *last_output_seq = output.output_seq;
 
