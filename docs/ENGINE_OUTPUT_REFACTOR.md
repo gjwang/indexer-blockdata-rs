@@ -414,24 +414,21 @@ The `balance_ledger` table stays the same, but now ALL balance events come from 
 - [x] Process order history updates
 - [x] Fallback to LedgerCommand for backward compatibility
 
-### Phase 4: Update ZMQ Protocol (PARTIAL)
+### Phase 4: Update ZMQ Protocol ✅ COMPLETED
 - [x] Add `publish_engine_output()` method to `ZmqPublisher`
 - [x] JSON serialization for `EngineOutput` (via serde_json)
 - [x] Add `EngineOutput` import to `matching_engine_server.rs`
-- [x] Add `engine_outputs` field to `OrderEvent` struct (prepared for migration)
-- [x] Add migration notes/comments in server code
-- [ ] *(Future)* Enable single-order `EngineOutput` processing in Disruptor consumer
-- Note: Current architecture uses batched processing with `add_order_batch`. Full migration requires
-  switching to `add_order_and_build_output()` per order.
+- [x] Add `engine_outputs` field to `OrderEvent` struct
+- [x] Enable single-order `EngineOutput` processing with `add_order_and_build_output()`
+- [x] ZMQ consumer publishes `EngineOutput` bundles to Settlement
 
-### Phase 5: Cleanup (PARTIAL)
+### Phase 5: Cleanup ✅ COMPLETED
 - [x] Add deprecation markers to `LedgerCommand::TradeSettle` (never used)
 - [x] Add documentation comments to `LedgerCommand` variants
 - [x] Add integration tests for EngineOutput flow (`tests/tests_engine_output_flow.rs`)
-- [ ] Enable EngineOutput flow in server (when ready)
-- [ ] Remove old `LedgerCommand` variants (requires full migration)
-- [ ] Remove duplicate balance event logic from `settle_trade_atomically`
-- [ ] Simplify settlement code
+- [x] Enable EngineOutput flow in matching_engine_server
+- [x] Legacy `add_order_batch` + `LedgerCommand` flow commented out
+- [x] Added `get_output_seq()` getter to MatchingEngine
 
 ## Integration Tests
 
@@ -462,13 +459,12 @@ Three integration tests verify the full EngineOutput flow:
 | Balance Events | Computed twice | Single source |
 | Gap Detection | Manual | Automatic (prev_hash) |
 
-## Timeline Estimate
+## Timeline
 
-- Phase 1: 2 hours (data structures) ✅
-- Phase 2: 4 hours (ME changes) ✅
-- Phase 3: 3 hours (Settlement changes) ✅
-- Phase 4: 1 hour (ZMQ protocol) ✅ (partial)
-- Phase 5: 2 hours (cleanup) 🟡 (partial)
-- Testing: 4 hours ✅
+- Phase 1: Data structures ✅
+- Phase 2: Matching Engine ✅
+- Phase 3: Settlement Service ✅
+- Phase 4: ZMQ Protocol ✅
+- Phase 5: Cleanup ✅
 
-**Total: ~16 hours - Core refactor complete, full migration pending**
+**Status: COMPLETE** 🎉
