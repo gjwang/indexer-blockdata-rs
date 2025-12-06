@@ -404,6 +404,49 @@ impl SettlementDb {
         Ok(())
     }
 
+    /// Insert trades in a single ScyllaDB BATCH (much faster than sequential)
+    pub async fn insert_trades_batch(&self, trades: &[crate::engine_output::TradeOutput], output_seq: u64) -> Result<()> {
+        if trades.is_empty() {
+            return Ok(());
+        }
+
+        use scylla::batch::BatchType;
+        let mut batch = Batch::new(BatchType::Unlogged);
+
+        let trade_date = get_current_date();
+        let settled_at = get_current_timestamp_ms();
+
+        // Add statement for each trade
+        for _ in trades {
+            batch.append_statement(INSERT_TRADE_CQL);
+        }
+
+        // Build values
+        let values: Vec<_> = trades.iter().map(|t| (
+            trade_date,
+            output_seq as i64,
+            t.trade_id as i64,
+            t.match_seq as i64,
+            t.buy_order_id as i64,
+            t.sell_order_id as i64,
+            t.buyer_user_id as i64,
+            t.seller_user_id as i64,
+            t.price as i64,
+            t.quantity as i64,
+            t.base_asset_id as i32,
+            t.quote_asset_id as i32,
+            t.buyer_refund as i64,
+            t.seller_refund as i64,
+            if t.settled_at > 0 { t.settled_at as i64 } else { settled_at },
+        )).collect();
+
+        self.session.batch(&batch, values).await
+            .context("Failed to batch insert trades")?;
+
+        log::debug!("Batch inserted {} trades", trades.len());
+        Ok(())
+    }
+
     /// Insert a ledger event into the database
     pub async fn insert_ledger_event(&self, event: &LedgerEvent) -> Result<()> {
         let start = std::time::Instant::now();

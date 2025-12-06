@@ -98,10 +98,10 @@ curl -s "http://localhost:3001/api/user/balance?user_id=1001"
 echo ""
 
 echo ""
-echo "=== Step 9: Sending test orders (1 second) ==="
+echo "=== Step 9: Sending test orders (3 seconds) ==="
 ./target/debug/order_http_client > /tmp/client.log 2>&1 &
 CLIENT_PID=$!
-sleep 1
+sleep 3
 kill $CLIENT_PID || true
 
 echo "  Waiting for settlement to catch up (60s)..."

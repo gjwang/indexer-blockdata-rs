@@ -313,6 +313,7 @@ async fn process_engine_output<W: std::io::Write>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t_start = std::time::Instant::now();
 
+    //TODO profile verify too
     // 1. Idempotency: Skip if already processed
     if output.output_seq <= *last_output_seq && *last_output_seq > 0 {
         log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
@@ -356,9 +357,20 @@ async fn process_engine_output<W: std::io::Write>(
         .map_err(|e| format!("Balance events batch failed: {}", e))?;
     let d_balance = t_balance.elapsed();
 
-    // 6. Process trades - FAIL on ANY error
+    // 6. Process trades - BATCH for performance
     let t_trade = std::time::Instant::now();
+
+    // 6a. Batch insert all trades to ScyllaDB
+    settlement_db.insert_trades_batch(&output.trades, output.output_seq).await
+        .map_err(|e| format!("Trades batch insert failed: {}", e))?;
+
+    // 6b. StarRocks, CSV, and order fills (still sequential but after batch)
     for trade in &output.trades {
+        log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
+
+        // StarRocks (async, non-blocking)
+        let sr_client = starrocks_client.clone();
+        let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
         let match_exec = fetcher::ledger::MatchExecData {
             trade_id: trade.trade_id,
             buy_order_id: trade.buy_order_id,
@@ -383,17 +395,6 @@ async fn process_engine_output<W: std::io::Write>(
             seller_base_balance_after: 0,
             seller_quote_balance_after: 0,
         };
-
-        // Insert trade - FAIL on error
-        settlement_db.insert_trade(&match_exec).await.map_err(|e|
-            format!("Trade insert failed: trade_id={}: {}", trade.trade_id, e)
-        )?;
-
-        log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
-
-        // StarRocks (async, non-blocking)
-        let sr_client = starrocks_client.clone();
-        let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
         let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
         tokio::spawn(async move { let _ = sr_client.load_trade(sr_trade).await; });
 
