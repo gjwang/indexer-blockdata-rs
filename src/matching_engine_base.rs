@@ -12,7 +12,10 @@ use crate::ledger::{GlobalLedger, Ledger, LedgerCommand, MatchExecData, ShadowLe
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
-use xxhash_rust::xxh3::xxh3_64;
+use crate::engine_output::{
+    EngineOutput, EngineOutputBuilder, InputBundle, InputData, PlaceOrderInput,
+    BalanceEvent as EOBalanceEvent, TradeOutput, OrderUpdate as EOOrderUpdate,
+};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
@@ -232,6 +235,9 @@ pub struct EngineSnapshot {
     pub order_wal_seq: u64,
     #[serde(default)]
     pub output_seq: u64,
+    /// Hash of last EngineOutput for chain continuity
+    #[serde(default)]
+    pub last_output_hash: u64,
 }
 
 pub struct MatchingEngine {
@@ -243,6 +249,8 @@ pub struct MatchingEngine {
     pub trade_id_gen: FastUlidHalfGen,
     pub state_hash: u64,
     pub output_seq: u64,
+    /// Hash of last EngineOutput for chain continuity
+    pub last_output_hash: u64,
 }
 
 impl MatchingEngine {
@@ -268,6 +276,7 @@ impl MatchingEngine {
         let mut order_wal_seq = 0;
         let mut state_hash = 0;
         let mut output_seq = 0;
+        let mut last_output_hash = 0u64; // Genesis hash
 
         // Find latest snapshot
         let mut max_seq = 0;
@@ -304,7 +313,7 @@ impl MatchingEngine {
             ledger_seq = snap.ledger_seq;
             order_wal_seq = snap.order_wal_seq;
             output_seq = snap.output_seq;
-            // TODO: Load state_hash from snapshot if we add it to EngineSnapshot
+            last_output_hash = snap.last_output_hash;
             println!(
                 "   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}",
                 order_wal_seq, ledger_seq
@@ -334,6 +343,7 @@ impl MatchingEngine {
             trade_id_gen: FastUlidHalfGen::new(),
             state_hash,
             output_seq,
+            last_output_hash,
         };
 
         // Replay (Only if WAL exists and was enabled)
@@ -492,6 +502,61 @@ impl MatchingEngine {
         self.ledger.flush().map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         Ok(oid)
+    }
+
+    /// Add order and return EngineOutput bundle with all effects
+    /// This is the primary method for processing orders with full output tracking
+    pub fn add_order_and_build_output(
+        &mut self,
+        input_seq: u64,
+        symbol_id: u32,
+        order_id: u64,
+        side: Side,
+        order_type: OrderType,
+        price: u64,
+        quantity: u64,
+        user_id: u64,
+        timestamp: u64,
+        client_order_id: String,
+    ) -> Result<(u64, EngineOutput), OrderError> {
+        // Validate Symbol
+        if !self.asset_map.contains_key(&symbol_id) {
+            return Err(OrderError::InvalidSymbol { symbol_id });
+        }
+
+        // Write to Input Log (if enabled)
+        if let Some(wal) = &mut self.order_wal {
+            wal.log_place_order_no_flush(order_id, user_id, symbol_id, side, price, quantity)
+                .map_err(|e| OrderError::Other(e.to_string()))?;
+        }
+
+        // Process order with output building
+        let result = Self::process_order_with_output(
+            &mut self.ledger,
+            &mut self.order_books,
+            &self.asset_map,
+            &mut self.trade_id_gen,
+            &mut self.output_seq,
+            &mut self.last_output_hash,
+            input_seq,
+            symbol_id,
+            order_id,
+            side,
+            order_type,
+            price,
+            quantity,
+            user_id,
+            timestamp,
+            client_order_id,
+        )?;
+
+        // Flush WALs
+        if let Some(wal) = &mut self.order_wal {
+            wal.flush().map_err(|e| OrderError::Other(e.to_string()))?;
+        }
+        self.ledger.flush().map_err(|e| OrderError::LedgerError(e.to_string()))?;
+
+        Ok(result)
     }
 
     /// Internal Logic: Process Order (No Input WAL write)
@@ -752,6 +817,448 @@ impl MatchingEngine {
         Ok(order_id)
     }
 
+    /// Process order and build EngineOutput bundle
+    /// Returns (order_id, EngineOutput) with all effects captured atomically
+    fn process_order_with_output(
+        ledger: &mut impl Ledger,
+        order_books: &mut Vec<Option<OrderBook>>,
+        asset_map: &FxHashMap<u32, (u32, u32)>,
+        trade_id_gen: &mut FastUlidHalfGen,
+        output_seq: &mut u64,
+        last_output_hash: &mut u64,
+        input_seq: u64,
+        symbol_id: u32,
+        order_id: u64,
+        side: Side,
+        order_type: OrderType,
+        price: u64,
+        quantity: u64,
+        user_id: u64,
+        timestamp: u64,
+        client_order_id: String,
+    ) -> Result<(u64, EngineOutput), OrderError> {
+        use crate::ledger::{OrderStatus, OrderUpdate};
+
+        // Increment output sequence for this bundle
+        *output_seq += 1;
+        let current_output_seq = *output_seq;
+
+        // Create builder with chain linkage
+        let mut builder = EngineOutputBuilder::new(current_output_seq, *last_output_hash);
+
+        // Set input bundle
+        builder.set_input(InputBundle::new(
+            input_seq,
+            InputData::PlaceOrder(PlaceOrderInput {
+                order_id,
+                user_id,
+                symbol_id,
+                side: side.as_u8(),
+                order_type: order_type.as_u8(),
+                price,
+                quantity,
+                cid: client_order_id.clone(),
+                created_at: timestamp,
+            }),
+        ));
+
+        let (base_asset_id, quote_asset_id) = match asset_map.get(&symbol_id) {
+            Some(p) => *p,
+            None => {
+                // Rejection: asset map not found
+                let rejection = OrderUpdate {
+                    order_id,
+                    client_order_id: Some(client_order_id),
+                    user_id,
+                    symbol_id,
+                    side: side.as_u8(),
+                    order_type: order_type.as_u8(),
+                    status: OrderStatus::Rejected,
+                    price,
+                    qty: quantity,
+                    filled_qty: 0,
+                    avg_fill_price: None,
+                    rejection_reason: Some(format!("Asset map not found for symbol {}", symbol_id)),
+                    timestamp,
+                    match_id: None,
+                };
+                let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
+
+                // Build EngineOutput with rejection
+                builder.set_order_update(EOOrderUpdate {
+                    order_id,
+                    user_id,
+                    status: 5, // Rejected
+                    filled_qty: 0,
+                    remaining_qty: quantity,
+                    avg_price: 0,
+                    updated_at: timestamp,
+                });
+
+                let output = builder.build_unchecked();
+                *last_output_hash = output.hash;
+                return Ok((order_id, output));
+            }
+        };
+
+        // 1. Lock funds
+        let (lock_asset, lock_amount) = match side {
+            Side::Buy => (quote_asset_id, price * quantity),
+            Side::Sell => (base_asset_id, quantity),
+        };
+
+        // Get current balance state for balance event
+        let current_bal = ledger.get_balance(user_id, lock_asset);
+        let current_frozen = ledger.get_frozen(user_id, lock_asset);
+        let current_ver = ledger.get_balance_version(user_id, lock_asset);
+        let balance_after = if current_bal >= lock_amount {
+            current_bal - lock_amount
+        } else {
+            current_bal
+        };
+        let new_ver = current_ver + 1;
+
+        if let Err(e) = ledger.apply(&LedgerCommand::Lock {
+            user_id,
+            asset_id: lock_asset,
+            amount: lock_amount,
+            balance_after,
+            version: new_ver,
+        }) {
+            // Rejection: insufficient balance
+            let rejection = OrderUpdate {
+                order_id,
+                client_order_id: Some(client_order_id),
+                user_id,
+                symbol_id,
+                side: side.as_u8(),
+                order_type: order_type.as_u8(),
+                status: OrderStatus::Rejected,
+                price,
+                qty: quantity,
+                filled_qty: 0,
+                avg_fill_price: None,
+                rejection_reason: Some(e.to_string()),
+                timestamp,
+                match_id: None,
+            };
+            let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
+
+            builder.set_order_update(EOOrderUpdate {
+                order_id,
+                user_id,
+                status: 5, // Rejected
+                filled_qty: 0,
+                remaining_qty: quantity,
+                avg_price: 0,
+                updated_at: timestamp,
+            });
+
+            let output = builder.build_unchecked();
+            *last_output_hash = output.hash;
+            return Ok((order_id, output));
+        }
+
+        // Add lock balance event
+        builder.add_balance_event(EOBalanceEvent {
+            user_id,
+            asset_id: lock_asset,
+            seq: new_ver,
+            delta_avail: -(lock_amount as i64),
+            delta_frozen: lock_amount as i64,
+            avail: balance_after as i64,
+            frozen: (current_frozen + lock_amount) as i64,
+            event_type: "lock".into(),
+            ref_id: order_id,
+        });
+
+        // Emit OrderUpdate(New)
+        let new_order_event = OrderUpdate {
+            order_id,
+            client_order_id: Some(client_order_id.clone()),
+            user_id,
+            symbol_id,
+            side: side.as_u8(),
+            order_type: order_type.as_u8(),
+            status: OrderStatus::New,
+            price,
+            qty: quantity,
+            filled_qty: 0,
+            avg_fill_price: None,
+            rejection_reason: None,
+            timestamp,
+            match_id: None,
+        };
+        ledger.apply(&LedgerCommand::OrderUpdate(new_order_event))
+            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+
+        // Access OrderBook
+        if symbol_id as usize >= order_books.len() || order_books[symbol_id as usize].is_none() {
+            let rejection = OrderUpdate {
+                order_id,
+                client_order_id: Some(client_order_id),
+                user_id,
+                symbol_id,
+                side: side.as_u8(),
+                order_type: order_type.as_u8(),
+                status: OrderStatus::Rejected,
+                price,
+                qty: quantity,
+                filled_qty: 0,
+                avg_fill_price: None,
+                rejection_reason: Some(format!("Invalid Symbol ID: {}", symbol_id)),
+                timestamp,
+                match_id: None,
+            };
+            let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
+
+            builder.set_order_update(EOOrderUpdate {
+                order_id,
+                user_id,
+                status: 5, // Rejected
+                filled_qty: 0,
+                remaining_qty: quantity,
+                avg_price: 0,
+                updated_at: timestamp,
+            });
+
+            let output = builder.build_unchecked();
+            *last_output_hash = output.hash;
+            return Ok((order_id, output));
+        }
+
+        let book = order_books[symbol_id as usize].as_mut().unwrap();
+        let order = Order { order_id, user_id, symbol_id, side, order_type, price, quantity, timestamp };
+
+        let trades = match book.add_order(order, trade_id_gen, timestamp) {
+            Ok(t) => t,
+            Err(e) => {
+                return Err(OrderError::Other(e));
+            }
+        };
+
+        let mut total_filled = 0u64;
+        let mut total_cost = 0u64;
+        let mut match_batch = Vec::with_capacity(trades.len());
+
+        // Track temporary version increments within the batch
+        let mut temp_versions: std::collections::HashMap<(u64, u32), u64> =
+            std::collections::HashMap::new();
+        let mut temp_balances: std::collections::HashMap<(u64, u32), (u64, u64)> =
+            std::collections::HashMap::new(); // (avail, frozen)
+
+        for trade in trades {
+            total_filled += trade.quantity;
+            total_cost += trade.price * trade.quantity;
+
+            let buyer_refund = if side == Side::Buy && trade.buy_user_id == user_id {
+                if price > trade.price {
+                    (price - trade.price) * trade.quantity
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+
+            let buyer_quote_inc = if buyer_refund > 0 { 2 } else { 1 };
+
+            // Helper to get and increment version
+            let mut get_and_add_version = |uid: u64, asset_id: u32, inc: u64| -> u64 {
+                let entry = temp_versions
+                    .entry((uid, asset_id))
+                    .or_insert_with(|| ledger.get_balance_version(uid, asset_id));
+                let v = *entry;
+                *entry += inc;
+                v
+            };
+
+            // Helper to get and update balance (avail, frozen)
+            let mut get_and_update_balance = |uid: u64, asset_id: u32, delta_avail: i64, delta_frozen: i64| -> (u64, u64) {
+                let entry = temp_balances
+                    .entry((uid, asset_id))
+                    .or_insert_with(|| (ledger.get_balance(uid, asset_id), ledger.get_frozen(uid, asset_id)));
+                if delta_avail >= 0 {
+                    entry.0 += delta_avail as u64;
+                } else {
+                    let abs_d = (-delta_avail) as u64;
+                    entry.0 = entry.0.saturating_sub(abs_d);
+                }
+                if delta_frozen >= 0 {
+                    entry.1 += delta_frozen as u64;
+                } else {
+                    let abs_d = (-delta_frozen) as u64;
+                    entry.1 = entry.1.saturating_sub(abs_d);
+                }
+                *entry
+            };
+
+            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
+            let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset_id, 1);
+            let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset_id, 1);
+            let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset_id, 1);
+
+            // Calculate balance changes
+            let trade_cost = trade.price * trade.quantity;
+
+            // Buyer: quote deducted from frozen, base credited to avail
+            let (buyer_quote_avail, buyer_quote_frozen) = get_and_update_balance(
+                trade.buy_user_id, quote_asset_id, buyer_refund as i64, -(trade_cost as i64)
+            );
+            let (buyer_base_avail, buyer_base_frozen) = get_and_update_balance(
+                trade.buy_user_id, base_asset_id, trade.quantity as i64, 0
+            );
+
+            // Seller: base deducted from frozen, quote credited to avail
+            let (seller_base_avail, seller_base_frozen) = get_and_update_balance(
+                trade.sell_user_id, base_asset_id, 0, -(trade.quantity as i64)
+            );
+            let (seller_quote_avail, seller_quote_frozen) = get_and_update_balance(
+                trade.sell_user_id, quote_asset_id, trade_cost as i64, 0
+            );
+
+            // Add trade output
+            builder.add_trade(TradeOutput {
+                trade_id: trade.trade_id,
+                match_seq: trade.match_seq,
+                buy_order_id: trade.buy_order_id,
+                sell_order_id: trade.sell_order_id,
+                buyer_user_id: trade.buy_user_id,
+                seller_user_id: trade.sell_user_id,
+                price: trade.price,
+                quantity: trade.quantity,
+                base_asset_id,
+                quote_asset_id,
+                buyer_refund,
+                seller_refund: 0,
+                settled_at: 0,
+            });
+
+            // Add balance events for buyer
+            if buyer_refund > 0 {
+                builder.add_balance_event(EOBalanceEvent {
+                    user_id: trade.buy_user_id,
+                    asset_id: quote_asset_id,
+                    seq: buyer_quote_version + 1,
+                    delta_avail: buyer_refund as i64,
+                    delta_frozen: -(trade_cost as i64 + buyer_refund as i64),
+                    avail: buyer_quote_avail as i64,
+                    frozen: buyer_quote_frozen as i64,
+                    event_type: "trade_refund".into(),
+                    ref_id: trade.trade_id,
+                });
+            } else {
+                builder.add_balance_event(EOBalanceEvent {
+                    user_id: trade.buy_user_id,
+                    asset_id: quote_asset_id,
+                    seq: buyer_quote_version + 1,
+                    delta_avail: 0,
+                    delta_frozen: -(trade_cost as i64),
+                    avail: buyer_quote_avail as i64,
+                    frozen: buyer_quote_frozen as i64,
+                    event_type: "trade_debit".into(),
+                    ref_id: trade.trade_id,
+                });
+            }
+
+            builder.add_balance_event(EOBalanceEvent {
+                user_id: trade.buy_user_id,
+                asset_id: base_asset_id,
+                seq: buyer_base_version + 1,
+                delta_avail: trade.quantity as i64,
+                delta_frozen: 0,
+                avail: buyer_base_avail as i64,
+                frozen: buyer_base_frozen as i64,
+                event_type: "trade_credit".into(),
+                ref_id: trade.trade_id,
+            });
+
+            // Add balance events for seller
+            builder.add_balance_event(EOBalanceEvent {
+                user_id: trade.sell_user_id,
+                asset_id: base_asset_id,
+                seq: seller_base_version + 1,
+                delta_avail: 0,
+                delta_frozen: -(trade.quantity as i64),
+                avail: seller_base_avail as i64,
+                frozen: seller_base_frozen as i64,
+                event_type: "trade_debit".into(),
+                ref_id: trade.trade_id,
+            });
+
+            builder.add_balance_event(EOBalanceEvent {
+                user_id: trade.sell_user_id,
+                asset_id: quote_asset_id,
+                seq: seller_quote_version + 1,
+                delta_avail: trade_cost as i64,
+                delta_frozen: 0,
+                avail: seller_quote_avail as i64,
+                frozen: seller_quote_frozen as i64,
+                event_type: "trade_credit".into(),
+                ref_id: trade.trade_id,
+            });
+
+            // Build match batch for existing flow
+            match_batch.push(MatchExecData {
+                trade_id: trade.trade_id,
+                buy_order_id: trade.buy_order_id,
+                sell_order_id: trade.sell_order_id,
+                buyer_user_id: trade.buy_user_id,
+                seller_user_id: trade.sell_user_id,
+                price: trade.price,
+                quantity: trade.quantity,
+                base_asset_id,
+                quote_asset_id,
+                buyer_refund,
+                seller_refund: 0,
+                match_seq: trade.match_seq,
+                output_sequence: current_output_seq,
+                settled_at: 0,
+                buyer_quote_version,
+                buyer_base_version,
+                seller_base_version,
+                seller_quote_version,
+                buyer_quote_balance_after: buyer_quote_avail,
+                buyer_base_balance_after: buyer_base_avail,
+                seller_base_balance_after: seller_base_avail,
+                seller_quote_balance_after: seller_quote_avail,
+            });
+        }
+
+        // Apply match batch to ledger (existing flow)
+        if !match_batch.is_empty() {
+            ledger
+                .apply(&LedgerCommand::MatchExecBatch(match_batch))
+                .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        }
+
+        // Set order update in EngineOutput
+        let remaining_qty = quantity - total_filled;
+        let avg_price = if total_filled > 0 { total_cost / total_filled } else { 0 };
+        let status = if total_filled == 0 {
+            1 // New (resting on book)
+        } else if remaining_qty == 0 {
+            3 // Filled
+        } else {
+            2 // PartialFill
+        };
+
+        builder.set_order_update(EOOrderUpdate {
+            order_id,
+            user_id,
+            status,
+            filled_qty: total_filled,
+            remaining_qty,
+            avg_price,
+            updated_at: timestamp,
+        });
+
+        // Build final output
+        let output = builder.build_unchecked();
+        *last_output_hash = output.hash;
+
+        Ok((order_id, output))
+    }
 
     pub fn add_order_batch(
         &mut self,
@@ -959,6 +1466,7 @@ impl MatchingEngine {
                     ledger_seq: self.ledger.last_seq,
                     order_wal_seq: current_seq,
                     output_seq: self.output_seq,
+                    last_output_hash: self.last_output_hash,
                 };
 
                 if let Ok(file) = File::create(&path) {

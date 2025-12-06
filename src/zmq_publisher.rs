@@ -41,4 +41,16 @@ impl ZmqPublisher {
         self.market_data_pub.send("market_data", zmq::SNDMORE)?;
         self.market_data_pub.send(data, 0)
     }
+
+    /// Publish EngineOutput bundle to settlement service
+    /// This is the preferred method for the new atomic output flow
+    pub fn publish_engine_output(&self, output: &crate::engine_output::EngineOutput) -> Result<(), String> {
+        match serde_json::to_vec(output) {
+            Ok(data) => {
+                self.settlement_pub.send(&data, 0)
+                    .map_err(|e| format!("ZMQ send failed: {}", e))
+            }
+            Err(e) => Err(format!("Serialization failed: {}", e))
+        }
+    }
 }

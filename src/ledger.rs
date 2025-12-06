@@ -39,39 +39,47 @@ pub struct Snapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// LedgerCommand represents operations on the ledger.
+///
+/// **Note**: Many of these variants are being deprecated in favor of `EngineOutput`.
+/// The new `EngineOutput` structure provides atomic, verifiable, chain-linked bundles.
+/// See `src/engine_output.rs` and `docs/ENGINE_OUTPUT_REFACTOR.md` for details.
 pub enum LedgerCommand {
+    /// Deposit funds to user's available balance
     Deposit {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
-        // Added for clearing log
         balance_after: u64,
         version: u64,
     },
+    /// Withdraw funds from user's available balance
     Withdraw {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
-        // Added for clearing log
         balance_after: u64,
         version: u64,
     },
+    /// Lock funds (move from available to frozen)
     Lock {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
-        // Added for clearing log
         balance_after: u64,
         version: u64,
     },
+    /// Unlock funds (move from frozen to available)
     Unlock {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
-        // Added for clearing log
         balance_after: u64,
         version: u64,
     },
+    /// **DEPRECATED**: Use `EngineOutput.trades` instead.
+    /// This variant was never used in production.
+    #[deprecated(note = "Use EngineOutput.trades instead")]
     TradeSettle {
         user_id: UserId,
         spend_asset_id: AssetId,
@@ -79,9 +87,15 @@ pub enum LedgerCommand {
         gain_asset_id: AssetId,
         gain_amount: u64,
     },
+    /// Single match execution - kept for backward compatibility
+    /// Prefer `MatchExecBatch` or `EngineOutput.trades`
     MatchExec(MatchExecData),
+    /// Batch of match executions - current production format
+    /// Will be replaced by `EngineOutput` in future
     MatchExecBatch(Vec<MatchExecData>),
+    /// Order status update
     OrderUpdate(OrderUpdate),
+    /// Batch of commands for atomic processing
     Batch(Vec<LedgerCommand>),
 }
 
@@ -507,6 +521,7 @@ impl Iterator for WalIterator {
 
 pub trait Ledger {
     fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64;
+    fn get_frozen(&self, user_id: UserId, asset_id: AssetId) -> u64;
     fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64;
     fn apply(&mut self, cmd: &LedgerCommand) -> Result<()>;
 }
@@ -547,6 +562,18 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 .unwrap_or(0);
         }
         self.real_ledger.get_balance(user_id, asset_id)
+    }
+
+    fn get_frozen(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        if let Some(account) = self.delta_accounts.get(&user_id) {
+            return account
+                .assets
+                .iter()
+                .find(|(a, _)| *a == asset_id)
+                .map(|(_, b)| b.frozen)
+                .unwrap_or(0);
+        }
+        self.real_ledger.get_frozen(user_id, asset_id)
     }
 
     fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64 {
@@ -827,6 +854,14 @@ impl Ledger for GlobalLedger {
             .get(&user_id)
             .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
             .map(|(_, b)| b.avail)
+            .unwrap_or(0)
+    }
+
+    fn get_frozen(&self, user_id: UserId, asset_id: AssetId) -> u64 {
+        self.accounts
+            .get(&user_id)
+            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
+            .map(|(_, b)| b.frozen)
             .unwrap_or(0)
     }
 

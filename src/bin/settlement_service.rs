@@ -1,6 +1,7 @@
 use fetcher::configure;
 use fetcher::db::{OrderHistoryDb, SettlementDb};
 use fetcher::ledger::{LedgerCommand, OrderStatus, OrderUpdate};
+use fetcher::engine_output::{EngineOutput, InputData, GENESIS_HASH};
 use fetcher::logger::setup_logger;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 use zmq::{Context, PULL};
@@ -112,6 +113,10 @@ async fn main() {
     let mut total_errors: u64 = 0;
     let mut total_history_events = 0u64;
 
+    // Chain verification state
+    let mut last_processed_hash: u64 = GENESIS_HASH;
+    let mut last_output_seq: u64 = 0;
+
     // CSV Writer
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -124,11 +129,11 @@ async fn main() {
     let mut msg_count = 0u64;
     loop {
         msg_count += 1;
-        log::info!(target: LOG_TARGET, "🔄 Attempting to receive message #{}", msg_count);
+        log::debug!(target: LOG_TARGET, "🔄 Attempting to receive message #{}", msg_count);
 
         let data = match subscriber.recv_bytes(0) {
             Ok(d) => {
-                log::info!(target: LOG_TARGET, "✅ Received {} bytes for message #{}", d.len(), msg_count);
+                log::debug!(target: LOG_TARGET, "✅ Received {} bytes for message #{}", d.len(), msg_count);
                 d
             },
             Err(e) => {
@@ -137,7 +142,37 @@ async fn main() {
             }
         };
 
-        // Process synchronously (no async spawn) to avoid calling recv_bytes too quickly
+        // Try EngineOutput first (new flow), then fall back to LedgerCommand
+        if let Ok(engine_output) = serde_json::from_slice::<EngineOutput>(&data) {
+            // Process EngineOutput with chain verification
+            match process_engine_output(
+                &settlement_db,
+                &order_history_db,
+                &starrocks_client,
+                &engine_output,
+                &mut last_processed_hash,
+                &mut last_output_seq,
+                &mut wtr,
+                msg_count,
+            ).await {
+                Ok(_) => {
+                    total_settled += engine_output.trades.len() as u64;
+                    log::info!(target: LOG_TARGET,
+                        "✅ Processed EngineOutput seq={} trades={} balance_events={}",
+                        engine_output.output_seq,
+                        engine_output.trades.len(),
+                        engine_output.balance_events.len()
+                    );
+                }
+                Err(e) => {
+                    total_errors += 1;
+                    log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
+                }
+            }
+            continue;
+        }
+
+        // Fall back to LedgerCommand (legacy flow)
         match serde_json::from_slice::<LedgerCommand>(&data) {
             Ok(cmd) => {
                 match cmd {
@@ -263,5 +298,198 @@ async fn process_trade_fill(
         process_order_update(db, &order, event_id).await?;
         log::info!(target: LOG_TARGET, "Processed Fill Order #{}", order_id);
     }
+    Ok(())
+}
+
+/// Process EngineOutput bundle atomically with chain verification
+async fn process_engine_output<W: std::io::Write>(
+    settlement_db: &std::sync::Arc<SettlementDb>,
+    order_history_db: &std::sync::Arc<OrderHistoryDb>,
+    starrocks_client: &std::sync::Arc<StarRocksClient>,
+    output: &EngineOutput,
+    last_processed_hash: &mut u64,
+    last_output_seq: &mut u64,
+    csv_writer: &mut csv::Writer<W>,
+    event_id: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Verify chain integrity
+    if !output.verify_prev_hash(*last_processed_hash) {
+        return Err(format!(
+            "Chain verification failed: expected prev_hash={}, got={}",
+            *last_processed_hash, output.prev_hash
+        ).into());
+    }
+
+    // 2. Verify output integrity
+    if !output.verify() {
+        return Err(format!(
+            "Output hash verification failed for seq={}",
+            output.output_seq
+        ).into());
+    }
+
+    // 3. Verify sequence continuity
+    if output.output_seq != *last_output_seq + 1 {
+        log::warn!(target: LOG_TARGET,
+            "Sequence gap detected: expected {}, got {}",
+            *last_output_seq + 1, output.output_seq
+        );
+        // Allow processing anyway but log warning
+    }
+
+    // 4. Process balance events (append to balance_ledger)
+    for balance_event in &output.balance_events {
+        // Map event_type to the appropriate settlement_db method
+        // For now, we use append_balance_event which is internal
+        // The balance events from EngineOutput contain all the computed state
+        log::debug!(target: LOG_TARGET,
+            "Balance event: user={} asset={} type={} delta_avail={} delta_frozen={}",
+            balance_event.user_id,
+            balance_event.asset_id,
+            balance_event.event_type,
+            balance_event.delta_avail,
+            balance_event.delta_frozen
+        );
+
+        // Call the appropriate method based on event type
+        match balance_event.event_type.as_str() {
+            "lock" => {
+                // Lock already applied during ME processing, just log
+                log::debug!(target: LOG_TARGET, "Lock event processed from EngineOutput");
+            }
+            "trade_credit" | "trade_debit" | "trade_refund" => {
+                // Trade events are handled by settle_trade_atomically
+                // These are informational in EngineOutput
+                log::debug!(target: LOG_TARGET, "Trade balance event: {}", balance_event.event_type);
+            }
+            "deposit" => {
+                let _ = settlement_db.deposit(
+                    balance_event.user_id,
+                    balance_event.asset_id,
+                    balance_event.delta_avail as u64,
+                    balance_event.seq,
+                    balance_event.ref_id,
+                ).await;
+            }
+            "unlock" => {
+                let _ = settlement_db.unlock(
+                    balance_event.user_id,
+                    balance_event.asset_id,
+                    (-balance_event.delta_frozen) as u64,
+                    balance_event.seq,
+                    balance_event.ref_id,
+                ).await;
+            }
+            "withdraw" => {
+                let _ = settlement_db.withdraw(
+                    balance_event.user_id,
+                    balance_event.asset_id,
+                    (-balance_event.delta_avail) as u64,
+                    balance_event.seq,
+                    balance_event.ref_id,
+                ).await;
+            }
+            _ => {
+                log::warn!(target: LOG_TARGET, "Unknown balance event type: {}", balance_event.event_type);
+            }
+        }
+    }
+
+    // 5. Process trades
+    for trade in &output.trades {
+        // Build MatchExecData from TradeOutput for settlement
+        let match_exec = fetcher::ledger::MatchExecData {
+            trade_id: trade.trade_id,
+            buy_order_id: trade.buy_order_id,
+            sell_order_id: trade.sell_order_id,
+            buyer_user_id: trade.buyer_user_id,
+            seller_user_id: trade.seller_user_id,
+            price: trade.price,
+            quantity: trade.quantity,
+            base_asset_id: trade.base_asset_id,
+            quote_asset_id: trade.quote_asset_id,
+            buyer_refund: trade.buyer_refund,
+            seller_refund: trade.seller_refund,
+            match_seq: trade.match_seq,
+            output_sequence: output.output_seq,
+            settled_at: trade.settled_at,
+            // Version and balance fields - use 0s as they're not needed for settlement
+            buyer_quote_version: 0,
+            buyer_base_version: 0,
+            seller_base_version: 0,
+            seller_quote_version: 0,
+            buyer_quote_balance_after: 0,
+            buyer_base_balance_after: 0,
+            seller_base_balance_after: 0,
+            seller_quote_balance_after: 0,
+        };
+
+        if let Err(e) = settlement_db.settle_trade_atomically(&match_exec).await {
+            log::error!(target: LOG_TARGET, "Settlement Failed for trade {}: {}", trade.trade_id, e);
+        } else {
+            log::info!(target: LOG_TARGET, "✅ Settled trade {} from EngineOutput", trade.trade_id);
+
+            // StarRocks
+            let sr_client = starrocks_client.clone();
+            let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
+            let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
+            tokio::spawn(async move {
+                let _ = sr_client.load_trade(sr_trade).await;
+            });
+
+            // CSV
+            let _ = csv_writer.serialize(&match_exec);
+            let _ = csv_writer.flush();
+        }
+
+        // Order history fills
+        if let Err(e) = process_trade_fill(order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, event_id).await {
+            log::error!(target: LOG_TARGET, "Order History Fill (Buyer) Failed: {}", e);
+        }
+        if let Err(e) = process_trade_fill(order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, event_id).await {
+            log::error!(target: LOG_TARGET, "Order History Fill (Seller) Failed: {}", e);
+        }
+    }
+
+    // 6. Process order update from input (for new orders)
+    if let InputData::PlaceOrder(ref place_order) = output.input.data {
+        if let Some(ref order_update) = output.order_update {
+            // Convert EngineOutput::OrderUpdate to ledger::OrderUpdate for order history
+            let status = match order_update.status {
+                1 => OrderStatus::New,
+                2 => OrderStatus::PartiallyFilled,
+                3 => OrderStatus::Filled,
+                4 => OrderStatus::Cancelled,
+                5 => OrderStatus::Rejected,
+                _ => OrderStatus::Rejected,
+            };
+
+            let ledger_order_update = OrderUpdate {
+                order_id: order_update.order_id,
+                client_order_id: Some(place_order.cid.clone()),
+                user_id: order_update.user_id,
+                symbol_id: place_order.symbol_id,
+                side: place_order.side,
+                order_type: place_order.order_type,
+                status,
+                price: place_order.price,
+                qty: place_order.quantity,
+                filled_qty: order_update.filled_qty,
+                avg_fill_price: if order_update.avg_price > 0 { Some(order_update.avg_price) } else { None },
+                rejection_reason: None,
+                timestamp: order_update.updated_at,
+                match_id: None,
+            };
+
+            if let Err(e) = process_order_update(order_history_db, &ledger_order_update, event_id).await {
+                log::error!(target: LOG_TARGET, "Order History Update Failed: {}", e);
+            }
+        }
+    }
+
+    // 7. Update chain state
+    *last_processed_hash = output.hash;
+    *last_output_seq = output.output_seq;
+
     Ok(())
 }
