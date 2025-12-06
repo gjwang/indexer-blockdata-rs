@@ -11,6 +11,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use disruptor::*;
 
 use fetcher::ledger::{LedgerCommand, LedgerEvent, LedgerListener, MatchExecData};
+use fetcher::engine_output::EngineOutput;
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::client_order::calculate_checksum;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
@@ -20,7 +21,10 @@ use fetcher::zmq_publisher::ZmqPublisher;
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
     command: Option<EngineCommand>,
+    /// Legacy processing result (LedgerCommand flow)
     processing_result: std::sync::Mutex<Option<std::sync::Arc<Vec<LedgerCommand>>>>,
+    /// New atomic output bundles (EngineOutput flow)
+    engine_outputs: std::sync::Mutex<Option<std::sync::Arc<Vec<EngineOutput>>>>,
     kafka_offset: Option<(String, i32, i64)>,
     timestamp: u64,
 }
@@ -283,6 +287,7 @@ async fn main() {
     let factory = || OrderEvent {
         command: None,
         processing_result: std::sync::Mutex::new(None),
+        engine_outputs: std::sync::Mutex::new(None),
         kafka_offset: None,
         timestamp: 0,
     };
@@ -413,9 +418,31 @@ async fn main() {
         if let Some(ref cmd) = event.command {
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
+                    // Process orders using the existing batch method
+                    // This updates the engine state and returns LedgerCommands
                     let (_, cmds) = engine.add_order_batch(batch.clone());
-                    // Pass commands to Output Processor via Event
+
+                    // Pass LedgerCommands to downstream consumers (Legacy flow)
                     *event.processing_result.lock().unwrap() = Some(std::sync::Arc::new(cmds));
+
+                    // TODO: Future migration to EngineOutput flow
+                    // When ready to fully migrate to atomic EngineOutput bundles:
+                    // 1. Remove the add_order_batch call above
+                    // 2. Process each order individually with add_order_and_build_output()
+                    // 3. Store results in event.engine_outputs
+                    // 4. Update ZMQ consumer to publish EngineOutput instead of LedgerCommands
+                    //
+                    // Example single-order processing:
+                    // for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch {
+                    //     let cid = format!("kafka_{}", order_id);
+                    //     if let Ok((_, output)) = engine.add_order_and_build_output(
+                    //         input_seq, *symbol_id, *order_id, *side, *order_type,
+                    //         *price, *quantity, *user_id, *timestamp, cid
+                    //     ) {
+                    //         outputs.push(output);
+                    //     }
+                    // }
+                    // *event.engine_outputs.lock().unwrap() = Some(Arc::new(outputs));
                 }
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
@@ -453,8 +480,26 @@ async fn main() {
 
 
     // === Consumer 3b: ZMQ Publisher (Critical & Fast Path) ===
+    //
+    // Current: Publishes LedgerCommand variants to Settlement Service
+    // Future: Will publish EngineOutput bundles for atomic, verified processing
+    //
+    // Migration path:
+    // 1. Check event.engine_outputs first (new flow)
+    // 2. For each EngineOutput, call zmq_pub_clone.publish_engine_output(&output)
+    // 3. Keep LedgerCommand path as fallback for backward compatibility
+    //
     let zmq_pub_clone = zmq_publisher.clone();
-    let zmq_consumer = move |event: &OrderEvent, sequence: Sequence, _end_of_batch: bool| {
+    let zmq_consumer = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        // TODO: When EngineOutput flow is enabled, publish those first:
+        // if let Some(outputs) = event.engine_outputs.lock().unwrap().as_ref() {
+        //     for output in outputs.iter() {
+        //         let _ = zmq_pub_clone.publish_engine_output(output);
+        //     }
+        //     return;
+        // }
+
+        // Legacy: Publish LedgerCommand variants
         let cmds_arc = { event.processing_result.lock().unwrap().as_ref().cloned() };
         if let Some(cmds) = cmds_arc {
             for cmd in cmds.iter() {

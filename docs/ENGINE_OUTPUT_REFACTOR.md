@@ -417,18 +417,21 @@ The `balance_ledger` table stays the same, but now ALL balance events come from 
 ### Phase 4: Update ZMQ Protocol (PARTIAL)
 - [x] Add `publish_engine_output()` method to `ZmqPublisher`
 - [x] JSON serialization for `EngineOutput` (via serde_json)
-- [ ] *(Optional)* Modify Matching Engine server's Disruptor consumer to use `add_order_and_build_output`
+- [x] Add `EngineOutput` import to `matching_engine_server.rs`
+- [x] Add `engine_outputs` field to `OrderEvent` struct (prepared for migration)
+- [x] Add migration notes/comments in server code
+- [ ] *(Future)* Enable single-order `EngineOutput` processing in Disruptor consumer
 - Note: Current architecture uses batched processing with `add_order_batch`. Full migration requires
-  refactoring the Disruptor event handling to work with `EngineOutput` per order.
+  switching to `add_order_and_build_output()` per order.
 
 ### Phase 5: Cleanup (PARTIAL)
 - [x] Add deprecation markers to `LedgerCommand::TradeSettle` (never used)
 - [x] Add documentation comments to `LedgerCommand` variants
 - [x] Add integration tests for EngineOutput flow (`tests/tests_engine_output_flow.rs`)
+- [ ] Enable EngineOutput flow in server (when ready)
 - [ ] Remove old `LedgerCommand` variants (requires full migration)
 - [ ] Remove duplicate balance event logic from `settle_trade_atomically`
 - [ ] Simplify settlement code
-- [ ] Migrate Matching Engine server to single-order `EngineOutput` flow
 
 ## Integration Tests
 
