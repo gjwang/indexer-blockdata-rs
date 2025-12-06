@@ -341,6 +341,7 @@ async fn process_engine_output<W: std::io::Write>(
             "Sequence gap: expected {}, got {}", *last_output_seq + 1, output.output_seq);
     }
     let d_verify = t_verify.elapsed();
+
     // === PARALLEL DB WRITES ===
     // All these write to different tables, so can run concurrently
     let t_db = std::time::Instant::now();
@@ -348,20 +349,25 @@ async fn process_engine_output<W: std::io::Write>(
     let output_seq = output.output_seq;
     let output_hash = output.hash;
 
-    // Run all DB writes in parallel
-    let (log_result, bal_result, trade_result) = tokio::join!(
+    // Run ALL DB writes in parallel (including chain state persist)
+    let (log_result, bal_result, trade_result, persist_result) = tokio::join!(
         settlement_db.write_engine_output(output),
         settlement_db.append_balance_events_batch(&output.balance_events),
         settlement_db.insert_trades_batch(&output.trades, output_seq),
+        settlement_db.save_chain_state(output_seq, output_hash),
     );
 
     // Check results
     log_result.map_err(|e| format!("Failed to write engine_output: {}", e))?;
     bal_result.map_err(|e| format!("Balance events batch failed: {}", e))?;
     trade_result.map_err(|e| format!("Trades batch insert failed: {}", e))?;
+    persist_result.map_err(|e| format!("Failed to persist chain state: {}", e))?;
 
-    let d_log = t_db.elapsed(); // Combined time for all parallel ops
-    let d_balance = std::time::Duration::ZERO; // Included in d_log
+    let d_db = t_db.elapsed(); // Combined time for all parallel ops
+
+    // Update in-memory chain state after successful persist
+    *last_processed_hash = output_hash;
+    *last_output_seq = output_seq;
 
     // 6. StarRocks (async, fire-and-forget for all trades)
     let t_trade = std::time::Instant::now();
@@ -459,22 +465,12 @@ async fn process_engine_output<W: std::io::Write>(
     // 8. Flush CSV
     csv_writer.flush()?;
 
-    // 9. Update chain state (only after ALL success)
-    *last_processed_hash = output_hash;
-    *last_output_seq = output_seq;
-
-    // 10. PERSIST chain state to DB for crash recovery
-    let t_persist = std::time::Instant::now();
-    settlement_db.save_chain_state(*last_output_seq, *last_processed_hash).await
-        .map_err(|e| format!("Failed to persist chain state: {}", e))?;
-    let d_persist = t_persist.elapsed();
-
     let d_total = t_start.elapsed();
 
     // Log timing
     log::info!(target: LOG_TARGET,
-        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?} order={:?} persist={:?}",
-        output_seq, d_total, d_verify, d_log, d_trade, d_order, d_persist);
+        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?} order={:?}",
+        output_seq, d_total, d_verify, d_db, d_trade, d_order);
 
     Ok(())
 }
