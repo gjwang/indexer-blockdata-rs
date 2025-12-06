@@ -71,12 +71,18 @@ impl MessageDeduplicator {
     }
 
     /// Check if message timestamp is outside our tracked window
+    /// Only applies when queue is FULL - before that, rely on ID check alone
     /// Returns true if message should be rejected (too old to verify dedup)
     fn is_outside_tracked_window(&self, msg_ts: u64) -> bool {
-        if msg_ts == 0 || self.oldest_tracked_ts == 0 {
-            return false; // No timestamp or no messages tracked yet, allow
+        // Only enforce timestamp window when queue is at capacity
+        // Before full, we can still dedup by ID since queue has room
+        if self.offset_queue.len() < MAX_TRACKED_OFFSETS {
+            return false; // Queue not full, rely on ID check
         }
-        // Reject if message is older than the oldest message we can verify
+        if msg_ts == 0 || self.oldest_tracked_ts == 0 {
+            return false; // No timestamp info available
+        }
+        // Queue is full - reject if older than oldest tracked message
         msg_ts < self.oldest_tracked_ts
     }
 
