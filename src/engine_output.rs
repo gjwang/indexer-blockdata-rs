@@ -4,9 +4,10 @@
 //! - The original input (with CRC)
 //! - All output effects (order updates, trades, balance events)
 //! - Chain hash for verification (prev_hash → hash linkage)
+//! Uses xxh3_64 for fast 64-bit hashing (consistent with PURE_MEMORY_SMR_ARCH.md)
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use xxhash_rust::xxh3::xxh3_64;
 
 /// Complete output bundle from Matching Engine
 /// One input → One EngineOutput (with all effects)
@@ -17,9 +18,8 @@ pub struct EngineOutput {
     pub output_seq: u64,
 
     /// Hash of previous EngineOutput (chain linkage)
-    /// Genesis output has prev_hash = [0u8; 32]
-    #[serde(with = "hash_serde")]
-    pub prev_hash: [u8; 32],
+    /// Genesis output has prev_hash = 0
+    pub prev_hash: u64,
 
     // === INPUT (Self-contained) ===
     /// Original input data with integrity check
@@ -36,9 +36,8 @@ pub struct EngineOutput {
     pub balance_events: Vec<BalanceEvent>,
 
     // === SELF HASH ===
-    /// SHA256 of (output_seq || prev_hash || input || outputs)
-    #[serde(with = "hash_serde")]
-    pub hash: [u8; 32],
+    /// xxh3_64 of (output_seq || prev_hash || input || outputs)
+    pub hash: u64,
 }
 
 /// Original input with integrity check
@@ -152,7 +151,7 @@ impl EngineOutput {
     /// Create a new EngineOutput with computed hash
     pub fn new(
         output_seq: u64,
-        prev_hash: [u8; 32],
+        prev_hash: u64,
         input: InputBundle,
         order_update: Option<OrderUpdate>,
         trades: Vec<TradeOutput>,
@@ -165,107 +164,107 @@ impl EngineOutput {
             order_update,
             trades,
             balance_events,
-            hash: [0u8; 32],
+            hash: 0,
         };
         output.hash = output.compute_hash();
         output
     }
 
-    /// Compute SHA256 hash of this output
-    pub fn compute_hash(&self) -> [u8; 32] {
-        let mut hasher = Sha256::new();
+    /// Compute xxh3_64 hash of this output
+    pub fn compute_hash(&self) -> u64 {
+        let mut data = Vec::new();
 
         // Chain header
-        hasher.update(self.output_seq.to_le_bytes());
-        hasher.update(&self.prev_hash);
+        data.extend_from_slice(&self.output_seq.to_le_bytes());
+        data.extend_from_slice(&self.prev_hash.to_le_bytes());
 
         // Input
-        hasher.update(self.input.input_seq.to_le_bytes());
-        hasher.update(self.input.crc.to_le_bytes());
-        self.hash_input_data(&mut hasher);
+        data.extend_from_slice(&self.input.input_seq.to_le_bytes());
+        data.extend_from_slice(&self.input.crc.to_le_bytes());
+        self.hash_input_data(&mut data);
 
         // Order update
         if let Some(ref ou) = self.order_update {
-            hasher.update([1u8]); // marker: has order update
-            hasher.update(ou.order_id.to_le_bytes());
-            hasher.update(ou.user_id.to_le_bytes());
-            hasher.update([ou.status]);
-            hasher.update(ou.filled_qty.to_le_bytes());
-            hasher.update(ou.remaining_qty.to_le_bytes());
-            hasher.update(ou.avg_price.to_le_bytes());
-            hasher.update(ou.updated_at.to_le_bytes());
+            data.push(1u8); // marker: has order update
+            data.extend_from_slice(&ou.order_id.to_le_bytes());
+            data.extend_from_slice(&ou.user_id.to_le_bytes());
+            data.push(ou.status);
+            data.extend_from_slice(&ou.filled_qty.to_le_bytes());
+            data.extend_from_slice(&ou.remaining_qty.to_le_bytes());
+            data.extend_from_slice(&ou.avg_price.to_le_bytes());
+            data.extend_from_slice(&ou.updated_at.to_le_bytes());
         } else {
-            hasher.update([0u8]); // marker: no order update
+            data.push(0u8); // marker: no order update
         }
 
         // Trades
-        hasher.update((self.trades.len() as u32).to_le_bytes());
+        data.extend_from_slice(&(self.trades.len() as u32).to_le_bytes());
         for trade in &self.trades {
-            hasher.update(trade.trade_id.to_le_bytes());
-            hasher.update(trade.match_seq.to_le_bytes());
-            hasher.update(trade.buy_order_id.to_le_bytes());
-            hasher.update(trade.sell_order_id.to_le_bytes());
-            hasher.update(trade.buyer_user_id.to_le_bytes());
-            hasher.update(trade.seller_user_id.to_le_bytes());
-            hasher.update(trade.price.to_le_bytes());
-            hasher.update(trade.quantity.to_le_bytes());
-            hasher.update(trade.base_asset_id.to_le_bytes());
-            hasher.update(trade.quote_asset_id.to_le_bytes());
-            hasher.update(trade.buyer_refund.to_le_bytes());
-            hasher.update(trade.seller_refund.to_le_bytes());
-            hasher.update(trade.settled_at.to_le_bytes());
+            data.extend_from_slice(&trade.trade_id.to_le_bytes());
+            data.extend_from_slice(&trade.match_seq.to_le_bytes());
+            data.extend_from_slice(&trade.buy_order_id.to_le_bytes());
+            data.extend_from_slice(&trade.sell_order_id.to_le_bytes());
+            data.extend_from_slice(&trade.buyer_user_id.to_le_bytes());
+            data.extend_from_slice(&trade.seller_user_id.to_le_bytes());
+            data.extend_from_slice(&trade.price.to_le_bytes());
+            data.extend_from_slice(&trade.quantity.to_le_bytes());
+            data.extend_from_slice(&trade.base_asset_id.to_le_bytes());
+            data.extend_from_slice(&trade.quote_asset_id.to_le_bytes());
+            data.extend_from_slice(&trade.buyer_refund.to_le_bytes());
+            data.extend_from_slice(&trade.seller_refund.to_le_bytes());
+            data.extend_from_slice(&trade.settled_at.to_le_bytes());
         }
 
         // Balance events
-        hasher.update((self.balance_events.len() as u32).to_le_bytes());
+        data.extend_from_slice(&(self.balance_events.len() as u32).to_le_bytes());
         for event in &self.balance_events {
-            hasher.update(event.user_id.to_le_bytes());
-            hasher.update(event.asset_id.to_le_bytes());
-            hasher.update(event.seq.to_le_bytes());
-            hasher.update(event.delta_avail.to_le_bytes());
-            hasher.update(event.delta_frozen.to_le_bytes());
-            hasher.update(event.avail.to_le_bytes());
-            hasher.update(event.frozen.to_le_bytes());
-            hasher.update(event.event_type.as_bytes());
-            hasher.update(event.ref_id.to_le_bytes());
+            data.extend_from_slice(&event.user_id.to_le_bytes());
+            data.extend_from_slice(&event.asset_id.to_le_bytes());
+            data.extend_from_slice(&event.seq.to_le_bytes());
+            data.extend_from_slice(&event.delta_avail.to_le_bytes());
+            data.extend_from_slice(&event.delta_frozen.to_le_bytes());
+            data.extend_from_slice(&event.avail.to_le_bytes());
+            data.extend_from_slice(&event.frozen.to_le_bytes());
+            data.extend_from_slice(event.event_type.as_bytes());
+            data.extend_from_slice(&event.ref_id.to_le_bytes());
         }
 
-        hasher.finalize().into()
+        xxh3_64(&data)
     }
 
-    fn hash_input_data(&self, hasher: &mut Sha256) {
+    fn hash_input_data(&self, data: &mut Vec<u8>) {
         match &self.input.data {
             InputData::PlaceOrder(o) => {
-                hasher.update([1u8]); // type marker
-                hasher.update(o.order_id.to_le_bytes());
-                hasher.update(o.user_id.to_le_bytes());
-                hasher.update(o.symbol_id.to_le_bytes());
-                hasher.update([o.side]);
-                hasher.update([o.order_type]);
-                hasher.update(o.price.to_le_bytes());
-                hasher.update(o.quantity.to_le_bytes());
-                hasher.update(o.cid.as_bytes());
-                hasher.update(o.created_at.to_le_bytes());
+                data.push(1u8); // type marker
+                data.extend_from_slice(&o.order_id.to_le_bytes());
+                data.extend_from_slice(&o.user_id.to_le_bytes());
+                data.extend_from_slice(&o.symbol_id.to_le_bytes());
+                data.push(o.side);
+                data.push(o.order_type);
+                data.extend_from_slice(&o.price.to_le_bytes());
+                data.extend_from_slice(&o.quantity.to_le_bytes());
+                data.extend_from_slice(o.cid.as_bytes());
+                data.extend_from_slice(&o.created_at.to_le_bytes());
             }
             InputData::CancelOrder(c) => {
-                hasher.update([2u8]);
-                hasher.update(c.order_id.to_le_bytes());
-                hasher.update(c.user_id.to_le_bytes());
-                hasher.update(c.created_at.to_le_bytes());
+                data.push(2u8);
+                data.extend_from_slice(&c.order_id.to_le_bytes());
+                data.extend_from_slice(&c.user_id.to_le_bytes());
+                data.extend_from_slice(&c.created_at.to_le_bytes());
             }
             InputData::Deposit(d) => {
-                hasher.update([3u8]);
-                hasher.update(d.user_id.to_le_bytes());
-                hasher.update(d.asset_id.to_le_bytes());
-                hasher.update(d.amount.to_le_bytes());
-                hasher.update(d.created_at.to_le_bytes());
+                data.push(3u8);
+                data.extend_from_slice(&d.user_id.to_le_bytes());
+                data.extend_from_slice(&d.asset_id.to_le_bytes());
+                data.extend_from_slice(&d.amount.to_le_bytes());
+                data.extend_from_slice(&d.created_at.to_le_bytes());
             }
             InputData::Withdraw(w) => {
-                hasher.update([4u8]);
-                hasher.update(w.user_id.to_le_bytes());
-                hasher.update(w.asset_id.to_le_bytes());
-                hasher.update(w.amount.to_le_bytes());
-                hasher.update(w.created_at.to_le_bytes());
+                data.push(4u8);
+                data.extend_from_slice(&w.user_id.to_le_bytes());
+                data.extend_from_slice(&w.asset_id.to_le_bytes());
+                data.extend_from_slice(&w.amount.to_le_bytes());
+                data.extend_from_slice(&w.created_at.to_le_bytes());
             }
         }
     }
@@ -281,8 +280,8 @@ impl EngineOutput {
     }
 
     /// Verify chain linkage with just the previous hash
-    pub fn verify_prev_hash(&self, expected_prev_hash: &[u8; 32]) -> bool {
-        self.prev_hash == *expected_prev_hash
+    pub fn verify_prev_hash(&self, expected_prev_hash: u64) -> bool {
+        self.prev_hash == expected_prev_hash
     }
 }
 
@@ -306,34 +305,8 @@ impl InputBundle {
     }
 }
 
-/// Serde helper for [u8; 32] hash arrays
-mod hash_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(hash: &[u8; 32], serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(hash))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
-        if bytes.len() != 32 {
-            return Err(serde::de::Error::custom("hash must be 32 bytes"));
-        }
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&bytes);
-        Ok(arr)
-    }
-}
-
-/// Genesis hash (all zeros) for first output
-pub const GENESIS_HASH: [u8; 32] = [0u8; 32];
+/// Genesis hash (zero) for first output
+pub const GENESIS_HASH: u64 = 0;
 
 #[cfg(test)]
 mod tests {
@@ -384,13 +357,13 @@ mod tests {
         );
 
         // Verify hash is non-zero
-        assert_ne!(output.hash, [0u8; 32]);
+        assert_ne!(output.hash, 0);
 
         // Verify self-verification
         assert!(output.verify());
 
         // Verify prev_hash check
-        assert!(output.verify_prev_hash(&GENESIS_HASH));
+        assert!(output.verify_prev_hash(GENESIS_HASH));
     }
 
     #[test]
@@ -449,7 +422,7 @@ mod tests {
 
         // Verify chain
         assert!(output2.verify_chain(&output1));
-        assert!(output2.verify_prev_hash(&output1.hash));
+        assert!(output2.verify_prev_hash(output1.hash));
 
         // Verify integrity
         assert!(output1.verify());
