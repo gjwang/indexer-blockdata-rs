@@ -736,6 +736,104 @@ impl SettlementDb {
         Ok(())
     }
 
+    /// Batch append balance events (much faster than individual calls)
+    /// Uses ScyllaDB BATCH for single round-trip
+    pub async fn append_balance_events_batch(
+        &self,
+        events: &[crate::engine_output::BalanceEvent],
+    ) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
+        use scylla::batch::BatchType;
+        let mut batch = Batch::new(BatchType::Unlogged);
+        let now = get_current_timestamp_ms();
+
+        // Add all balance_ledger inserts and user_balances updates to batch
+        for event in events {
+            // balance_ledger insert
+            batch.append_statement(INSERT_BALANCE_EVENT_CQL);
+            // user_balances update
+            batch.append_statement(
+                "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+            );
+        }
+
+        // Build values for all statements
+        let mut values: Vec<(i64, i32, i64, i64, i64, i64, i64, String, i64, i64)> = Vec::with_capacity(events.len());
+        let mut user_values: Vec<(i64, i32, i64, i64, i64, i64)> = Vec::with_capacity(events.len());
+
+        for event in events {
+            values.push((
+                event.user_id as i64,
+                event.asset_id as i32,
+                event.seq as i64,
+                event.delta_avail,
+                event.delta_frozen,
+                event.avail,
+                event.frozen,
+                event.event_type.clone(),
+                event.ref_id as i64,
+                now as i64,
+            ));
+            user_values.push((
+                event.user_id as i64,
+                event.asset_id as i32,
+                event.avail,
+                event.frozen,
+                event.seq as i64,
+                now as i64,
+            ));
+        }
+
+        // Execute alternating batch (ledger, user, ledger, user, ...)
+        // Actually, ScyllaDB batch with different statement types is tricky
+        // Let's use a simpler approach: batch all ledger, then batch all user_balances
+
+        let mut ledger_batch = Batch::new(BatchType::Unlogged);
+        for _ in events {
+            ledger_batch.append_statement(INSERT_BALANCE_EVENT_CQL);
+        }
+
+        let ledger_values: Vec<_> = events.iter().map(|e| (
+            e.user_id as i64,
+            e.asset_id as i32,
+            e.seq as i64,
+            e.delta_avail,
+            e.delta_frozen,
+            e.avail,
+            e.frozen,
+            e.event_type.clone(),
+            e.ref_id as i64,
+            now as i64,
+        )).collect();
+
+        self.session.batch(&ledger_batch, ledger_values).await
+            .context("Failed to batch insert balance_ledger")?;
+
+        let mut user_batch = Batch::new(BatchType::Unlogged);
+        let user_stmt = "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)";
+        for _ in events {
+            user_batch.append_statement(user_stmt);
+        }
+
+        let user_values: Vec<_> = events.iter().map(|e| (
+            e.user_id as i64,
+            e.asset_id as i32,
+            e.avail,
+            e.frozen,
+            e.seq as i64,
+            now as i64,
+        )).collect();
+
+        self.session.batch(&user_batch, user_values).await
+            .context("Failed to batch update user_balances")?;
+
+        log::debug!("Batch processed {} balance events", events.len());
+        Ok(())
+    }
+
     /// Deposit - append-only version (v2)
     pub async fn deposit(
         &self,

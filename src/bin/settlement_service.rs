@@ -293,24 +293,10 @@ async fn process_engine_output<W: std::io::Write>(
 
     // === DERIVED STATE: All operations below derive from the logged output ===
 
-    // 5. Process balance events - FAIL on ANY error
+    // 5. Process balance events - BATCH for performance
     let t_balance = std::time::Instant::now();
-    for balance_event in &output.balance_events {
-        settlement_db.append_balance_event(
-            balance_event.user_id,
-            balance_event.asset_id,
-            balance_event.seq,
-            balance_event.delta_avail,
-            balance_event.delta_frozen,
-            balance_event.avail,
-            balance_event.frozen,
-            &balance_event.event_type,
-            balance_event.ref_id,
-        ).await.map_err(|e| format!(
-            "Balance event failed: user={} asset={} type={}: {}",
-            balance_event.user_id, balance_event.asset_id, balance_event.event_type, e
-        ))?;
-    }
+    settlement_db.append_balance_events_batch(&output.balance_events).await
+        .map_err(|e| format!("Balance events batch failed: {}", e))?;
     let d_balance = t_balance.elapsed();
 
     // 6. Process trades - FAIL on ANY error
