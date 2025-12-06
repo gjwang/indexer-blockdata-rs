@@ -1325,4 +1325,37 @@ impl SettlementDb {
 
         Ok(result.rows.is_some() && !result.rows.unwrap().is_empty())
     }
+
+    /// Get the last processed chain state for crash recovery
+    pub async fn get_chain_state(&self) -> Result<(u64, u64)> {
+        const QUERY: &str = "SELECT last_output_seq, last_hash FROM settlement_state WHERE partition_key = 'main'";
+
+        let result = self.session.query(QUERY, &[]).await
+            .context("Failed to query settlement_state")?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                let seq: i64 = row.columns[0].as_ref()
+                    .and_then(|v| v.as_bigint())
+                    .unwrap_or(0);
+                let hash: i64 = row.columns[1].as_ref()
+                    .and_then(|v| v.as_bigint())
+                    .unwrap_or(0);
+                return Ok((seq as u64, hash as u64));
+            }
+        }
+
+        Ok((0, 0)) // No state found, start from beginning
+    }
+
+    /// Save chain state after successful processing
+    pub async fn save_chain_state(&self, last_output_seq: u64, last_hash: u64) -> Result<()> {
+        const QUERY: &str = "INSERT INTO settlement_state (partition_key, last_output_seq, last_hash, updated_at) VALUES ('main', ?, ?, ?)";
+
+        let now = get_current_timestamp_ms();
+        self.session.query(QUERY, (last_output_seq as i64, last_hash as i64, now as i64)).await
+            .context("Failed to save settlement_state")?;
+
+        Ok(())
+    }
 }

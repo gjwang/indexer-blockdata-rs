@@ -156,3 +156,13 @@ CREATE TABLE IF NOT EXISTS order_statistics (
     updated_at bigint,
     PRIMARY KEY (user_id)
 );
+
+-- Settlement Chain State (for crash recovery)
+-- Tracks last processed EngineOutput to skip duplicates on restart
+CREATE TABLE IF NOT EXISTS settlement_state (
+    partition_key text,
+    last_output_seq bigint,
+    last_hash bigint,
+    updated_at bigint,
+    PRIMARY KEY (partition_key)
+);

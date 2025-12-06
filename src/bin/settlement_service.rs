@@ -111,11 +111,21 @@ async fn main() {
 
     let mut total_settled: u64 = 0;
     let mut total_errors: u64 = 0;
-    let mut total_history_events = 0u64;
+    let _total_history_events = 0u64;
 
-    // Chain verification state
-    let mut last_processed_hash: u64 = GENESIS_HASH;
-    let mut last_output_seq: u64 = 0;
+    // Chain verification state - LOAD FROM DB for crash recovery
+    let (mut last_output_seq, mut last_processed_hash) = match settlement_db.get_chain_state().await {
+        Ok((seq, hash)) => {
+            if seq > 0 {
+                log::info!(target: LOG_TARGET, "🔄 Recovered chain state: seq={} hash={}", seq, hash);
+            }
+            (seq, hash)
+        }
+        Err(e) => {
+            log::warn!(target: LOG_TARGET, "⚠️ Failed to load chain state (using defaults): {}", e);
+            (0u64, GENESIS_HASH)
+        }
+    };
 
     // CSV Writer
     let file = std::fs::OpenOptions::new()
@@ -378,6 +388,10 @@ async fn process_engine_output<W: std::io::Write>(
     // 9. Update chain state (only after ALL success)
     *last_processed_hash = output.hash;
     *last_output_seq = output.output_seq;
+
+    // 10. PERSIST chain state to DB for crash recovery
+    settlement_db.save_chain_state(*last_output_seq, *last_processed_hash).await
+        .map_err(|e| format!("Failed to persist chain state: {}", e))?;
 
     Ok(())
 }
