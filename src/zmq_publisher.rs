@@ -15,12 +15,13 @@ impl ZmqPublisher {
     pub fn new(settlement_port: u16, market_data_port: u16) -> Result<Self, zmq::Error> {
         let context = Context::new();
 
+        // PUSH socket for settlement - BLOCKS when buffer full (back-pressure)
         let settlement_pub = context.socket(PUSH)?;
-        settlement_pub.set_sndhwm(1_000_000)?;
-        settlement_pub.set_linger(0)?; // Don't wait on close
-        settlement_pub.set_immediate(true)?; // Drop messages if peer not connected
+        settlement_pub.set_sndhwm(0)?; // 0 = no limit (blocks instead of dropping)
+        settlement_pub.set_linger(-1)?; // Wait forever to send buffered messages on close
+        // Note: We removed set_immediate - PUSH will queue messages until peer connects
         settlement_pub.connect(&format!("tcp://localhost:{}", settlement_port))?;
-        println!("   [ZMQ] Settlement PUSH connected to port {}", settlement_port);
+        println!("   [ZMQ] Settlement PUSH connected to port {} (blocking mode)", settlement_port);
 
         let market_data_pub = context.socket(PUB)?;
         market_data_pub.set_sndhwm(1_000_000)?;
