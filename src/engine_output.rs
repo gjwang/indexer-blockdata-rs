@@ -308,6 +308,82 @@ impl InputBundle {
 /// Genesis hash (zero) for first output
 pub const GENESIS_HASH: u64 = 0;
 
+/// Builder for incrementally constructing EngineOutput during order processing
+#[derive(Debug)]
+pub struct EngineOutputBuilder {
+    output_seq: u64,
+    prev_hash: u64,
+    input: Option<InputBundle>,
+    order_update: Option<OrderUpdate>,
+    trades: Vec<TradeOutput>,
+    balance_events: Vec<BalanceEvent>,
+}
+
+impl EngineOutputBuilder {
+    /// Create a new builder with chain header
+    pub fn new(output_seq: u64, prev_hash: u64) -> Self {
+        Self {
+            output_seq,
+            prev_hash,
+            input: None,
+            order_update: None,
+            trades: Vec::new(),
+            balance_events: Vec::new(),
+        }
+    }
+
+    /// Set the input bundle
+    pub fn with_input(mut self, input: InputBundle) -> Self {
+        self.input = Some(input);
+        self
+    }
+
+    /// Set the input bundle (mutable reference version)
+    pub fn set_input(&mut self, input: InputBundle) {
+        self.input = Some(input);
+    }
+
+    /// Set the order update
+    pub fn with_order_update(mut self, update: OrderUpdate) -> Self {
+        self.order_update = Some(update);
+        self
+    }
+
+    /// Set the order update (mutable reference version)
+    pub fn set_order_update(&mut self, update: OrderUpdate) {
+        self.order_update = Some(update);
+    }
+
+    /// Add a trade output
+    pub fn add_trade(&mut self, trade: TradeOutput) {
+        self.trades.push(trade);
+    }
+
+    /// Add a balance event
+    pub fn add_balance_event(&mut self, event: BalanceEvent) {
+        self.balance_events.push(event);
+    }
+
+    /// Build the final EngineOutput (computes hash)
+    /// Returns None if input is not set
+    pub fn build(self) -> Option<EngineOutput> {
+        let input = self.input?;
+        Some(EngineOutput::new(
+            self.output_seq,
+            self.prev_hash,
+            input,
+            self.order_update,
+            self.trades,
+            self.balance_events,
+        ))
+    }
+
+    /// Build the final EngineOutput, panicking if input is not set
+    pub fn build_unchecked(self) -> EngineOutput {
+        self.build().expect("EngineOutputBuilder: input must be set before build")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,5 +515,98 @@ mod tests {
         }));
 
         assert!(input.verify_crc());
+    }
+
+    #[test]
+    fn test_engine_output_builder() {
+        // Test the builder pattern
+        let mut builder = EngineOutputBuilder::new(1, GENESIS_HASH);
+
+        // Set input
+        builder.set_input(InputBundle::new(
+            100,
+            InputData::PlaceOrder(PlaceOrderInput {
+                order_id: 12345,
+                user_id: 1001,
+                symbol_id: 0,
+                side: 1, // Buy
+                order_type: 1, // Limit
+                price: 15000,
+                quantity: 100,
+                cid: "test_cid".into(),
+                created_at: 1700000000000,
+            }),
+        ));
+
+        // Add order update
+        builder.set_order_update(OrderUpdate {
+            order_id: 12345,
+            user_id: 1001,
+            status: 1,
+            filled_qty: 100,
+            remaining_qty: 0,
+            avg_price: 14950,
+            updated_at: 1700000000001,
+        });
+
+        // Add a trade
+        builder.add_trade(TradeOutput {
+            trade_id: 99999,
+            match_seq: 1,
+            buy_order_id: 12345,
+            sell_order_id: 12346,
+            buyer_user_id: 1001,
+            seller_user_id: 1002,
+            price: 14950,
+            quantity: 100,
+            base_asset_id: 1,
+            quote_asset_id: 2,
+            buyer_refund: 5000, // 15000*100 - 14950*100 = 5000
+            seller_refund: 0,
+            settled_at: 0,
+        });
+
+        // Add balance events
+        builder.add_balance_event(BalanceEvent {
+            user_id: 1001,
+            asset_id: 2, // quote deducted
+            seq: 1,
+            delta_avail: -1495000,
+            delta_frozen: 0,
+            avail: 505000,
+            frozen: 0,
+            event_type: "trade_debit".into(),
+            ref_id: 99999,
+        });
+
+        builder.add_balance_event(BalanceEvent {
+            user_id: 1001,
+            asset_id: 1, // base credited
+            seq: 1,
+            delta_avail: 100,
+            delta_frozen: 0,
+            avail: 100,
+            frozen: 0,
+            event_type: "trade_credit".into(),
+            ref_id: 99999,
+        });
+
+        // Build
+        let output = builder.build().expect("should build successfully");
+
+        // Verify
+        assert_eq!(output.output_seq, 1);
+        assert_eq!(output.prev_hash, GENESIS_HASH);
+        assert!(output.verify());
+        assert!(output.order_update.is_some());
+        assert_eq!(output.trades.len(), 1);
+        assert_eq!(output.balance_events.len(), 2);
+    }
+
+    #[test]
+    fn test_engine_output_builder_no_input() {
+        // Builder should return None if input is not set
+        let builder = EngineOutputBuilder::new(1, GENESIS_HASH);
+        assert!(builder.build().is_none());
     }
 }

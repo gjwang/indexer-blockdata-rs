@@ -388,29 +388,65 @@ The `balance_ledger` table stays the same, but now ALL balance events come from 
 
 ## Migration Plan
 
-### Phase 1: Add EngineOutput structure
-- Create new data structures in `src/ledger/engine_output.rs`
-- Add hash computation functions
-- Add serialization (FlatBuffers or JSON)
+### Phase 1: Add EngineOutput structure ✅ COMPLETED
+- [x] Create new data structures in `src/engine_output.rs`
+- [x] Add hash computation functions (xxh3_64)
+- [x] Add serialization (serde JSON)
+- [x] Add `EngineOutputBuilder` for incremental construction
+- [x] Add unit tests for hashing, chain verification, CRC
 
-### Phase 2: Update Matching Engine
-- Modify `process_order` to build `EngineOutput`
-- Send single output instead of multiple commands
-- Maintain chain hash state
+### Phase 2: Update Matching Engine ✅ COMPLETED
+- [x] Add `last_output_hash` field to `MatchingEngine` struct
+- [x] Add `last_output_hash` to `EngineSnapshot` for persistence
+- [x] Add `get_frozen` method to `Ledger` trait for frozen balance queries
+- [x] Implement `process_order_with_output()` - builds `EngineOutput` with all effects
+- [x] Add public `add_order_and_build_output()` method for external access
+- [x] Chain hash state maintained (`last_output_hash` updated after each output)
+- [x] Balance events captured: lock, trade_credit, trade_debit, trade_refund
 
-### Phase 3: Update Settlement Service
-- Add chain verification logic
-- Process `EngineOutput` atomically
-- Store `last_hash` for verification
+### Phase 3: Update Settlement Service ✅ COMPLETED
+- [x] Add chain verification logic (`verify_prev_hash`, `verify` hash)
+- [x] Add sequence continuity verification (with warning on gaps)
+- [x] Process `EngineOutput` atomically in `process_engine_output()`
+- [x] Track `last_processed_hash` and `last_output_seq` for chain state
+- [x] Process balance events (deposit, unlock, withdraw from EngineOutput)
+- [x] Process trades via `settle_trade_atomically`
+- [x] Process order history updates
+- [x] Fallback to LedgerCommand for backward compatibility
 
-### Phase 4: Update ZMQ Protocol
-- Change message format from `LedgerCommand` to `EngineOutput`
-- Add version field for backward compatibility
+### Phase 4: Update ZMQ Protocol (PARTIAL)
+- [x] Add `publish_engine_output()` method to `ZmqPublisher`
+- [x] JSON serialization for `EngineOutput` (via serde_json)
+- [ ] *(Optional)* Modify Matching Engine server's Disruptor consumer to use `add_order_and_build_output`
+- Note: Current architecture uses batched processing with `add_order_batch`. Full migration requires
+  refactoring the Disruptor event handling to work with `EngineOutput` per order.
 
-### Phase 5: Cleanup
-- Remove old `LedgerCommand` variants
-- Remove duplicate balance event logic from `settle_trade_atomically`
-- Simplify settlement code
+### Phase 5: Cleanup (PARTIAL)
+- [x] Add deprecation markers to `LedgerCommand::TradeSettle` (never used)
+- [x] Add documentation comments to `LedgerCommand` variants
+- [x] Add integration tests for EngineOutput flow (`tests/tests_engine_output_flow.rs`)
+- [ ] Remove old `LedgerCommand` variants (requires full migration)
+- [ ] Remove duplicate balance event logic from `settle_trade_atomically`
+- [ ] Simplify settlement code
+- [ ] Migrate Matching Engine server to single-order `EngineOutput` flow
+
+## Integration Tests
+
+Three integration tests verify the full EngineOutput flow:
+
+1. **`test_matching_engine_produces_valid_engine_output`**
+   - Verifies `add_order_and_build_output` produces valid `EngineOutput`
+   - Confirms hash verification, input CRC, order update, balance events
+
+2. **`test_engine_output_chain_verification`**
+   - Verifies chain linkage between consecutive outputs
+   - Confirms trade matching produces correct `TradeOutput`
+   - Verifies `prev_hash` chains correctly
+
+3. **`test_settlement_chain_verification_logic`**
+   - Simulates settlement service verification
+   - Tests `verify_prev_hash`, `verify`, sequence checks
+   - Verifies broken chain detection
 
 ## Benefits Summary
 
@@ -425,11 +461,11 @@ The `balance_ledger` table stays the same, but now ALL balance events come from 
 
 ## Timeline Estimate
 
-- Phase 1: 2 hours (data structures)
-- Phase 2: 4 hours (ME changes)
-- Phase 3: 3 hours (Settlement changes)
-- Phase 4: 1 hour (ZMQ protocol)
-- Phase 5: 2 hours (cleanup)
-- Testing: 4 hours
+- Phase 1: 2 hours (data structures) ✅
+- Phase 2: 4 hours (ME changes) ✅
+- Phase 3: 3 hours (Settlement changes) ✅
+- Phase 4: 1 hour (ZMQ protocol) ✅ (partial)
+- Phase 5: 2 hours (cleanup) 🟡 (partial)
+- Testing: 4 hours ✅
 
-**Total: ~16 hours**
+**Total: ~16 hours - Core refactor complete, full migration pending**
