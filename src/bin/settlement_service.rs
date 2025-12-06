@@ -136,6 +136,11 @@ async fn main() {
         .expect("Failed to open backup CSV file");
     let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(file);
 
+    // Reorder buffer for out-of-order ZMQ messages
+    // Key: output_seq, Value: EngineOutput
+    let mut reorder_buffer: std::collections::BTreeMap<u64, EngineOutput> = std::collections::BTreeMap::new();
+    const MAX_BUFFER_SIZE: usize = 1000; // Max buffered messages before force-processing
+
     let mut msg_count = 0u64;
     loop {
         msg_count += 1;
@@ -155,18 +160,24 @@ async fn main() {
         // EngineOutput is now the only supported message type
         match serde_json::from_slice::<EngineOutput>(&data) {
             Ok(engine_output) => {
-                // Process EngineOutput with chain verification
-                match process_engine_output(
-                    &settlement_db,
-                    &order_history_db,
-                    &starrocks_client,
-                    &engine_output,
-                    &mut last_processed_hash,
-                    &mut last_output_seq,
-                    &mut wtr,
-                    msg_count,
-                ).await {
-                    Ok(_) => {
+                let seq = engine_output.output_seq;
+                let expected_seq = last_output_seq + 1;
+
+                if seq == expected_seq {
+                    // In order - process immediately
+                    if let Err(e) = process_engine_output(
+                        &settlement_db,
+                        &order_history_db,
+                        &starrocks_client,
+                        &engine_output,
+                        &mut last_processed_hash,
+                        &mut last_output_seq,
+                        &mut wtr,
+                        msg_count,
+                    ).await {
+                        total_errors += 1;
+                        log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
+                    } else {
                         total_settled += engine_output.trades.len() as u64;
                         log::info!(target: LOG_TARGET,
                             "✅ Processed EngineOutput seq={} trades={} balance_events={}",
@@ -175,10 +186,92 @@ async fn main() {
                             engine_output.balance_events.len()
                         );
                     }
-                    Err(e) => {
-                        total_errors += 1;
-                        log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
+
+                    // Now drain any buffered messages that are ready
+                    while let Some((&next_seq, _)) = reorder_buffer.first_key_value() {
+                        if next_seq == last_output_seq + 1 {
+                            let buffered = reorder_buffer.remove(&next_seq).unwrap();
+                            if let Err(e) = process_engine_output(
+                                &settlement_db,
+                                &order_history_db,
+                                &starrocks_client,
+                                &buffered,
+                                &mut last_processed_hash,
+                                &mut last_output_seq,
+                                &mut wtr,
+                                msg_count,
+                            ).await {
+                                total_errors += 1;
+                                log::error!(target: LOG_TARGET, "❌ Buffered EngineOutput processing failed: {}", e);
+                                break; // Stop draining on error
+                            } else {
+                                total_settled += buffered.trades.len() as u64;
+                                log::info!(target: LOG_TARGET,
+                                    "✅ Processed buffered EngineOutput seq={} trades={} balance_events={}",
+                                    buffered.output_seq, buffered.trades.len(), buffered.balance_events.len()
+                                );
+                            }
+                        } else {
+                            break; // Gap remains, wait for more messages
+                        }
                     }
+                } else if seq > expected_seq {
+                    // Future message - buffer it
+                    if reorder_buffer.len() < MAX_BUFFER_SIZE {
+                        log::debug!(target: LOG_TARGET,
+                            "📦 Buffering out-of-order seq={} (expected {}), buffer_size={}",
+                            seq, expected_seq, reorder_buffer.len() + 1
+                        );
+                        reorder_buffer.insert(seq, engine_output);
+                    } else {
+                        // Buffer full - force skip the gap and continue
+                        // This prevents getting stuck forever on lost messages
+                        log::warn!(target: LOG_TARGET,
+                            "⚠️ Buffer full! Force-skipping from seq={} to seq={}. Lost {} messages.",
+                            last_output_seq, seq - 1, seq - last_output_seq - 1
+                        );
+                        // Update state to skip the gap (treat missing as lost)
+                        // IMPORTANT: Also reset hash chain to accept the new sequence
+                        last_output_seq = seq - 1;
+                        last_processed_hash = engine_output.prev_hash; // Accept the incoming chain
+
+                        // Clear obsolete buffered messages (those we've now skipped past)
+                        reorder_buffer.retain(|&s, _| s > last_output_seq);
+
+                        // Try to process this message now
+                        reorder_buffer.insert(seq, engine_output);
+                        // Drain what we can
+                        while let Some((&next_seq, _)) = reorder_buffer.first_key_value() {
+                            if next_seq == last_output_seq + 1 {
+                                let buffered = reorder_buffer.remove(&next_seq).unwrap();
+                                if let Err(e) = process_engine_output(
+                                    &settlement_db,
+                                    &order_history_db,
+                                    &starrocks_client,
+                                    &buffered,
+                                    &mut last_processed_hash,
+                                    &mut last_output_seq,
+                                    &mut wtr,
+                                    msg_count,
+                                ).await {
+                                    total_errors += 1;
+                                    log::error!(target: LOG_TARGET, "❌ Gap-skip EngineOutput processing failed: {}", e);
+                                    break;
+                                } else {
+                                    total_settled += buffered.trades.len() as u64;
+                                    log::info!(target: LOG_TARGET,
+                                        "✅ Processed gap-skip EngineOutput seq={} trades={} balance_events={}",
+                                        buffered.output_seq, buffered.trades.len(), buffered.balance_events.len()
+                                    );
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                } else {
+                    // Past message - already processed, skip (idempotency)
+                    log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", seq);
                 }
             }
             Err(e) => {

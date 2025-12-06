@@ -103,7 +103,8 @@ echo "=== Step 9: Sending test orders (2 seconds) ==="
 CLIENT_PID=$!
 sleep 2
 kill $CLIENT_PID || true
-sleep 2
+echo "  Waiting for settlement to catch up..."
+sleep 10
 
 echo ""
 echo "=========================================="
