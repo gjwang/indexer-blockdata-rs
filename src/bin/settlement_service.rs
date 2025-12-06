@@ -176,28 +176,29 @@ async fn main() {
                              }
                          }
                     },
-                    // Balance Updates via LedgerCommand
-                    LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version } => {
-                        match settlement_db.update_balance_for_deposit(user_id, asset_id, amount, balance_after, version).await {
-                            Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Deposit User {} Asset {} -> Version {}", user_id, asset_id, v),
+                    // Balance Updates via LedgerCommand -> Append-only ledger
+                    LedgerCommand::Deposit { user_id, asset_id, amount, balance_after: _, version } => {
+                        // version is seq, ref_id can be 0 for now (no order/trade ref)
+                        match settlement_db.deposit_v2(user_id, asset_id, amount, version, 0).await {
+                            Ok(bal) => log::info!(target: LOG_TARGET, "Deposit User {} Asset {} -> Seq {}", user_id, asset_id, bal.seq),
                             Err(e) => log::error!(target: LOG_TARGET, "Deposit Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Lock { user_id, asset_id, amount, balance_after, version } => {
-                        match settlement_db.update_balance_for_lock(user_id, asset_id, amount, balance_after, version).await {
-                            Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Lock User {} Asset {} -> Version {}", user_id, asset_id, v),
+                    LedgerCommand::Lock { user_id, asset_id, amount, balance_after: _, version } => {
+                        match settlement_db.lock_v2(user_id, asset_id, amount, version, 0).await {
+                            Ok(bal) => log::info!(target: LOG_TARGET, "Lock User {} Asset {} -> Seq {}", user_id, asset_id, bal.seq),
                             Err(e) => log::error!(target: LOG_TARGET, "Lock Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Unlock { user_id, asset_id, amount, balance_after, version } => {
-                        match settlement_db.update_balance_for_unlock(user_id, asset_id, amount, balance_after, version).await {
-                            Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Unlock User {} Asset {} -> Version {}", user_id, asset_id, v),
+                    LedgerCommand::Unlock { user_id, asset_id, amount, balance_after: _, version } => {
+                        match settlement_db.unlock_v2(user_id, asset_id, amount, version, 0).await {
+                            Ok(bal) => log::info!(target: LOG_TARGET, "Unlock User {} Asset {} -> Seq {}", user_id, asset_id, bal.seq),
                             Err(e) => log::error!(target: LOG_TARGET, "Unlock Failed: {}", e),
                         }
                     },
-                    LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version } => {
-                        match settlement_db.update_balance_for_withdraw(user_id, asset_id, amount, balance_after, version).await {
-                            Ok((_, _, _, v)) => log::info!(target: LOG_TARGET, "Withdraw User {} Asset {} -> Version {}", user_id, asset_id, v),
+                    LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after: _, version } => {
+                        match settlement_db.withdraw_v2(user_id, asset_id, amount, version, 0).await {
+                            Ok(bal) => log::info!(target: LOG_TARGET, "Withdraw User {} Asset {} -> Seq {}", user_id, asset_id, bal.seq),
                             Err(e) => log::error!(target: LOG_TARGET, "Withdraw Failed: {}", e),
                         }
                     },
