@@ -257,6 +257,10 @@ async fn transfer_out(
             .map_err(|e| {
                 eprintln!("DB Error getting balance: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
+            })?
+            .ok_or_else(|| {
+                eprintln!("No balance for user {} asset {} - deposit required first", payload.user_id, asset_id);
+                StatusCode::BAD_REQUEST
             })?;
 
         let next_seq = (current.seq + 1) as u64;
