@@ -337,67 +337,43 @@ async fn process_engine_output<W: std::io::Write>(
         // Allow processing anyway but log warning
     }
 
-    // 4. Process balance events (append to balance_ledger)
+    // 4. Process balance events - append to balance_ledger
+    // The EngineOutput contains fully computed balance events with final state
     for balance_event in &output.balance_events {
-        // Map event_type to the appropriate settlement_db method
-        // For now, we use append_balance_event which is internal
-        // The balance events from EngineOutput contain all the computed state
         log::debug!(target: LOG_TARGET,
-            "Balance event: user={} asset={} type={} delta_avail={} delta_frozen={}",
+            "Balance event: user={} asset={} type={} delta_avail={} delta_frozen={} avail={} frozen={}",
             balance_event.user_id,
             balance_event.asset_id,
             balance_event.event_type,
             balance_event.delta_avail,
-            balance_event.delta_frozen
+            balance_event.delta_frozen,
+            balance_event.avail,
+            balance_event.frozen
         );
 
-        // Call the appropriate method based on event type
-        match balance_event.event_type.as_str() {
-            "lock" => {
-                // Lock already applied during ME processing, just log
-                log::debug!(target: LOG_TARGET, "Lock event processed from EngineOutput");
-            }
-            "trade_credit" | "trade_debit" | "trade_refund" => {
-                // Trade events are handled by settle_trade_atomically
-                // These are informational in EngineOutput
-                log::debug!(target: LOG_TARGET, "Trade balance event: {}", balance_event.event_type);
-            }
-            "deposit" => {
-                let _ = settlement_db.deposit(
-                    balance_event.user_id,
-                    balance_event.asset_id,
-                    balance_event.delta_avail as u64,
-                    balance_event.seq,
-                    balance_event.ref_id,
-                ).await;
-            }
-            "unlock" => {
-                let _ = settlement_db.unlock(
-                    balance_event.user_id,
-                    balance_event.asset_id,
-                    (-balance_event.delta_frozen) as u64,
-                    balance_event.seq,
-                    balance_event.ref_id,
-                ).await;
-            }
-            "withdraw" => {
-                let _ = settlement_db.withdraw(
-                    balance_event.user_id,
-                    balance_event.asset_id,
-                    (-balance_event.delta_avail) as u64,
-                    balance_event.seq,
-                    balance_event.ref_id,
-                ).await;
-            }
-            _ => {
-                log::warn!(target: LOG_TARGET, "Unknown balance event type: {}", balance_event.event_type);
-            }
+        // Append all balance events - they contain the computed final state
+        if let Err(e) = settlement_db.append_balance_event(
+            balance_event.user_id,
+            balance_event.asset_id,
+            balance_event.seq,
+            balance_event.delta_avail,
+            balance_event.delta_frozen,
+            balance_event.avail,
+            balance_event.frozen,
+            &balance_event.event_type,
+            balance_event.ref_id,
+        ).await {
+            log::error!(target: LOG_TARGET,
+                "Failed to append balance event: user={} asset={} type={}: {}",
+                balance_event.user_id, balance_event.asset_id, balance_event.event_type, e);
         }
     }
 
     // 5. Process trades
+    // Note: Balance updates were already done via balance_events above
+    // So we just need to record the trade, not update balances again
     for trade in &output.trades {
-        // Build MatchExecData from TradeOutput for settlement
+        // Build MatchExecData from TradeOutput for trade recording
         let match_exec = fetcher::ledger::MatchExecData {
             trade_id: trade.trade_id,
             buy_order_id: trade.buy_order_id,
@@ -413,7 +389,7 @@ async fn process_engine_output<W: std::io::Write>(
             match_seq: trade.match_seq,
             output_sequence: output.output_seq,
             settled_at: trade.settled_at,
-            // Version and balance fields - use 0s as they're not needed for settlement
+            // Version and balance fields - not needed for insert_trade
             buyer_quote_version: 0,
             buyer_base_version: 0,
             seller_base_version: 0,
@@ -424,10 +400,11 @@ async fn process_engine_output<W: std::io::Write>(
             seller_quote_balance_after: 0,
         };
 
-        if let Err(e) = settlement_db.settle_trade_atomically(&match_exec).await {
-            log::error!(target: LOG_TARGET, "Settlement Failed for trade {}: {}", trade.trade_id, e);
+        // Just insert the trade record - balances were already updated via balance_events
+        if let Err(e) = settlement_db.insert_trade(&match_exec).await {
+            log::error!(target: LOG_TARGET, "Failed to insert trade {}: {}", trade.trade_id, e);
         } else {
-            log::info!(target: LOG_TARGET, "✅ Settled trade {} from EngineOutput", trade.trade_id);
+            log::info!(target: LOG_TARGET, "✅ Recorded trade {} from EngineOutput", trade.trade_id);
 
             // StarRocks
             let sr_client = starrocks_client.clone();

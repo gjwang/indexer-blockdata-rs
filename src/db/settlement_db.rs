@@ -686,6 +686,7 @@ impl SettlementDb {
     }
 
     /// Append a balance event to the ledger (immutable insert)
+    /// Also updates user_balances to reflect current state
     pub async fn append_balance_event(
         &self,
         user_id: u64,
@@ -700,6 +701,7 @@ impl SettlementDb {
     ) -> Result<()> {
         let now = get_current_timestamp_ms();
 
+        // 1. Append to balance_ledger (immutable log)
         self.session
             .query(INSERT_BALANCE_EVENT_CQL, (
                 user_id as i64,
@@ -715,6 +717,15 @@ impl SettlementDb {
             ))
             .await
             .context("Failed to insert balance event")?;
+
+        // 2. Update user_balances snapshot table for easy querying
+        self.session
+            .query(
+                "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id as i64, asset_id as i32, avail, frozen, seq as i64, now as i64),
+            )
+            .await
+            .context("Failed to update user_balances")?;
 
         Ok(())
     }
