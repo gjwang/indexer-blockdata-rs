@@ -515,9 +515,32 @@ impl MatchingEngine {
     ) -> Result<u64, OrderError> {
         use crate::ledger::{OrderStatus, OrderUpdate};
 
-        let (base_asset_id, quote_asset_id) =
-            *asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
+
+
+        let (base_asset_id, quote_asset_id) = match asset_map.get(&symbol_id) {
+            Some(p) => *p,
+            None => {
+                 let rejection = OrderUpdate {
+                    order_id,
+                    client_order_id: None,
+                    user_id,
+                    symbol_id,
+                    side: side.as_u8(),
+                    order_type: order_type.as_u8(),
+                    status: OrderStatus::Rejected,
+                    price,
+                    qty: quantity,
+                    filled_qty: 0,
+                    avg_fill_price: None,
+                    rejection_reason: Some(format!("Asset map not found for symbol {}", symbol_id)),
+                    timestamp,
+                    match_id: None,
+                };
+                let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
+                return Ok(order_id);
+            }
+        };
 
         // 1. Lock funds
         let (lock_asset, lock_amount) = match side {
@@ -532,7 +555,7 @@ impl MatchingEngine {
         let balance_after = if current_bal >= lock_amount {
              current_bal - lock_amount
         } else {
-             current_bal // Should fail in apply, but we need a value
+             current_bal // Should fail in apply
         };
         let new_ver = current_ver + 1;
 
@@ -543,7 +566,7 @@ impl MatchingEngine {
             balance_after,
             version: new_ver
         }) {
-            let rejection = OrderUpdate {
+             let rejection = OrderUpdate {
                 order_id,
                 client_order_id: None,
                 user_id,
@@ -559,7 +582,7 @@ impl MatchingEngine {
                 timestamp,
                 match_id: None,
             };
-            ledger.apply(&LedgerCommand::OrderUpdate(rejection)).map_err(|e| OrderError::LedgerError(e.to_string()))?;
+            let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
             return Ok(order_id);
         }
 
@@ -582,16 +605,46 @@ impl MatchingEngine {
         };
         ledger.apply(&LedgerCommand::OrderUpdate(new_order_event)).map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
-        let book_opt = order_books
-            .get_mut(symbol_id as usize)
-            .ok_or(OrderError::InvalidSymbol { symbol_id })?;
-
-        let book = book_opt.as_mut().ok_or(OrderError::InvalidSymbol { symbol_id })?;
+        // Access OrderBook
+        // Note: We need to handle indices carefully.
+        if symbol_id as usize >= order_books.len() || order_books[symbol_id as usize].is_none() {
+             let rejection = OrderUpdate {
+                order_id,
+                client_order_id: None,
+                user_id,
+                symbol_id,
+                side: side.as_u8(),
+                order_type: order_type.as_u8(),
+                status: OrderStatus::Rejected,
+                price,
+                qty: quantity,
+                filled_qty: 0,
+                avg_fill_price: None,
+                rejection_reason: Some(format!("Invalid Symbol ID: {}", symbol_id)),
+                timestamp,
+                match_id: None,
+            };
+            let _ = ledger.apply(&LedgerCommand::OrderUpdate(rejection));
+            return Ok(order_id);
+        }
+        let book = order_books[symbol_id as usize].as_mut().unwrap();
 
         let order =
             Order { order_id, user_id, symbol_id, side, order_type, price, quantity, timestamp };
 
-        let trades = book.add_order(order, trade_id_gen, timestamp).map_err(OrderError::Other)?;
+        let trades = match book.add_order(order, trade_id_gen, timestamp) {
+            Ok(t) => t,
+            Err(e) => {
+                // If duplicates or other book errors occur.
+                // Duplicate ID must be treated as system error (Err) and ignored,
+                // OR rejected if we want to notify client?
+                // Standard practice: Duplicate ID -> Reject or Ignore?
+                // If Ignore, client waits forever.
+                // If Reject, we might send "Rejected" for an ID that is already "New"?
+                // Let's assume Err for duplicates means Drop.
+                return Err(OrderError::Other(e));
+            }
+        };
 
         let mut match_batch = Vec::with_capacity(trades.len());
 
@@ -725,7 +778,7 @@ impl MatchingEngine {
 
             match process_result {
                 Ok((oid, final_shadow)) => {
-                    // Success: Commit the shadow state
+                    // Success (or handled Rejection): Commit shadow
                     if !final_shadow.pending_commands.is_empty() {
                         let (delta, mut cmds) = final_shadow.into_delta();
                         self.ledger.apply_delta_to_memory(delta);
@@ -734,38 +787,8 @@ impl MatchingEngine {
                     results.push(Ok(oid));
                 }
                 Err(e) => {
-                    // Logic Error (e.g. Duplicate ID, Invalid Symbol)
-                    // The shadow ledger used inside process_order_atomic is discarded on error,
-                    // so partial state (Lock funds, etc) is rolled back automatically.
-
-                    // Generate a Safe Rejection Event
-                    let rejection = crate::ledger::OrderUpdate {
-                        order_id,
-                        client_order_id: None,
-                        user_id,
-                        symbol_id,
-                        side: side.as_u8(),
-                        order_type: order_type.as_u8(),
-                        status: crate::ledger::OrderStatus::Rejected,
-                        price,
-                        qty: quantity,
-                        filled_qty: 0,
-                        avg_fill_price: None,
-                        rejection_reason: Some(e.to_string()),
-                        timestamp,
-                        match_id: None,
-                    };
-
-                    let mut rejection_shadow = ShadowLedger::new(&self.ledger);
-                    // Rejections are safe to apply
-                    let _ = rejection_shadow.apply(&LedgerCommand::OrderUpdate(rejection));
-
-                    if !rejection_shadow.pending_commands.is_empty() {
-                         let (delta, mut cmds) = rejection_shadow.into_delta();
-                         self.ledger.apply_delta_to_memory(delta);
-                         output_cmds.append(&mut cmds);
-                    }
-                    results.push(Ok(order_id));
+                    // System Error (e.g. Duplicate ID): Drop
+                    results.push(Err(e));
                 }
             }
         }

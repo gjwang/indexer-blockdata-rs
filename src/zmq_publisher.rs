@@ -17,8 +17,10 @@ impl ZmqPublisher {
 
         let settlement_pub = context.socket(PUSH)?;
         settlement_pub.set_sndhwm(1_000_000)?;
-        settlement_pub.bind(&format!("tcp://*:{}", settlement_port))?;
-        println!("   [ZMQ] Settlement PUB bound to port {}", settlement_port);
+        settlement_pub.set_linger(0)?; // Don't wait on close
+        settlement_pub.set_immediate(true)?; // Drop messages if peer not connected
+        settlement_pub.connect(&format!("tcp://localhost:{}", settlement_port))?;
+        println!("   [ZMQ] Settlement PUSH connected to port {}", settlement_port);
 
         let market_data_pub = context.socket(PUB)?;
         market_data_pub.set_sndhwm(1_000_000)?;
