@@ -40,12 +40,16 @@ const TIME_WINDOW_MS: u64 = 60_000;
 const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5;
 /// Max order IDs to track for deduplication
 const MAX_TRACKED_ORDERS: usize = 100_000;
+/// Max age for accepting orders (5 minutes) - reject ancient replays
+const MAX_ORDER_AGE_MS: u64 = 5 * 60 * 1000;
 
-/// Tracks recently processed order IDs to detect duplicates
+/// Tracks recently processed order IDs and timestamps to detect duplicates
 /// Critical for at-least-once delivery: Kafka may redeliver on crash recovery
 struct OrderDeduplicator {
     recent_orders: std::collections::HashSet<u64>,
     order_queue: VecDeque<u64>,
+    /// High-water mark: latest timestamp seen (monotonic)
+    max_seen_ts: u64,
 }
 
 impl OrderDeduplicator {
@@ -53,12 +57,33 @@ impl OrderDeduplicator {
         Self {
             recent_orders: std::collections::HashSet::with_capacity(MAX_TRACKED_ORDERS),
             order_queue: VecDeque::with_capacity(MAX_TRACKED_ORDERS),
+            max_seen_ts: 0,
         }
     }
 
     /// Check if order was already processed. Returns true if duplicate.
     fn is_duplicate(&self, order_id: u64) -> bool {
         self.recent_orders.contains(&order_id)
+    }
+
+    /// Check if message timestamp is too old (potential stale replay)
+    /// Returns true if message should be rejected
+    fn is_stale(&self, msg_ts: u64) -> bool {
+        if msg_ts == 0 {
+            return false; // No timestamp available, allow
+        }
+        // Reject if message is significantly older than high-water mark
+        if self.max_seen_ts > 0 && msg_ts + MAX_ORDER_AGE_MS < self.max_seen_ts {
+            return true;
+        }
+        false
+    }
+
+    /// Update high-water mark timestamp
+    fn update_timestamp(&mut self, msg_ts: u64) {
+        if msg_ts > self.max_seen_ts {
+            self.max_seen_ts = msg_ts;
+        }
     }
 
     /// Mark order as processed
@@ -318,6 +343,16 @@ async fn main() {
 
     // === Consumer 1: Matcher (processes orders and produces EngineOutput) ===
     let matcher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
+        // Check for stale messages (ancient replays after consumer group reset)
+        let msg_ts = event.timestamp;
+        if order_dedup.is_stale(msg_ts) {
+            println!("[ME] STALE MESSAGE - skipping (ts={} older than {} ms from high-water mark {})",
+                msg_ts, MAX_ORDER_AGE_MS, order_dedup.max_seen_ts);
+            return;
+        }
+        // Update high-water mark
+        order_dedup.update_timestamp(msg_ts);
+
         // Process commands and produce EngineOutput bundles
         if let Some(ref cmd) = event.command {
             match cmd {
