@@ -1,6 +1,6 @@
 use fetcher::configure;
 use fetcher::db::{OrderHistoryDb, SettlementDb};
-use fetcher::ledger::{LedgerCommand, OrderStatus, OrderUpdate};
+use fetcher::ledger::{OrderStatus, OrderUpdate};
 use fetcher::engine_output::{EngineOutput, InputData, GENESIS_HASH};
 use fetcher::logger::setup_logger;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
@@ -142,53 +142,37 @@ async fn main() {
             }
         };
 
-        // Try EngineOutput first (new flow), then fall back to LedgerCommand
-        if let Ok(engine_output) = serde_json::from_slice::<EngineOutput>(&data) {
-            // Process EngineOutput with chain verification
-            match process_engine_output(
-                &settlement_db,
-                &order_history_db,
-                &starrocks_client,
-                &engine_output,
-                &mut last_processed_hash,
-                &mut last_output_seq,
-                &mut wtr,
-                msg_count,
-            ).await {
-                Ok(_) => {
-                    total_settled += engine_output.trades.len() as u64;
-                    log::info!(target: LOG_TARGET,
-                        "✅ Processed EngineOutput seq={} trades={} balance_events={}",
-                        engine_output.output_seq,
-                        engine_output.trades.len(),
-                        engine_output.balance_events.len()
-                    );
-                }
-                Err(e) => {
-                    total_errors += 1;
-                    log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
-                }
-            }
-            continue;
-        }
-
-        // Fall back to LedgerCommand (only for OrderUpdate - balance operations via EngineOutput)
-        match serde_json::from_slice::<LedgerCommand>(&data) {
-            Ok(cmd) => {
-                match cmd {
-                    LedgerCommand::OrderUpdate(order_update) => {
-                        if let Err(e) = process_order_update(&order_history_db, &order_update, msg_count).await {
-                             log::error!(target: LOG_TARGET, "Order History Update Failed: {}", e);
-                        }
-                    },
-                    _ => {
-                        // All balance operations now come via EngineOutput
-                        log::debug!(target: LOG_TARGET, "Ignoring legacy LedgerCommand (handled via EngineOutput)");
+        // EngineOutput is now the only supported message type
+        match serde_json::from_slice::<EngineOutput>(&data) {
+            Ok(engine_output) => {
+                // Process EngineOutput with chain verification
+                match process_engine_output(
+                    &settlement_db,
+                    &order_history_db,
+                    &starrocks_client,
+                    &engine_output,
+                    &mut last_processed_hash,
+                    &mut last_output_seq,
+                    &mut wtr,
+                    msg_count,
+                ).await {
+                    Ok(_) => {
+                        total_settled += engine_output.trades.len() as u64;
+                        log::info!(target: LOG_TARGET,
+                            "✅ Processed EngineOutput seq={} trades={} balance_events={}",
+                            engine_output.output_seq,
+                            engine_output.trades.len(),
+                            engine_output.balance_events.len()
+                        );
+                    }
+                    Err(e) => {
+                        total_errors += 1;
+                        log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
                     }
                 }
-            },
+            }
             Err(e) => {
-                 log::error!(target: LOG_TARGET, "Failed to deserialize LedgerCommand: {}", e);
+                log::warn!(target: LOG_TARGET, "Unknown message format (not EngineOutput): {}", e);
             }
         }
     }
