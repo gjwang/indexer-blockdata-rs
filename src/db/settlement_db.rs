@@ -132,6 +132,71 @@ const SELECT_TRADES_BY_SELLER_CQL: &str = "
     ALLOW FILTERING
 ";
 
+// === APPEND-ONLY BALANCE LEDGER ===
+// Each row is immutable - insert only, never update
+// Current balance = latest row with highest seq
+
+/// Insert a new balance event (append-only)
+const INSERT_BALANCE_EVENT_CQL: &str = "
+    INSERT INTO balance_ledger (
+        user_id, asset_id, seq,
+        delta_avail, delta_frozen,
+        balance_avail, balance_frozen,
+        event_type, ref_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+";
+
+/// Get latest balance (highest seq) for a user/asset pair
+const SELECT_LATEST_BALANCE_CQL: &str = "
+    SELECT seq, balance_avail, balance_frozen, created_at
+    FROM balance_ledger
+    WHERE user_id = ? AND asset_id = ?
+    LIMIT 1
+";
+
+/// Get balance history for a user/asset (most recent first)
+const SELECT_BALANCE_HISTORY_CQL: &str = "
+    SELECT seq, delta_avail, delta_frozen, balance_avail, balance_frozen, event_type, ref_id, created_at
+    FROM balance_ledger
+    WHERE user_id = ? AND asset_id = ?
+    LIMIT ?
+";
+
+/// Balance event types
+pub mod balance_event_types {
+    pub const DEPOSIT: &str = "deposit";
+    pub const WITHDRAW: &str = "withdraw";
+    pub const LOCK: &str = "lock";
+    pub const UNLOCK: &str = "unlock";
+    pub const TRADE_DEBIT: &str = "trade_debit";
+    pub const TRADE_CREDIT: &str = "trade_credit";
+    pub const REFUND: &str = "refund";
+}
+
+/// Balance ledger entry (append-only row)
+#[derive(Debug, Clone, FromRow)]
+pub struct BalanceLedgerEntry {
+    pub user_id: i64,
+    pub asset_id: i32,
+    pub seq: i64,
+    pub delta_avail: i64,
+    pub delta_frozen: i64,
+    pub balance_avail: i64,
+    pub balance_frozen: i64,
+    pub event_type: String,
+    pub ref_id: i64,
+    pub created_at: i64,
+}
+
+/// Current balance snapshot (from latest ledger entry)
+#[derive(Debug, Clone, Default)]
+pub struct CurrentBalance {
+    pub seq: i64,
+    pub avail: i64,
+    pub frozen: i64,
+    pub updated_at: i64,
+}
+
 /// Settlement database client for ScyllaDB
 ///
 /// Provides a clean abstraction for storing and querying settled trades.
@@ -1059,6 +1124,263 @@ impl SettlementDb {
         }
 
         Ok((current_avail, new_avail, current_version as i64, new_version as i64))
+    }
+
+    // =====================================================
+    // APPEND-ONLY BALANCE LEDGER METHODS
+    // =====================================================
+
+    /// Get current balance from append-only ledger (latest entry)
+    pub async fn get_current_balance_v2(&self, user_id: u64, asset_id: u32) -> Result<CurrentBalance> {
+        let result = self.session
+            .query(SELECT_LATEST_BALANCE_CQL, (user_id as i64, asset_id as i32))
+            .await?;
+
+        if let Some(rows) = result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                let (seq, balance_avail, balance_frozen, created_at): (i64, i64, i64, i64) =
+                    row.into_typed().context("Failed to parse balance row")?;
+                return Ok(CurrentBalance {
+                    seq,
+                    avail: balance_avail,
+                    frozen: balance_frozen,
+                    updated_at: created_at,
+                });
+            }
+        }
+
+        // No balance yet - return default (seq=0, avail=0, frozen=0)
+        Ok(CurrentBalance::default())
+    }
+
+    /// Append a balance event to the ledger (immutable insert)
+    pub async fn append_balance_event(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        seq: u64,
+        delta_avail: i64,
+        delta_frozen: i64,
+        balance_avail: i64,
+        balance_frozen: i64,
+        event_type: &str,
+        ref_id: u64,
+    ) -> Result<()> {
+        let now = get_current_timestamp_ms();
+
+        self.session
+            .query(INSERT_BALANCE_EVENT_CQL, (
+                user_id as i64,
+                asset_id as i32,
+                seq as i64,
+                delta_avail,
+                delta_frozen,
+                balance_avail,
+                balance_frozen,
+                event_type,
+                ref_id as i64,
+                now,
+            ))
+            .await
+            .context("Failed to insert balance event")?;
+
+        Ok(())
+    }
+
+    /// Deposit - append-only version (v2)
+    pub async fn deposit_v2(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        new_seq: u64,
+        ref_id: u64,
+    ) -> Result<CurrentBalance> {
+        // Get current balance
+        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+
+        // Idempotency check
+        if new_seq <= current.seq as u64 {
+            return Ok(current);
+        }
+
+        // Calculate new balance
+        let delta_avail = amount as i64;
+        let new_avail = current.avail + delta_avail;
+        let new_frozen = current.frozen; // Deposit doesn't change frozen
+
+        // Append event
+        self.append_balance_event(
+            user_id,
+            asset_id,
+            new_seq,
+            delta_avail,
+            0, // delta_frozen
+            new_avail,
+            new_frozen,
+            balance_event_types::DEPOSIT,
+            ref_id,
+        ).await?;
+
+        Ok(CurrentBalance {
+            seq: new_seq as i64,
+            avail: new_avail,
+            frozen: new_frozen,
+            updated_at: get_current_timestamp_ms() as i64,
+        })
+    }
+
+    /// Lock - append-only version (v2)
+    pub async fn lock_v2(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        new_seq: u64,
+        ref_id: u64,
+    ) -> Result<CurrentBalance> {
+        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+
+        if new_seq <= current.seq as u64 {
+            return Ok(current);
+        }
+
+        let delta_avail = -(amount as i64);
+        let delta_frozen = amount as i64;
+        let new_avail = current.avail + delta_avail;
+        let new_frozen = current.frozen + delta_frozen;
+
+        self.append_balance_event(
+            user_id,
+            asset_id,
+            new_seq,
+            delta_avail,
+            delta_frozen,
+            new_avail,
+            new_frozen,
+            balance_event_types::LOCK,
+            ref_id,
+        ).await?;
+
+        Ok(CurrentBalance {
+            seq: new_seq as i64,
+            avail: new_avail,
+            frozen: new_frozen,
+            updated_at: get_current_timestamp_ms() as i64,
+        })
+    }
+
+    /// Unlock - append-only version (v2)
+    pub async fn unlock_v2(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        new_seq: u64,
+        ref_id: u64,
+    ) -> Result<CurrentBalance> {
+        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+
+        if new_seq <= current.seq as u64 {
+            return Ok(current);
+        }
+
+        let delta_avail = amount as i64;
+        let delta_frozen = -(amount as i64);
+        let new_avail = current.avail + delta_avail;
+        let new_frozen = current.frozen + delta_frozen;
+
+        self.append_balance_event(
+            user_id,
+            asset_id,
+            new_seq,
+            delta_avail,
+            delta_frozen,
+            new_avail,
+            new_frozen,
+            balance_event_types::UNLOCK,
+            ref_id,
+        ).await?;
+
+        Ok(CurrentBalance {
+            seq: new_seq as i64,
+            avail: new_avail,
+            frozen: new_frozen,
+            updated_at: get_current_timestamp_ms() as i64,
+        })
+    }
+
+    /// Withdraw - append-only version (v2)
+    pub async fn withdraw_v2(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        new_seq: u64,
+        ref_id: u64,
+    ) -> Result<CurrentBalance> {
+        let current = self.get_current_balance_v2(user_id, asset_id).await?;
+
+        if new_seq <= current.seq as u64 {
+            return Ok(current);
+        }
+
+        let delta_avail = -(amount as i64);
+        let new_avail = current.avail + delta_avail;
+        let new_frozen = current.frozen;
+
+        self.append_balance_event(
+            user_id,
+            asset_id,
+            new_seq,
+            delta_avail,
+            0,
+            new_avail,
+            new_frozen,
+            balance_event_types::WITHDRAW,
+            ref_id,
+        ).await?;
+
+        Ok(CurrentBalance {
+            seq: new_seq as i64,
+            avail: new_avail,
+            frozen: new_frozen,
+            updated_at: get_current_timestamp_ms() as i64,
+        })
+    }
+
+    /// Get balance history (most recent first)
+    pub async fn get_balance_history(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+        limit: u32,
+    ) -> Result<Vec<BalanceLedgerEntry>> {
+        let result = self.session
+            .query(SELECT_BALANCE_HISTORY_CQL, (user_id as i64, asset_id as i32, limit as i32))
+            .await?;
+
+        let mut entries = Vec::new();
+        if let Some(rows) = result.rows {
+            for row in rows {
+                let (seq, delta_avail, delta_frozen, balance_avail, balance_frozen, event_type, ref_id, created_at):
+                    (i64, i64, i64, i64, i64, String, i64, i64) = row.into_typed()?;
+                entries.push(BalanceLedgerEntry {
+                    user_id: user_id as i64,
+                    asset_id: asset_id as i32,
+                    seq,
+                    delta_avail,
+                    delta_frozen,
+                    balance_avail,
+                    balance_frozen,
+                    event_type,
+                    ref_id,
+                    created_at,
+                });
+            }
+        }
+
+        Ok(entries)
     }
 }
 
