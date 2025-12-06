@@ -38,44 +38,45 @@ enum EngineCommand {
 const TIME_WINDOW_MS: u64 = 60_000;
 /// Time window for tracking request IDs (5 minutes)
 const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5;
-/// Max order IDs to track for deduplication
-const MAX_TRACKED_ORDERS: usize = 100_000;
+/// Max Kafka offsets to track for deduplication
+const MAX_TRACKED_OFFSETS: usize = 100_000;
 
-/// Tracks recently processed order IDs and timestamps to detect duplicates
+/// Tracks recently processed Kafka message offsets to detect duplicates
 /// Critical for at-least-once delivery: Kafka may redeliver on crash recovery
 ///
 /// Safety: Only accepts messages within the tracked time window.
-/// If a message is older than the oldest tracked order, we cannot verify
+/// If a message is older than the oldest tracked offset, we cannot verify
 /// if it was already processed → REJECT as potentially dangerous.
-struct OrderDeduplicator {
-    recent_orders: std::collections::HashSet<u64>,
-    /// Queue of (order_id, timestamp) for FIFO eviction and oldest-ts tracking
-    order_queue: VecDeque<(u64, u64)>,
-    /// Timestamp of the oldest tracked order (defines the safe window)
+struct MessageDeduplicator {
+    /// Set of recently seen Kafka offsets (topic+partition+offset hash)
+    recent_offsets: std::collections::HashSet<i64>,
+    /// Queue of (offset, timestamp) for FIFO eviction and oldest-ts tracking
+    offset_queue: VecDeque<(i64, u64)>,
+    /// Timestamp of the oldest tracked message (defines the safe window)
     oldest_tracked_ts: u64,
 }
 
-impl OrderDeduplicator {
+impl MessageDeduplicator {
     fn new() -> Self {
         Self {
-            recent_orders: std::collections::HashSet::with_capacity(MAX_TRACKED_ORDERS),
-            order_queue: VecDeque::with_capacity(MAX_TRACKED_ORDERS),
-            oldest_tracked_ts: 0, // 0 means no orders tracked yet
+            recent_offsets: std::collections::HashSet::with_capacity(MAX_TRACKED_OFFSETS),
+            offset_queue: VecDeque::with_capacity(MAX_TRACKED_OFFSETS),
+            oldest_tracked_ts: 0, // 0 means no messages tracked yet
         }
     }
 
-    /// Check if order was already processed. Returns true if duplicate.
-    fn is_duplicate(&self, order_id: u64) -> bool {
-        self.recent_orders.contains(&order_id)
+    /// Check if Kafka offset was already processed. Returns true if duplicate.
+    fn is_duplicate(&self, offset: i64) -> bool {
+        self.recent_offsets.contains(&offset)
     }
 
     /// Check if message timestamp is outside our tracked window
     /// Returns true if message should be rejected (too old to verify dedup)
     fn is_outside_tracked_window(&self, msg_ts: u64) -> bool {
         if msg_ts == 0 || self.oldest_tracked_ts == 0 {
-            return false; // No timestamp or no orders tracked yet, allow
+            return false; // No timestamp or no messages tracked yet, allow
         }
-        // Reject if message is older than the oldest order we can verify
+        // Reject if message is older than the oldest message we can verify
         msg_ts < self.oldest_tracked_ts
     }
 
@@ -84,22 +85,22 @@ impl OrderDeduplicator {
         self.oldest_tracked_ts
     }
 
-    /// Mark order as processed with its timestamp
-    fn mark_processed(&mut self, order_id: u64, timestamp: u64) {
-        if self.recent_orders.insert(order_id) {
-            self.order_queue.push_back((order_id, timestamp));
+    /// Mark Kafka offset as processed with its timestamp
+    fn mark_processed(&mut self, offset: i64, timestamp: u64) {
+        if self.recent_offsets.insert(offset) {
+            self.offset_queue.push_back((offset, timestamp));
 
             // Evict oldest if over limit
-            while self.order_queue.len() > MAX_TRACKED_ORDERS {
-                if let Some((oldest_id, _oldest_ts)) = self.order_queue.pop_front() {
-                    self.recent_orders.remove(&oldest_id);
+            while self.offset_queue.len() > MAX_TRACKED_OFFSETS {
+                if let Some((oldest_offset, _oldest_ts)) = self.offset_queue.pop_front() {
+                    self.recent_offsets.remove(&oldest_offset);
                 }
             }
 
             // Update oldest_tracked_ts from front of queue
-            self.oldest_tracked_ts = self.order_queue
+            self.oldest_tracked_ts = self.offset_queue
                 .front()
-                .map(|(_id, ts)| *ts)
+                .map(|(_offset, ts)| *ts)
                 .unwrap_or(0);
         }
     }
@@ -238,32 +239,6 @@ async fn main() {
         println!("Loaded symbol: {}", symbol);
     }
 
-    // NOTE: Automatic deposits disabled - use transfer_in API for proper E2E flow
-    // Users must call /api/v1/transfer_in to initialize their balances
-    // This ensures the full flow: transfer_in -> deposit event -> settlement -> user_balances
-    /*
-    println!("=== Depositing Funds ===");
-    let amount = 100_000_000_u64;
-
-    for uid in 0..5000 {
-        for asset_id in [1, 2, 3] {
-            // BTC, USDT, ETH
-            let decimal = symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
-            let amount_raw = amount * 10_u64.pow(decimal);
-
-            engine
-                .ledger
-                .apply(&LedgerCommand::Deposit {
-                    user_id: uid,
-                    asset: asset_id,
-                    amount: amount_raw,
-                })
-                .unwrap();
-        }
-    }
-    println!("Funds deposited for users 0-5000.");
-    */
-
     // === Kafka Consumer Setup ===
     let consumer_raw: StreamConsumer = ClientConfig::new()
         .set("group.id", &config.kafka.group_id)
@@ -334,8 +309,9 @@ async fn main() {
     let batch_poll_count = 1000;
 
     // === Disruptor Pipeline Architecture ===
-    // Order deduplicator for at-least-once delivery safety
-    let mut order_dedup = OrderDeduplicator::new();
+    // Message deduplicator for at-least-once delivery safety
+    // Uses business-level unique IDs from message content
+    let mut msg_dedup = MessageDeduplicator::new();
 
     // Factory: Create empty events in the ring buffer
     let factory = || OrderEvent {
@@ -345,34 +321,57 @@ async fn main() {
         timestamp: 0,
     };
 
-    // === Consumer 1: Matcher (processes orders and produces EngineOutput) ===
+    // === Consumer 1: Matcher (processes all commands and produces EngineOutput) ===
     let matcher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        // Check for messages outside our tracked dedup window
-        // If older than the oldest order we track, we can't verify duplicates → REJECT
         let msg_ts = event.timestamp;
-        if order_dedup.is_outside_tracked_window(msg_ts) {
+
+        // Check for messages outside our tracked dedup window
+        if msg_dedup.is_outside_tracked_window(msg_ts) {
             println!("[ME] OUTSIDE TRACKED WINDOW - skipping (ts={} older than oldest tracked={})",
-                msg_ts, order_dedup.get_oldest_ts());
+                msg_ts, msg_dedup.get_oldest_ts());
             return;
         }
 
-        // Process commands and produce EngineOutput bundles
+        // Process commands - extract unique ID and check dedup at MESSAGE level
         if let Some(ref cmd) = event.command {
+            // Extract unique message ID(s) from command
+            let msg_ids: Vec<i64> = match cmd {
+                EngineCommand::PlaceOrderBatch(batch) => {
+                    batch.iter().map(|(_, order_id, ..)| *order_id as i64).collect()
+                }
+                EngineCommand::CancelOrder { order_id, .. } => {
+                    vec![*order_id as i64]
+                }
+                EngineCommand::BalanceRequest(req) => {
+                    // Use request_id hash as unique ID
+                    vec![req.request_id().parse::<i64>().unwrap_or_else(|_| {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        req.request_id().hash(&mut hasher);
+                        hasher.finish() as i64
+                    })]
+                }
+            };
+
+            // Check for duplicate message IDs
+            let all_duplicates = msg_ids.iter().all(|id| msg_dedup.is_duplicate(*id));
+            if all_duplicates && !msg_ids.is_empty() {
+                println!("[ME] DUPLICATE MESSAGE - skipping (all IDs already processed)");
+                return;
+            }
+
+            // Mark all IDs as processed BEFORE attempting
+            for id in &msg_ids {
+                msg_dedup.mark_processed(*id, msg_ts);
+            }
+
+            // Now process the command
             match cmd {
                 EngineCommand::PlaceOrderBatch(batch) => {
-                    // Process each order individually, producing EngineOutput bundles
-                    // Each output is chain-linked to the previous for integrity verification
-                    // IMPORTANT: Check for duplicates to handle Kafka redelivery safely
                     let mut engine_outputs = Vec::with_capacity(batch.len());
                     let mut input_seq = engine.get_output_seq();
 
                     for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch.iter() {
-                        // Check for duplicate order (Kafka may redeliver after crash)
-                        if order_dedup.is_duplicate(*order_id) {
-                            println!("[ME] DUPLICATE ORDER {} - skipping (already processed)", order_id);
-                            continue;
-                        }
-
                         input_seq += 1;
                         let cid = format!("kafka_{}", order_id);
 
@@ -389,8 +388,6 @@ async fn main() {
                             cid,
                         ) {
                             Ok((_, output)) => {
-                                // Mark as processed AFTER successful execution (with timestamp)
-                                order_dedup.mark_processed(*order_id, msg_ts);
                                 engine_outputs.push(output);
                             }
                             Err(e) => {
@@ -407,7 +404,6 @@ async fn main() {
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
                 EngineCommand::BalanceRequest(req) => {
-                    // Balance requests now use EngineOutput flow
                     match balance_processor.process_balance_request(&mut engine, req.clone()) {
                         Ok(outputs) => {
                             if !outputs.is_empty() {
