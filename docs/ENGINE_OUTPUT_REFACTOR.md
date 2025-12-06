@@ -169,6 +169,7 @@ pub struct OrderUpdate {
 impl EngineOutput {
     /// Compute hash for this output
     pub fn compute_hash(&self) -> [u8; 32] {
+        // TODO: not use Sha256, but use the hash as prev arch design doc
         let mut hasher = Sha256::new();
 
         // Chain: output_seq + prev_hash
