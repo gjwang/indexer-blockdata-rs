@@ -40,16 +40,19 @@ const TIME_WINDOW_MS: u64 = 60_000;
 const TRACKING_WINDOW_MS: u64 = TIME_WINDOW_MS * 5;
 /// Max order IDs to track for deduplication
 const MAX_TRACKED_ORDERS: usize = 100_000;
-/// Max age for accepting orders (5 minutes) - reject ancient replays
-const MAX_ORDER_AGE_MS: u64 = 5 * 60 * 1000;
 
 /// Tracks recently processed order IDs and timestamps to detect duplicates
 /// Critical for at-least-once delivery: Kafka may redeliver on crash recovery
+///
+/// Safety: Only accepts messages within the tracked time window.
+/// If a message is older than the oldest tracked order, we cannot verify
+/// if it was already processed → REJECT as potentially dangerous.
 struct OrderDeduplicator {
     recent_orders: std::collections::HashSet<u64>,
-    order_queue: VecDeque<u64>,
-    /// High-water mark: latest timestamp seen (monotonic)
-    max_seen_ts: u64,
+    /// Queue of (order_id, timestamp) for FIFO eviction and oldest-ts tracking
+    order_queue: VecDeque<(u64, u64)>,
+    /// Timestamp of the oldest tracked order (defines the safe window)
+    oldest_tracked_ts: u64,
 }
 
 impl OrderDeduplicator {
@@ -57,7 +60,7 @@ impl OrderDeduplicator {
         Self {
             recent_orders: std::collections::HashSet::with_capacity(MAX_TRACKED_ORDERS),
             order_queue: VecDeque::with_capacity(MAX_TRACKED_ORDERS),
-            max_seen_ts: 0,
+            oldest_tracked_ts: 0, // 0 means no orders tracked yet
         }
     }
 
@@ -66,37 +69,38 @@ impl OrderDeduplicator {
         self.recent_orders.contains(&order_id)
     }
 
-    /// Check if message timestamp is too old (potential stale replay)
-    /// Returns true if message should be rejected
-    fn is_stale(&self, msg_ts: u64) -> bool {
-        if msg_ts == 0 {
-            return false; // No timestamp available, allow
+    /// Check if message timestamp is outside our tracked window
+    /// Returns true if message should be rejected (too old to verify dedup)
+    fn is_outside_tracked_window(&self, msg_ts: u64) -> bool {
+        if msg_ts == 0 || self.oldest_tracked_ts == 0 {
+            return false; // No timestamp or no orders tracked yet, allow
         }
-        // Reject if message is significantly older than high-water mark
-        if self.max_seen_ts > 0 && msg_ts + MAX_ORDER_AGE_MS < self.max_seen_ts {
-            return true;
-        }
-        false
+        // Reject if message is older than the oldest order we can verify
+        msg_ts < self.oldest_tracked_ts
     }
 
-    /// Update high-water mark timestamp
-    fn update_timestamp(&mut self, msg_ts: u64) {
-        if msg_ts > self.max_seen_ts {
-            self.max_seen_ts = msg_ts;
-        }
+    /// Get the oldest tracked timestamp (for logging)
+    fn get_oldest_ts(&self) -> u64 {
+        self.oldest_tracked_ts
     }
 
-    /// Mark order as processed
-    fn mark_processed(&mut self, order_id: u64) {
+    /// Mark order as processed with its timestamp
+    fn mark_processed(&mut self, order_id: u64, timestamp: u64) {
         if self.recent_orders.insert(order_id) {
-            self.order_queue.push_back(order_id);
+            self.order_queue.push_back((order_id, timestamp));
 
             // Evict oldest if over limit
             while self.order_queue.len() > MAX_TRACKED_ORDERS {
-                if let Some(oldest) = self.order_queue.pop_front() {
-                    self.recent_orders.remove(&oldest);
+                if let Some((oldest_id, _oldest_ts)) = self.order_queue.pop_front() {
+                    self.recent_orders.remove(&oldest_id);
                 }
             }
+
+            // Update oldest_tracked_ts from front of queue
+            self.oldest_tracked_ts = self.order_queue
+                .front()
+                .map(|(_id, ts)| *ts)
+                .unwrap_or(0);
         }
     }
 }
@@ -343,15 +347,14 @@ async fn main() {
 
     // === Consumer 1: Matcher (processes orders and produces EngineOutput) ===
     let matcher = move |event: &OrderEvent, _sequence: Sequence, _end_of_batch: bool| {
-        // Check for stale messages (ancient replays after consumer group reset)
+        // Check for messages outside our tracked dedup window
+        // If older than the oldest order we track, we can't verify duplicates → REJECT
         let msg_ts = event.timestamp;
-        if order_dedup.is_stale(msg_ts) {
-            println!("[ME] STALE MESSAGE - skipping (ts={} older than {} ms from high-water mark {})",
-                msg_ts, MAX_ORDER_AGE_MS, order_dedup.max_seen_ts);
+        if order_dedup.is_outside_tracked_window(msg_ts) {
+            println!("[ME] OUTSIDE TRACKED WINDOW - skipping (ts={} older than oldest tracked={})",
+                msg_ts, order_dedup.get_oldest_ts());
             return;
         }
-        // Update high-water mark
-        order_dedup.update_timestamp(msg_ts);
 
         // Process commands and produce EngineOutput bundles
         if let Some(ref cmd) = event.command {
@@ -386,8 +389,8 @@ async fn main() {
                             cid,
                         ) {
                             Ok((_, output)) => {
-                                // Mark as processed AFTER successful execution
-                                order_dedup.mark_processed(*order_id);
+                                // Mark as processed AFTER successful execution (with timestamp)
+                                order_dedup.mark_processed(*order_id, msg_ts);
                                 engine_outputs.push(output);
                             }
                             Err(e) => {
