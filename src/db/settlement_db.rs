@@ -792,8 +792,10 @@ impl SettlementDb {
         // Let's use a simpler approach: batch all ledger, then batch all user_balances
 
         let mut ledger_batch = Batch::new(BatchType::Unlogged);
+        // Note: Can't use IF NOT EXISTS (LWT) in batch - idempotency ensured by primary key
+        let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         for _ in events {
-            ledger_batch.append_statement(INSERT_BALANCE_EVENT_CQL);
+            ledger_batch.append_statement(ledger_stmt);
         }
 
         let ledger_values: Vec<_> = events.iter().map(|e| (
