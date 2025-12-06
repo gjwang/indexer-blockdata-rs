@@ -249,9 +249,18 @@ async fn transfer_out(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    // Update Balance in DB
+    // Update Balance in DB using append-only ledger
     if let Some(db) = &state.db {
-        db.update_balance(payload.user_id, asset_id, -(raw_amount as i64), 0, 0) // 0 for version, 0 for frozen
+        // Get current seq and use next seq for withdraw
+        let current = db.get_current_balance(payload.user_id, asset_id)
+            .await
+            .map_err(|e| {
+                eprintln!("DB Error getting balance: {}", e);
+                StatusCode::INTERNAL_SERVER_ERROR
+            })?;
+
+        let next_seq = (current.seq + 1) as u64;
+        db.withdraw(payload.user_id, asset_id, raw_amount, next_seq, 0)
             .await
             .map_err(|e| {
                 eprintln!("DB Error: {}", e);
