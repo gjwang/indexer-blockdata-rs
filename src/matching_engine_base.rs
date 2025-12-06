@@ -709,15 +709,6 @@ impl MatchingEngine {
         let mut output_cmds = Vec::new();
 
         for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in requests {
-            // 1. Validation (Asset Map)
-            let _pair = match self.asset_map.get(&symbol_id) {
-                Some(p) => p,
-                None => {
-                    results.push(Err(OrderError::AssetMapNotFound { symbol_id }));
-                    continue;
-                }
-            };
-
             // 2. Per-Order Atomic Processing with Shadow Ledger
             // COW (Copy-On-Write): Create a fresh shadow ledger for valid input isolation
             let mut shadow = ShadowLedger::new(&self.ledger);
