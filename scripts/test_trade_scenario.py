@@ -40,6 +40,10 @@ def clean_environment():
     run_command("pkill -f order_gate_server", ignore_errors=True)
     run_command("pkill -f settlement_service", ignore_errors=True)
 
+    # Clean local state (WAL/Snapshots)
+    print("Cleaning local state (wal, snapshots)...")
+    run_command("rm -rf wal snapshots", ignore_errors=True)
+
     # DB
     print("Resetting Database...")
     run_command(f'docker exec scylla cqlsh -e "DROP KEYSPACE IF EXISTS {KEYSPACE};"')
@@ -66,17 +70,20 @@ def start_services():
          open(os.path.join(log_dir, "order_gateway.log"), "w") as f_gw, \
          open(os.path.join(log_dir, "settlement.log"), "w") as f_st:
 
-        # Set cwd=PROJECT_ROOT to ensure binaries find config files correctly
-        p_me = subprocess.Popen([os.path.join(PROJECT_ROOT, "target/debug/matching_engine_server")], stdout=f_me, stderr=f_me, cwd=PROJECT_ROOT)
+        # Start Settlement Service FIRST (ZMQ Consumer)
+        p_st = subprocess.Popen([os.path.join(PROJECT_ROOT, "target/release/settlement_service")], stdout=f_st, stderr=f_st, cwd=PROJECT_ROOT)
+        print(f"Settlement Service PID: {p_st.pid}")
+        print("Waiting 5s for Settlement to bind and be ready...")
+        time.sleep(5)
+
+        # Start Matching Engine (ZMQ Producer)
+        p_me = subprocess.Popen([os.path.join(PROJECT_ROOT, "target/release/matching_engine_server")], stdout=f_me, stderr=f_me, cwd=PROJECT_ROOT)
         print(f"Matching Engine PID: {p_me.pid}")
-        time.sleep(2)
+        print("Waiting 10s for ZMQ handshake to complete...")
+        time.sleep(10)
 
         p_gw = subprocess.Popen([os.path.join(PROJECT_ROOT, "target/debug/order_gate_server")], stdout=f_gw, stderr=f_gw, cwd=PROJECT_ROOT)
         print(f"Order Gateway PID: {p_gw.pid}")
-        time.sleep(2)
-
-        p_st = subprocess.Popen([os.path.join(PROJECT_ROOT, "target/debug/settlement_service")], stdout=f_st, stderr=f_st, cwd=PROJECT_ROOT)
-        print(f"Settlement Service PID: {p_st.pid}")
         time.sleep(2)
 
         return [p_me, p_gw, p_st]
@@ -97,7 +104,7 @@ def inject_deposits():
         }
     }
 
-    # User 1002 (Buyer): 20,000 USDT (Asset 2) -> 2,000,000,000,000 (Assuming 8 decimals)
+    # User 1002 (Buyer): 20,000 USDT (Asset 2)
     dep2 = {
         "type": "TransferIn",
         "data": {
@@ -109,9 +116,18 @@ def inject_deposits():
         }
     }
 
-    # Use subprocess to pipe to rpk
-    p = subprocess.Popen(["docker", "exec", "-i", "redpanda", "rpk", "topic", "produce", "balance.operations"], stdin=subprocess.PIPE)
-    p.communicate(input=json.dumps(dep1).encode() + b"\n" + json.dumps(dep2).encode() + b"\n")
+    # Produce separately to avoid race/drops
+    print("Producing User 1001 Deposit...")
+    p1 = subprocess.Popen(["docker", "exec", "-i", "redpanda", "rpk", "topic", "produce", "balance.operations"], stdin=subprocess.PIPE)
+    p1.communicate(input=json.dumps(dep1).encode() + b"\n")
+    p1.wait()
+
+    time.sleep(1)
+
+    print("Producing User 1002 Deposit...")
+    p2 = subprocess.Popen(["docker", "exec", "-i", "redpanda", "rpk", "topic", "produce", "balance.operations"], stdin=subprocess.PIPE)
+    p2.communicate(input=json.dumps(dep2).encode() + b"\n")
+    p2.wait()
 
     print("Deposits sent. Waiting 3s...")
     time.sleep(3)

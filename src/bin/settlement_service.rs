@@ -60,12 +60,30 @@ async fn main() {
         log::error!(target: LOG_TARGET, "OrderHistoryDB health check failed: {}", e);
     }
 
-    // Setup ZMQ
+    // Setup ZMQ PULL socket for data (BIND as server)
     let context = Context::new();
     let subscriber = context.socket(PULL).expect("Failed to create PULL socket");
     subscriber.set_rcvhwm(1_000_000).expect("Failed to set RCVHWM");
-    let endpoint = format!("tcp://localhost:{}", zmq_config.settlement_port);
-    subscriber.connect(&endpoint).expect("Failed to connect to settlement port");
+    let endpoint = format!("tcp://*:{}", zmq_config.settlement_port);
+    subscriber.bind(&endpoint).expect("Failed to bind to settlement port");
+    log::info!(target: LOG_TARGET, "📡 Listening on tcp://localhost:{}", zmq_config.settlement_port);
+
+    // Setup REP socket for synchronization (tell ME we're ready)
+    let sync_socket = context.socket(zmq::REP).expect("Failed to create REP socket");
+    let sync_port = zmq_config.settlement_port + 2; // 5559
+    sync_socket.bind(&format!("tcp://*:{}", sync_port)).expect("Failed to bind sync socket");
+    log::info!(target: LOG_TARGET, "🔄 Sync socket bound on port {}", sync_port);
+
+    // Send READY signal in a separate thread (non-blocking)
+    std::thread::spawn(move || {
+        log::info!(target: LOG_TARGET, "⏳ Waiting for ME to request READY signal...");
+        if let Ok(msg) = sync_socket.recv_bytes(0) {
+            if msg == b"PING" {
+                sync_socket.send(&b"READY"[..], 0).expect("Failed to send READY");
+                log::info!(target: LOG_TARGET, "✅ Sent READY signal to ME");
+            }
+        }
+    });
 
     // File logging setup (CSV/Failed Trades)
     let data_dir_str = configure::prepare_data_dir(&config.data_dir).unwrap_or_else(|e| {
@@ -103,21 +121,28 @@ async fn main() {
         .expect("Failed to open backup CSV file");
     let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(file);
 
+    let mut msg_count = 0u64;
     loop {
+        msg_count += 1;
+        log::info!(target: LOG_TARGET, "🔄 Attempting to receive message #{}", msg_count);
+
         let data = match subscriber.recv_bytes(0) {
-            Ok(d) => d,
+            Ok(d) => {
+                log::info!(target: LOG_TARGET, "✅ Received {} bytes for message #{}", d.len(), msg_count);
+                d
+            },
             Err(e) => {
                 log::error!(target: LOG_TARGET, "ZMQ recv bytes error: {}", e);
                 continue;
             }
         };
 
+        // Process synchronously (no async spawn) to avoid calling recv_bytes too quickly
         match serde_json::from_slice::<LedgerCommand>(&data) {
             Ok(cmd) => {
                 match cmd {
                     LedgerCommand::OrderUpdate(order_update) => {
-                        total_history_events += 1;
-                        if let Err(e) = process_order_update(&order_history_db, &order_update, total_history_events).await {
+                        if let Err(e) = process_order_update(&order_history_db, &order_update, msg_count).await {
                              log::error!(target: LOG_TARGET, "Order History Update Failed: {}", e);
                         }
                     },
@@ -126,10 +151,7 @@ async fn main() {
                              // 1. Settlement Logic
                              if let Err(e) = settlement_db.settle_trade_atomically(&trade).await {
                                   log::error!(target: LOG_TARGET, "Settlement Failed for trade {}: {}", trade.trade_id, e);
-                                  total_errors += 1;
-                                  // Log to failed file... (omitted for brevity, can implement if needed)
                              } else {
-                                  total_settled += 1;
                                   log::info!(target: LOG_TARGET, "✅ Settled trade {}", trade.trade_id);
 
                                   // StarRocks
@@ -146,11 +168,9 @@ async fn main() {
                              }
 
                              // 2. Order History Logic (Fills)
-                             // Buyer
                              if let Err(e) = process_trade_fill(&order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, trade.match_seq).await {
                                  log::error!(target: LOG_TARGET, "Order History Fill (Buyer) Failed: {}", e);
                              }
-                             // Seller
                              if let Err(e) = process_trade_fill(&order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, trade.match_seq).await {
                                  log::error!(target: LOG_TARGET, "Order History Fill (Seller) Failed: {}", e);
                              }

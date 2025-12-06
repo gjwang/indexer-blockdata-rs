@@ -238,6 +238,29 @@ async fn main() {
     println!("--------------------------------------------------");
     println!(">>> Matching Engine Server Started (Pipelined)");
 
+    // === Wait for Settlement Service to be ready ===
+    println!(">>> Waiting for Settlement Service READY signal...");
+    let zmq_ctx = zmq::Context::new();
+    let sync_req = zmq_ctx.socket(zmq::REQ).expect("Failed to create REQ socket");
+    let sync_port = config.zeromq.as_ref().unwrap().settlement_port + 2;
+    sync_req.connect(&format!("tcp://localhost:{}", sync_port)).expect("Failed to connect to sync port");
+    sync_req.send(&b"PING"[..], 0).expect("Failed to send PING");
+
+    match sync_req.recv_bytes(0) {
+        Ok(msg) if msg == b"READY" => {
+            println!(">>> ✅ Settlement Service is READY");
+        }
+        Ok(_) => {
+            eprintln!("Unexpected response from Settlement Service");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed to receive READY from Settlement: {}", e);
+            std::process::exit(1);
+        }
+    }
+    drop(sync_req); // Close sync socket
+
     let mut total_orders = 0;
     let mut last_report = std::time::Instant::now();
 
@@ -456,11 +479,30 @@ async fn main() {
                 // We send the LedgerCommand enum directly so consumers (Order History, Settlement)
                 // can deserialize the enum and handle variants relevant to them.
                 if let Ok(data) = serde_json::to_vec(cmd) {
-                     // Debug logging for OrderUpdate
-                     if let LedgerCommand::OrderUpdate(ou) = cmd {
-                         println!("[ZMQ] Publishing OrderUpdate: id={}, status={:?}", ou.order_id, ou.status);
+                     // Debug logging for ALL commands
+                     match cmd {
+                         LedgerCommand::OrderUpdate(ou) => {
+                             println!("[ZMQ] Publishing OrderUpdate: id={}, status={:?}", ou.order_id, ou.status);
+                         }
+                         LedgerCommand::Deposit { user_id, asset_id, .. } => {
+                             println!("[ZMQ] Publishing Deposit: user={}, asset={}", user_id, asset_id);
+                         }
+                         LedgerCommand::Lock { user_id, asset_id, .. } => {
+                             println!("[ZMQ] Publishing Lock: user={}, asset={}", user_id, asset_id);
+                         }
+                         _ => {}
                      }
-                     let _ = zmq_pub_clone.publish_settlement(&data);
+                     if let Err(e) = zmq_pub_clone.publish_settlement(&data) {
+                         eprintln!("[ZMQ ERROR] Failed to publish settlement command: {}", e);
+                     } else {
+                         // Add delay for first few messages to prevent ZMQ slow subscriber drops
+                         static MSG_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                         let count = MSG_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                         if count < 5 {
+                             println!("[ZMQ] Message #{} - adding 200ms delay", count);
+                             std::thread::sleep(std::time::Duration::from_millis(200));
+                         }
+                     }
                 }
             }
         }
@@ -617,29 +659,33 @@ async fn main() {
                     }
                 } else if topic == balance_topic {
                     // Deserialize Balance Request
-                    if let Ok(req) = serde_json::from_slice::<BalanceRequest>(payload) {
-                        // Publish pending place orders first
-                        if !place_orders.is_empty() {
-                            let batch_clone = place_orders.clone();
-                            let offset_clone = pending_batch_offset.clone();
+                    match serde_json::from_slice::<BalanceRequest>(payload) {
+                        Ok(req) => {
+                            // Publish pending place orders first
+                            if !place_orders.is_empty() {
+                                let batch_clone = place_orders.clone();
+                                let offset_clone = pending_batch_offset.clone();
+                                producer.publish(|event| {
+                                    event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                    event.kafka_offset = offset_clone;
+                                    event.timestamp = timestamp;
+                                });
+                                place_orders.clear();
+                                pending_batch_offset = None;
+                            }
+
+                            // Publish balance request
+                            let offset_clone = current_offset.clone();
                             producer.publish(|event| {
-                                event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                event.command = Some(EngineCommand::BalanceRequest(req));
                                 event.kafka_offset = offset_clone;
                                 event.timestamp = timestamp;
                             });
-                            place_orders.clear();
-                            pending_batch_offset = None;
                         }
-
-                        // Publish balance request
-                        let offset_clone = current_offset.clone();
-                        producer.publish(|event| {
-                            event.command = Some(EngineCommand::BalanceRequest(req));
-                            event.kafka_offset = offset_clone;
-                            event.timestamp = timestamp;
-                        });
-                    } else {
-                        eprintln!("Failed to parse Balance JSON");
+                        Err(e) => {
+                            eprintln!("Failed to parse Balance JSON: {}", e);
+                            eprintln!("Payload: {}", String::from_utf8_lossy(payload));
+                        }
                     }
                 }
             }
