@@ -107,9 +107,12 @@ kill $CLIENT_PID || true
 echo "  Waiting for settlement to catch up (60s)..."
 for i in {1..6}; do
     sleep 10
-    PROCESSED=$(grep -c "Processed.*EngineOutput" /tmp/settle.log 2>/dev/null || echo "0")
+    # Count batches processed (new format: [BATCH] n=X seq=...)
+    BATCHES=$(grep -c "\[BATCH\]" /tmp/settle.log 2>/dev/null || echo "0")
+    # Sum up the batch sizes to get total messages processed
+    PROCESSED=$(grep "\[BATCH\]" /tmp/settle.log 2>/dev/null | sed 's/.*n=\([0-9]*\).*/\1/' | awk '{s+=$1}END{print s}' || echo "0")
     PUBLISHED=$(grep -c "Published EngineOutput" /tmp/me.log 2>/dev/null || echo "0")
-    echo "    Progress: processed=$PROCESSED / published=$PUBLISHED"
+    echo "    Progress: batches=$BATCHES processed=$PROCESSED / published=$PUBLISHED"
 done
 
 echo ""

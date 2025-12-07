@@ -1523,6 +1523,42 @@ impl SettlementDb {
         Ok(())
     }
 
+    /// Batch write multiple EngineOutputs to log (Source of Truth) - ULTRA FAST
+    /// Writes all outputs in a single ScyllaDB batch for maximum throughput
+    pub async fn write_engine_outputs_batch(&self, outputs: &[crate::engine_output::EngineOutput]) -> Result<()> {
+        if outputs.is_empty() {
+            return Ok(());
+        }
+
+        use scylla::batch::Batch;
+        use scylla::batch::BatchType;
+
+        const QUERY: &str = "INSERT INTO engine_output_log (output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?)";
+
+        let mut batch = Batch::new(BatchType::Unlogged);
+        let mut values = Vec::with_capacity(outputs.len());
+        let now = get_current_timestamp_ms();
+
+        for output in outputs {
+            let output_bytes = serde_json::to_vec(output)
+                .context("Failed to serialize EngineOutput")?;
+
+            batch.append_statement(QUERY);
+            values.push((
+                output.output_seq as i64,
+                output.hash as i64,
+                output.prev_hash as i64,
+                output_bytes,
+                now,
+            ));
+        }
+
+        self.session.batch(&batch, values).await
+            .context("Failed to batch write engine_output_log")?;
+
+        Ok(())
+    }
+
     /// Check if EngineOutput already exists in log (for idempotency)
     pub async fn engine_output_exists(&self, output_seq: u64) -> Result<bool> {
         const QUERY: &str = "SELECT output_seq FROM engine_output_log WHERE output_seq = ? LIMIT 1";
