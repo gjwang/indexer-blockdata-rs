@@ -27,8 +27,9 @@ use zmq::{Context, PULL};
 const LOG_TARGET: &str = "settlement";
 
 // === CONFIGURATION ===
-const MAX_BATCH_SIZE: usize = 200;
+const MAX_BATCH_SIZE: usize = 500;
 const MAX_DRAIN_BATCH: usize = 200; // Max items to drain from channel per write
+const NUM_BALANCE_WRITERS: usize = 16; // Parallel balance writers for higher throughput
 const DERIVED_WRITER_BUFFER: usize = 10_000;
 
 // ============================================================================
@@ -189,7 +190,7 @@ async fn load_chain_state(db: &SettlementDb) -> (u64, u64) {
 
 use fetcher::engine_output::{BalanceEvent, TradeOutput};
 
-type BalanceTx = mpsc::Sender<Vec<BalanceEvent>>;
+type BalanceTx = Vec<mpsc::Sender<Vec<BalanceEvent>>>;
 type TradesTx = mpsc::Sender<(Vec<TradeOutput>, u64)>;
 type OrderTx = mpsc::Sender<Vec<EngineOutput>>;
 type StarRocksTx = mpsc::Sender<Vec<StarRocksTrade>>;
@@ -199,28 +200,34 @@ fn spawn_derived_writers(
     order_history_db: Arc<OrderHistoryDb>,
     starrocks_client: Arc<StarRocksClient>,
 ) -> (BalanceTx, TradesTx, OrderTx, StarRocksTx) {
-    // Balance Events Writer - DRAIN + BATCH
-    let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
-    let db = settlement_db.clone();
-    tokio::spawn(async move {
-        while let Some(mut all_events) = balance_rx.recv().await {
-            // Drain channel: collect pending balance events (up to MAX_DRAIN_BATCH)
-            let mut drain_count = 1;
-            while drain_count < MAX_DRAIN_BATCH {
-                match balance_rx.try_recv() {
-                    Ok(more_events) => {
-                        all_events.extend(more_events);
-                        drain_count += 1;
+    // Parallel Balance Events Writers - DRAIN + BATCH (sharded by user_id)
+    let mut balance_channels = Vec::with_capacity(NUM_BALANCE_WRITERS);
+
+    for shard_id in 0..NUM_BALANCE_WRITERS {
+        let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
+        balance_channels.push(balance_tx);
+
+        let db = settlement_db.clone();
+        tokio::spawn(async move {
+            while let Some(mut all_events) = balance_rx.recv().await {
+                // Drain channel: collect pending balance events (up to MAX_DRAIN_BATCH)
+                let mut drain_count = 1;
+                while drain_count < MAX_DRAIN_BATCH {
+                    match balance_rx.try_recv() {
+                        Ok(more_events) => {
+                            all_events.extend(more_events);
+                            drain_count += 1;
+                        }
+                        Err(_) => break,
                     }
-                    Err(_) => break,
+                }
+                // Single batch write for ALL drained events
+                if let Err(e) = db.append_balance_events_batch(&all_events).await {
+                    log::error!(target: LOG_TARGET, "Balance writer shard {} failed: {}", shard_id, e);
                 }
             }
-            // Single batch write for ALL drained events
-            if let Err(e) = db.append_balance_events_batch(&all_events).await {
-                log::error!(target: LOG_TARGET, "Balance write failed: {}", e);
-            }
-        }
-    });
+        });
+    }
 
     // Trades Writer - DRAIN + BATCH
     let (trades_tx, mut trades_rx) =
@@ -282,8 +289,8 @@ fn spawn_derived_writers(
         }
     });
 
-    log::info!(target: LOG_TARGET, "✅ Derived writers spawned (buffer={})", DERIVED_WRITER_BUFFER);
-    (balance_tx, trades_tx, order_tx, starrocks_tx)
+    log::info!(target: LOG_TARGET, "✅ Derived writers spawned: {} balance writers (sharded), buffer={}", NUM_BALANCE_WRITERS, DERIVED_WRITER_BUFFER);
+    (balance_channels, trades_tx, order_tx, starrocks_tx)
 }
 
 // ============================================================================
@@ -459,9 +466,21 @@ async fn dispatch_to_writers(
     let mut trade_count = 0;
 
     for output in outputs {
-        // Send balance events per-output (writer will drain)
+        // Partition balance events by user_id to sharded writers
         if !output.balance_events.is_empty() {
-            let _ = balance_tx.send(output.balance_events.clone()).await;
+            // Group events by shard (user_id % NUM_BALANCE_WRITERS)
+            use std::collections::HashMap;
+            let mut sharded_events: HashMap<usize, Vec<BalanceEvent>> = HashMap::new();
+
+            for event in &output.balance_events {
+                let shard = (event.user_id % NUM_BALANCE_WRITERS as u64) as usize;
+                sharded_events.entry(shard).or_insert_with(Vec::new).push(event.clone());
+            }
+
+            // Send to appropriate shards
+            for (shard, events) in sharded_events {
+                let _ = balance_tx[shard].send(events).await;
+            }
         }
 
         // Send trades per-output (writer will drain)
