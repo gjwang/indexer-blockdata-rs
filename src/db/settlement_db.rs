@@ -1539,9 +1539,11 @@ impl SettlementDb {
 
     /// Get the last processed chain state for crash recovery
     /// Reads from engine_output_log (the source of truth) instead of a separate state table
+    /// Note: Currently all outputs use symbol_id=0 (single shard)
     pub async fn get_chain_state(&self) -> Result<(u64, u64)> {
+        // Query from symbol_id=0 partition (where all current outputs go)
         const QUERY: &str =
-            "SELECT output_seq, hash FROM engine_output_log ORDER BY output_seq DESC LIMIT 1";
+            "SELECT output_seq, hash FROM engine_output_log WHERE symbol_id = 0 ORDER BY output_seq DESC LIMIT 1";
 
         let result = self
             .session
@@ -1615,7 +1617,7 @@ impl SettlementDb {
         use scylla::batch::Batch;
         use scylla::batch::BatchType;
 
-        const QUERY: &str = "INSERT INTO engine_output_log (output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?)";
+        const QUERY: &str = "INSERT INTO engine_output_log (symbol_id, output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?, ?)";
 
         let mut batch = Batch::new(BatchType::Unlogged);
         let mut values = Vec::with_capacity(outputs.len());
@@ -1650,6 +1652,7 @@ impl SettlementDb {
 
             batch.append_statement(QUERY);
             values.push((
+                output.symbol_id as i32,  // NEW: symbol_id partition key
                 output.output_seq as i64,
                 output.hash as i64,
                 output.prev_hash as i64,
