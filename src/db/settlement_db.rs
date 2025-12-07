@@ -879,25 +879,39 @@ impl SettlementDb {
             .await
             .context("Failed to batch insert balance_ledger")?;
 
-        let mut user_batch = Batch::new(BatchType::Unlogged);
-        let user_stmt = "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)";
-        for _ in events {
-            user_batch.append_statement(user_stmt);
+        // Update user_balances SNAPSHOT - only write FINAL state per (user_id, asset_id)
+        // This is efficient: instead of writing every event, we just write the last one
+        use std::collections::HashMap;
+        let mut latest: HashMap<(u64, u32), &crate::engine_output::BalanceEvent> = HashMap::new();
+        for event in events {
+            let key = (event.user_id, event.asset_id);
+            match latest.get(&key) {
+                Some(existing) if existing.seq >= event.seq => {} // Keep existing (higher seq)
+                _ => { latest.insert(key, event); }
+            }
         }
 
-        let user_values: Vec<_> = events
-            .iter()
-            .map(|e| {
-                (e.user_id as i64, e.asset_id as i32, e.avail, e.frozen, e.seq as i64, now as i64)
-            })
-            .collect();
+        if !latest.is_empty() {
+            let mut user_batch = Batch::new(BatchType::Unlogged);
+            let user_stmt = "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)";
+            for _ in 0..latest.len() {
+                user_batch.append_statement(user_stmt);
+            }
 
-        self.session
-            .batch(&user_batch, user_values)
-            .await
-            .context("Failed to batch update user_balances")?;
+            let user_values: Vec<_> = latest
+                .values()
+                .map(|e| {
+                    (e.user_id as i64, e.asset_id as i32, e.avail, e.frozen, e.seq as i64, now as i64)
+                })
+                .collect();
 
-        log::debug!("Batch processed {} balance events", events.len());
+            self.session
+                .batch(&user_batch, user_values)
+                .await
+                .context("Failed to batch update user_balances snapshot")?;
+        }
+
+        log::debug!("Batch processed {} balance events ({} user snapshots)", events.len(), latest.len());
         Ok(())
     }
 

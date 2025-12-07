@@ -326,11 +326,18 @@ async fn run_processing_loop(
             (batch_size as f64 * 1_000_000.0) / t_start.elapsed().as_micros().max(1) as f64;
         let total_ops = (total_msgs as f64 * 1_000_000.0) / total_processing_us.max(1) as f64;
 
+        // Buffer capacity monitoring (remaining = available slots, lower = more backed up)
+        let bal_cap = balance_tx.capacity();
+        let trd_cap = trades_tx.capacity();
+        let ord_cap = order_tx.capacity();
+        let sr_cap = starrocks_tx.capacity();
+
         log::info!(target: LOG_TARGET,
-            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s",
+            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s | buf: bal={} trd={} ord={} sr={}",
             last_seq, total_msgs, total_trades,
             batch_size, batch_ops, t_sot, d_dispatch,
-            total_ops
+            total_ops,
+            bal_cap, trd_cap, ord_cap, sr_cap
         );
     }
 }
@@ -425,62 +432,71 @@ async fn dispatch_to_writers(
     csv_writer: &mut csv::Writer<std::fs::File>,
 ) -> usize {
     let mut trade_count = 0;
+    let mut all_balance_events = Vec::new();
+    let mut all_trades = Vec::new();
 
     for output in outputs {
-        // Balance Events
+        // Collect Balance Events
         if !output.balance_events.is_empty() {
-            let _ = balance_tx.send(output.balance_events.clone()).await;
+            all_balance_events.extend(output.balance_events.clone());
         }
 
-        // Trades
+        // Collect Trades
         if !output.trades.is_empty() {
             trade_count += output.trades.len();
-            let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
+            all_trades.push((output.trades.clone(), output.output_seq));
 
-            // StarRocks trades
-            let sr_trades: Vec<StarRocksTrade> = output
-                .trades
-                .iter()
-                .map(|trade| {
-                    let ts = if trade.settled_at > 0 {
-                        trade.settled_at as i64
-                    } else {
-                        Utc::now().timestamp_millis()
-                    };
-                    let match_exec = fetcher::ledger::MatchExecData {
-                        trade_id: trade.trade_id,
-                        buy_order_id: trade.buy_order_id,
-                        sell_order_id: trade.sell_order_id,
-                        buyer_user_id: trade.buyer_user_id,
-                        seller_user_id: trade.seller_user_id,
-                        price: trade.price,
-                        quantity: trade.quantity,
-                        base_asset_id: trade.base_asset_id,
-                        quote_asset_id: trade.quote_asset_id,
-                        buyer_refund: trade.buyer_refund,
-                        seller_refund: trade.seller_refund,
-                        match_seq: trade.match_seq,
-                        output_sequence: output.output_seq,
-                        settled_at: trade.settled_at,
-                        buyer_quote_version: 0,
-                        buyer_base_version: 0,
-                        seller_base_version: 0,
-                        seller_quote_version: 0,
-                        buyer_quote_balance_after: 0,
-                        buyer_base_balance_after: 0,
-                        seller_base_balance_after: 0,
-                        seller_quote_balance_after: 0,
-                    };
-                    let _ = csv_writer.serialize(&match_exec);
-                    StarRocksTrade::from_match_exec(&match_exec, ts)
-                })
-                .collect();
-            let _ = starrocks_tx.send(sr_trades).await;
+            // CSV backup (still per-trade for now)
+            for trade in &output.trades {
+                let ts = if trade.settled_at > 0 {
+                    trade.settled_at as i64
+                } else {
+                    Utc::now().timestamp_millis()
+                };
+                let match_exec = fetcher::ledger::MatchExecData {
+                    trade_id: trade.trade_id,
+                    buy_order_id: trade.buy_order_id,
+                    sell_order_id: trade.sell_order_id,
+                    buyer_user_id: trade.buyer_user_id,
+                    seller_user_id: trade.seller_user_id,
+                    price: trade.price,
+                    quantity: trade.quantity,
+                    base_asset_id: trade.base_asset_id,
+                    quote_asset_id: trade.quote_asset_id,
+                    buyer_refund: trade.buyer_refund,
+                    seller_refund: trade.seller_refund,
+                    match_seq: trade.match_seq,
+                    output_sequence: output.output_seq,
+                    settled_at: trade.settled_at,
+                    buyer_quote_version: 0,
+                    buyer_base_version: 0,
+                    seller_base_version: 0,
+                    seller_quote_version: 0,
+                    buyer_quote_balance_after: 0,
+                    buyer_base_balance_after: 0,
+                    seller_base_balance_after: 0,
+                    seller_quote_balance_after: 0,
+                };
+                let _ = csv_writer.serialize(&match_exec);
+            }
         }
+    }
+
+    // Send all balance events as ONE batch (instead of per-output)
+    if !all_balance_events.is_empty() {
+        let _ = balance_tx.send(all_balance_events).await;
+    }
+
+    // Send trades (still per-output for now, but could be flattened too)
+    for (trades, seq) in all_trades {
+        let _ = trades_tx.send((trades, seq)).await;
     }
 
     // Order Updates - send entire batch at once
     let _ = order_tx.send(outputs.to_vec()).await;
+
+    // StarRocks TEMPORARILY DISABLED
+    let _ = starrocks_tx;
 
     let _ = csv_writer.flush();
     trade_count
