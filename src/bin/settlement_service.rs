@@ -6,6 +6,8 @@ use fetcher::logger::setup_logger;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 use zmq::{Context, PULL};
 use chrono::Utc;
+use tokio::sync::mpsc;
+use std::sync::Arc;
 
 const LOG_TARGET: &str = "settlement";
 
@@ -142,6 +144,59 @@ async fn main() {
     const MAX_BUFFER_SIZE: usize = 100_000; // Very large - should NEVER hit this with proper back-pressure
 
     let mut msg_count = 0u64;
+
+    // === DERIVED WRITERS: Bounded Channels for Ordered Processing ===
+    // Each writer has its own channel with back-pressure when buffer is full
+    const DERIVED_WRITER_BUFFER_SIZE: usize = 10_000;
+
+    // Balance events channel
+    let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<fetcher::engine_output::BalanceEvent>>(DERIVED_WRITER_BUFFER_SIZE);
+    let sdb_balance = settlement_db.clone();
+    tokio::spawn(async move {
+        while let Some(events) = balance_rx.recv().await {
+            if let Err(e) = sdb_balance.append_balance_events_batch(&events).await {
+                log::error!(target: "settlement", "Balance events write failed (can replay): {}", e);
+            }
+        }
+    });
+
+    // Trades channel
+    let (trades_tx, mut trades_rx) = mpsc::channel::<(Vec<fetcher::engine_output::TradeOutput>, u64)>(DERIVED_WRITER_BUFFER_SIZE);
+    let sdb_trades = settlement_db.clone();
+    tokio::spawn(async move {
+        while let Some((trades, seq)) = trades_rx.recv().await {
+            if let Err(e) = sdb_trades.insert_trades_batch(&trades, seq).await {
+                log::error!(target: "settlement", "Trades write failed (can replay): {}", e);
+            }
+        }
+    });
+
+    // Order updates channel
+    let (order_tx, mut order_rx) = mpsc::channel::<EngineOutput>(DERIVED_WRITER_BUFFER_SIZE);
+    let ohdb_orders = order_history_db.clone();
+    tokio::spawn(async move {
+        while let Some(output) = order_rx.recv().await {
+            if let Err(e) = process_engine_order_update(&ohdb_orders, &output).await {
+                log::error!(target: "settlement", "Order update write failed (can replay): {}", e);
+            }
+        }
+    });
+
+    // StarRocks trades channel
+    let (starrocks_tx, mut starrocks_rx) = mpsc::channel::<Vec<StarRocksTrade>>(DERIVED_WRITER_BUFFER_SIZE);
+    let sr_client = starrocks_client.clone();
+    tokio::spawn(async move {
+        while let Some(trades) = starrocks_rx.recv().await {
+            for trade in trades {
+                if let Err(e) = sr_client.load_trade(trade).await {
+                    log::error!(target: "settlement", "StarRocks trade load failed: {}", e);
+                }
+            }
+        }
+    });
+
+    log::info!(target: LOG_TARGET, "✅ Derived writers started (buffer_size={})", DERIVED_WRITER_BUFFER_SIZE);
+
     loop {
         msg_count += 1;
         log::debug!(target: LOG_TARGET, "🔄 Attempting to receive message #{}", msg_count);
@@ -174,6 +229,10 @@ async fn main() {
                         &mut last_output_seq,
                         &mut wtr,
                         msg_count,
+                        &balance_tx,
+                        &trades_tx,
+                        &order_tx,
+                        &starrocks_tx,
                     ).await {
                         total_errors += 1;
                         log::error!(target: LOG_TARGET, "❌ EngineOutput processing failed: {}", e);
@@ -200,6 +259,10 @@ async fn main() {
                                 &mut last_output_seq,
                                 &mut wtr,
                                 msg_count,
+                                &balance_tx,
+                                &trades_tx,
+                                &order_tx,
+                                &starrocks_tx,
                             ).await {
                                 total_errors += 1;
                                 log::error!(target: LOG_TARGET, "❌ Buffered EngineOutput processing failed: {}", e);
@@ -391,13 +454,18 @@ fn verify_engine_output(
 /// ATOMIC: All operations must succeed, or we fail and retry the whole output
 async fn process_engine_output<W: std::io::Write>(
     settlement_db: &std::sync::Arc<SettlementDb>,
-    order_history_db: &std::sync::Arc<OrderHistoryDb>,
-    starrocks_client: &std::sync::Arc<StarRocksClient>,
+    _order_history_db: &std::sync::Arc<OrderHistoryDb>,
+    _starrocks_client: &std::sync::Arc<StarRocksClient>,
     output: &EngineOutput,
     last_processed_hash: &mut u64,
     last_output_seq: &mut u64,
     csv_writer: &mut csv::Writer<W>,
-    event_id: u64,
+    _event_id: u64,
+    // Channels for derived writers (ordered, bounded queues)
+    balance_tx: &mpsc::Sender<Vec<fetcher::engine_output::BalanceEvent>>,
+    trades_tx: &mpsc::Sender<(Vec<fetcher::engine_output::TradeOutput>, u64)>,
+    order_tx: &mpsc::Sender<EngineOutput>,
+    starrocks_tx: &mpsc::Sender<Vec<StarRocksTrade>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t_start = std::time::Instant::now();
 
@@ -413,112 +481,97 @@ async fn process_engine_output<W: std::io::Write>(
     }
     let d_verify = t_verify.elapsed();
 
-    // === PARALLEL DB WRITES WITH RETRY ===
-    let t_db = std::time::Instant::now();
-
     let output_seq = output.output_seq;
     let output_hash = output.hash;
 
-    const MAX_RETRIES: u32 = 3;
+    // === PHASE 1: Write Source of Truth ===
+    // write_engine_output MUST succeed first - this is the ONLY source of truth
+    // If this fails, we fail fast (caller will retry the whole output)
+    let t_sot = std::time::Instant::now();
+    settlement_db.write_engine_output(output).await
+        .map_err(|e| format!("Failed to write engine_output (source of truth): {}", e))?;
+    let d_sot = t_sot.elapsed();
 
-    let mut last_error: Option<String> = None;
-
-    // Run ALL DB writes in parallel
-    let (log_result, bal_result, trade_result, order_result) = tokio::join!(
-        settlement_db.write_engine_output(output),
-        settlement_db.append_balance_events_batch(&output.balance_events),
-        settlement_db.insert_trades_batch(&output.trades, output_seq),
-        process_engine_order_update(&order_history_db, output),//todo: to settlement_db.insert_order_
-        //TODO: update order history
-
-    );
-
-    // Check if all succeeded
-    let log_ok = log_result.is_ok();
-    let bal_ok = bal_result.is_ok();
-    let trade_ok = trade_result.is_ok();
-    let order_ok = order_result.is_ok();
-
-    if !(log_ok && bal_ok && trade_ok && order_ok) {
-        // Build error message for failed operations
-        let mut errors = Vec::new();
-        if let Err(e) = log_result { errors.push(format!("log: {}", e)); }
-        if let Err(e) = bal_result { errors.push(format!("bal: {}", e)); }
-        if let Err(e) = trade_result { errors.push(format!("trade: {}", e)); }
-        if let Err(e) = order_result { errors.push(format!("order: {}", e)); }
-        last_error = Some(errors.join(", "));
-    }
-
-    if let Some(err) = last_error {
-        return Err(format!("DB writes failed after {} retries: {}", MAX_RETRIES, err).into());
-    }
-
-    let d_db = t_db.elapsed();
-
-    // Update in-memory chain state after successful persist
+    // Update in-memory chain state immediately after source of truth is written
     *last_processed_hash = output_hash;
     *last_output_seq = output_seq;
 
-    // 6. StarRocks (async, fire-and-forget for all trades)
-    let t_trade = std::time::Instant::now();
-    for trade in &output.trades {
-        let sr_client = starrocks_client.clone();
-        let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
-        let match_exec = fetcher::ledger::MatchExecData {
-            trade_id: trade.trade_id,
-            buy_order_id: trade.buy_order_id,
-            sell_order_id: trade.sell_order_id,
-            buyer_user_id: trade.buyer_user_id,
-            seller_user_id: trade.seller_user_id,
-            price: trade.price,
-            quantity: trade.quantity,
-            base_asset_id: trade.base_asset_id,
-            quote_asset_id: trade.quote_asset_id,
-            buyer_refund: trade.buyer_refund,
-            seller_refund: trade.seller_refund,
-            match_seq: trade.match_seq,
-            output_sequence: output.output_seq,
-            settled_at: trade.settled_at,
-            buyer_quote_version: 0,
-            buyer_base_version: 0,
-            seller_base_version: 0,
-            seller_quote_version: 0,
-            buyer_quote_balance_after: 0,
-            buyer_base_balance_after: 0,
-            seller_base_balance_after: 0,
-            seller_quote_balance_after: 0,
-        };
-        // CSV (non-critical, can fail silently)
-        let _ = csv_writer.serialize(&match_exec);
+    // === PHASE 2: Send to Derived Writers (ordered, bounded queues) ===
+    // Each channel has a dedicated consumer that processes in strict order
+    // If buffer is full, .send().await blocks (back-pressure)
+    let t_queue = std::time::Instant::now();
 
-        let sr_trade = StarRocksTrade::from_match_exec(&match_exec, ts);
-        tokio::spawn(async move { let _ = sr_client.load_trade(sr_trade).await; });
-    }
-
-    // Order fills - do in background (non-critical for settlement)
-    let ohs_db = order_history_db.clone();
-    let trades_for_fills: Vec<_> = output.trades.iter().map(|t| (t.buyer_user_id, t.buy_order_id, t.seller_user_id, t.sell_order_id, t.quantity)).collect();
-    tokio::spawn(async move {
-        for (buyer_id, buy_oid, seller_id, sell_oid, qty) in trades_for_fills {
-            let _ = process_trade_fill(&ohs_db, buyer_id, buy_oid, qty, 0).await;
-            let _ = process_trade_fill(&ohs_db, seller_id, sell_oid, qty, 0).await;
+    // Send balance events to writer queue
+    if !output.balance_events.is_empty() {
+        if let Err(e) = balance_tx.send(output.balance_events.clone()).await {
+            log::error!(target: LOG_TARGET, "Failed to queue balance events: {}", e);
         }
-    });
-
-    if !output.trades.is_empty() {
-        log::info!(target: LOG_TARGET, "✅ Recorded {} trades from EngineOutput", output.trades.len());
     }
-    let d_trade = t_trade.elapsed();
 
-    // 8. Flush CSV
+    // Send trades to writer queue
+    if !output.trades.is_empty() {
+        if let Err(e) = trades_tx.send((output.trades.clone(), output_seq)).await {
+            log::error!(target: LOG_TARGET, "Failed to queue trades: {}", e);
+        }
+    }
+
+    // Send order update to writer queue
+    if let Err(e) = order_tx.send(output.clone()).await {
+        log::error!(target: LOG_TARGET, "Failed to queue order update: {}", e);
+    }
+
+    // Send StarRocks trades to writer queue
+    if !output.trades.is_empty() {
+        // Build StarRocks trades and write to CSV
+        let sr_trades: Vec<StarRocksTrade> = output.trades.iter().map(|trade| {
+            let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
+            let match_exec = fetcher::ledger::MatchExecData {
+                trade_id: trade.trade_id,
+                buy_order_id: trade.buy_order_id,
+                sell_order_id: trade.sell_order_id,
+                buyer_user_id: trade.buyer_user_id,
+                seller_user_id: trade.seller_user_id,
+                price: trade.price,
+                quantity: trade.quantity,
+                base_asset_id: trade.base_asset_id,
+                quote_asset_id: trade.quote_asset_id,
+                buyer_refund: trade.buyer_refund,
+                seller_refund: trade.seller_refund,
+                match_seq: trade.match_seq,
+                output_sequence: output.output_seq,
+                settled_at: trade.settled_at,
+                buyer_quote_version: 0,
+                buyer_base_version: 0,
+                seller_base_version: 0,
+                seller_quote_version: 0,
+                buyer_quote_balance_after: 0,
+                buyer_base_balance_after: 0,
+                seller_base_balance_after: 0,
+                seller_quote_balance_after: 0,
+            };
+            // CSV (non-critical, can fail silently)
+            let _ = csv_writer.serialize(&match_exec);
+            StarRocksTrade::from_match_exec(&match_exec, ts)
+        }).collect();
+
+        if let Err(e) = starrocks_tx.send(sr_trades).await {
+            log::error!(target: LOG_TARGET, "Failed to queue StarRocks trades: {}", e);
+        }
+    }
+    let d_queue = t_queue.elapsed();
+
+    // Flush CSV
     csv_writer.flush()?;
 
     let d_total = t_start.elapsed();
 
-    // Log timing (order processing is now included in d_db via tokio::join!)
+    // Log timing - Two-phase architecture:
+    // - verify: hash chain verification
+    // - sot: source of truth write (blocking, must succeed)
+    // - queue: time to send to derived writer queues (non-blocking after send)
     log::info!(target: LOG_TARGET,
-        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?}",
-        output_seq, d_total, d_verify, d_db, d_trade);
+        "[PROFILE] seq={} total={:?} verify={:?} sot={:?} queue={:?}",
+        output_seq, d_total, d_verify, d_sot, d_queue);
 
     Ok(())
 }
