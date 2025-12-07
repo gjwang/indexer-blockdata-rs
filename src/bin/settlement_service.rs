@@ -431,12 +431,13 @@ async fn dispatch_to_writers(
     starrocks_tx: &StarRocksTx,
     csv_writer: &mut csv::Writer<std::fs::File>,
 ) -> usize {
+    let mut all_balance_events = Vec::new();
     let mut trade_count = 0;
 
     for output in outputs {
-        // Send Balance Events per-output
+        // Collect all balance events (flatten)
         if !output.balance_events.is_empty() {
-            let _ = balance_tx.send(output.balance_events.clone()).await;
+            all_balance_events.extend(output.balance_events.clone());
         }
 
         // Send Trades per-output (preserve output_seq association)
@@ -444,6 +445,11 @@ async fn dispatch_to_writers(
             trade_count += output.trades.len();
             let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
         }
+    }
+
+    // Send ALL balance events as ONE batch (reduces 100 sends to 1!)
+    if !all_balance_events.is_empty() {
+        let _ = balance_tx.send(all_balance_events).await;
     }
 
     // Order Updates - send entire batch at once

@@ -5,6 +5,15 @@
 
 set -e
 
+# Determine binary path based on USE_RELEASE
+if [ "$USE_RELEASE" = "1" ]; then
+    BIN_DIR="./target/release"
+    BUILD_FLAG="--release"
+else
+    BIN_DIR="./target/debug"
+    BUILD_FLAG=""
+fi
+
 echo "=========================================="
 echo "  Complete E2E Test with Transfer In"
 echo "=========================================="
@@ -15,6 +24,7 @@ pkill -f matching_engine_server || true
 pkill -f settlement_service || true
 pkill -f order_gate_server || true
 pkill -f transfer_server || true
+pkill -f order_http_client || true
 sleep 2
 
 echo ""
@@ -31,23 +41,23 @@ echo "✅ All data cleaned"
 
 echo ""
 echo "=== Step 3: Building binaries ==="
-cargo build --bin matching_engine_server --bin settlement_service --bin order_gate_server --bin transfer_server 2>&1 | tail -3
+cargo build $BUILD_FLAG --bin matching_engine_server --bin settlement_service --bin order_gate_server --bin transfer_server 2>&1 | tail -3
 
 echo ""
 echo "=== Step 4: Starting services ==="
 
 echo "  4.1 Starting Settlement Service..."
-./target/debug/settlement_service > /tmp/settle.log 2>&1 &
+$BIN_DIR/settlement_service > /tmp/settle.log 2>&1 &
 SETTLE_PID=$!
 sleep 2
 
 echo "  4.2 Starting Matching Engine..."
-./target/debug/matching_engine_server > /tmp/me.log 2>&1 &
+$BIN_DIR/matching_engine_server > /tmp/me.log 2>&1 &
 ME_PID=$!
 sleep 3
 
 echo "  4.3 Starting Order Gateway (includes Transfer API)..."
-./target/debug/order_gate_server > /tmp/gateway.log 2>&1 &
+$BIN_DIR/order_gate_server > /tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
 sleep 5
 
