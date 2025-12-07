@@ -198,24 +198,34 @@ fn spawn_derived_writers(
     order_history_db: Arc<OrderHistoryDb>,
     starrocks_client: Arc<StarRocksClient>,
 ) -> (BalanceTx, TradesTx, OrderTx, StarRocksTx) {
-    // Balance Events Writer
+    // Balance Events Writer - DRAIN + BATCH
     let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
     let db = settlement_db.clone();
     tokio::spawn(async move {
-        while let Some(events) = balance_rx.recv().await {
-            if let Err(e) = db.append_balance_events_batch(&events).await {
+        while let Some(mut all_events) = balance_rx.recv().await {
+            // Drain channel: collect all pending balance events
+            while let Ok(more_events) = balance_rx.try_recv() {
+                all_events.extend(more_events);
+            }
+            // Single batch write for ALL drained events
+            if let Err(e) = db.append_balance_events_batch(&all_events).await {
                 log::error!(target: LOG_TARGET, "Balance write failed: {}", e);
             }
         }
     });
 
-    // Trades Writer
+    // Trades Writer - DRAIN + BATCH
     let (trades_tx, mut trades_rx) =
         mpsc::channel::<(Vec<TradeOutput>, u64)>(DERIVED_WRITER_BUFFER);
     let db = settlement_db.clone();
     tokio::spawn(async move {
-        while let Some((trades, seq)) = trades_rx.recv().await {
-            if let Err(e) = db.insert_trades_batch(&trades, seq).await {
+        while let Some((mut all_trades, mut last_seq)) = trades_rx.recv().await {
+            // Drain channel: collect all pending trades, keeping the last sequence
+            while let Ok((more_trades, seq)) = trades_rx.try_recv() {
+                all_trades.extend(more_trades);
+                last_seq = seq; // Use the sequence of the last received batch
+            }
+            if let Err(e) = db.insert_trades_batch(&all_trades, last_seq).await {
                 log::error!(target: LOG_TARGET, "Trades write failed: {}", e);
             }
         }
@@ -431,25 +441,19 @@ async fn dispatch_to_writers(
     starrocks_tx: &StarRocksTx,
     csv_writer: &mut csv::Writer<std::fs::File>,
 ) -> usize {
-    let mut all_balance_events = Vec::new();
     let mut trade_count = 0;
 
     for output in outputs {
-        // Collect all balance events (flatten)
+        // Send balance events per-output (writer will drain)
         if !output.balance_events.is_empty() {
-            all_balance_events.extend(output.balance_events.clone());
+            let _ = balance_tx.send(output.balance_events.clone()).await;
         }
 
-        // Send Trades per-output (preserve output_seq association)
+        // Send trades per-output (writer will drain)
         if !output.trades.is_empty() {
             trade_count += output.trades.len();
             let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
         }
-    }
-
-    // Send ALL balance events as ONE batch (reduces 100 sends to 1!)
-    if !all_balance_events.is_empty() {
-        let _ = balance_tx.send(all_balance_events).await;
     }
 
     // Order Updates - send entire batch at once
