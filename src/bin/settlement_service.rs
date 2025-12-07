@@ -224,8 +224,12 @@ fn spawn_derived_writers(
                     }
                 }
                 // Single batch write for ALL drained outputs
+                let t_write = std::time::Instant::now();
+                let count = all_outputs.len();
                 if let Err(e) = db.write_engine_outputs_batch(&all_outputs).await {
                     log::error!(target: LOG_TARGET, "SOT writer shard {} failed: {}", shard_id, e);
+                } else {
+                    log::info!(target: LOG_TARGET, "[SOT-{}] wrote {} outputs in {:?}", shard_id, count, t_write.elapsed());
                 }
             }
         });
