@@ -76,7 +76,7 @@ async fn main() {
     let (mut last_seq, mut last_hash) = load_chain_state(&settlement_db).await;
 
     // --- Spawn Derived Writers ---
-    let (sot_tx, balance_tx, trades_tx, order_tx, starrocks_tx) =
+    let (balance_tx, trades_tx, order_tx, starrocks_tx) =
         spawn_derived_writers(settlement_db.clone(), order_history_db.clone(), starrocks_client);
 
     log::info!(target: LOG_TARGET, "✅ Settlement Service Ready");
@@ -84,10 +84,10 @@ async fn main() {
     // --- Main Processing Loop ---
     run_processing_loop(
         subscriber,
+        settlement_db,
         &mut csv_writer,
         &mut last_seq,
         &mut last_hash,
-        sot_tx,
         balance_tx,
         trades_tx,
         order_tx,
@@ -191,7 +191,6 @@ async fn load_chain_state(db: &SettlementDb) -> (u64, u64) {
 
 use fetcher::engine_output::{BalanceEvent, TradeOutput};
 
-type SotTx = Vec<mpsc::Sender<Vec<EngineOutput>>>; // Parallel SOT writers (sharded by symbol_id)
 type BalanceTx = Vec<mpsc::Sender<Vec<BalanceEvent>>>;
 type TradesTx = mpsc::Sender<(Vec<TradeOutput>, u64)>;
 type OrderTx = mpsc::Sender<Vec<EngineOutput>>;
@@ -201,39 +200,9 @@ fn spawn_derived_writers(
     settlement_db: Arc<SettlementDb>,
     order_history_db: Arc<OrderHistoryDb>,
     starrocks_client: Arc<StarRocksClient>,
-) -> (SotTx, BalanceTx, TradesTx, OrderTx, StarRocksTx) {
-    // Parallel SOT Writers - sharded by symbol_id for per-symbol hash chains
-    let mut sot_channels = Vec::with_capacity(NUM_SOT_WRITERS);
-
-    for shard_id in 0..NUM_SOT_WRITERS {
-        let (sot_tx, mut sot_rx) = mpsc::channel::<Vec<EngineOutput>>(DERIVED_WRITER_BUFFER);
-        sot_channels.push(sot_tx);
-
-        let db = settlement_db.clone();
-        tokio::spawn(async move {
-            while let Some(mut all_outputs) = sot_rx.recv().await {
-                // Drain channel: collect pending outputs (up to MAX_DRAIN_BATCH)
-                let mut drain_count = 1;
-                while drain_count < MAX_DRAIN_BATCH {
-                    match sot_rx.try_recv() {
-                        Ok(more_outputs) => {
-                            all_outputs.extend(more_outputs);
-                            drain_count += 1;
-                        }
-                        Err(_) => break,
-                    }
-                }
-                // Single batch write for ALL drained outputs
-                let t_write = std::time::Instant::now();
-                let count = all_outputs.len();
-                if let Err(e) = db.write_engine_outputs_batch(&all_outputs).await {
-                    log::error!(target: LOG_TARGET, "SOT writer shard {} failed: {}", shard_id, e);
-                } else {
-                    log::info!(target: LOG_TARGET, "[SOT-{}] wrote {} outputs in {:?}", shard_id, count, t_write.elapsed());
-                }
-            }
-        });
-    }
+) -> (BalanceTx, TradesTx, OrderTx, StarRocksTx) {
+    // NOTE: SOT writes are now synchronous with parallel execution using tokio::join!
+    // This ensures SOT completes BEFORE derived writers start
 
     // Parallel Balance Events Writers - DRAIN + BATCH (sharded by user_id)
     let mut balance_channels = Vec::with_capacity(NUM_BALANCE_WRITERS);
@@ -324,8 +293,8 @@ fn spawn_derived_writers(
         }
     });
 
-    log::info!(target: LOG_TARGET, "✅ Derived writers spawned: {} SOT writers, {} balance writers, buffer={}", NUM_SOT_WRITERS, NUM_BALANCE_WRITERS, DERIVED_WRITER_BUFFER);
-    (sot_channels, balance_channels, trades_tx, order_tx, starrocks_tx)
+    log::info!(target: LOG_TARGET, "✅ Derived writers spawned: {} balance writers, buffer={}", NUM_BALANCE_WRITERS, DERIVED_WRITER_BUFFER);
+    (balance_channels, trades_tx, order_tx, starrocks_tx)
 }
 // ============================================================================
 // MAIN PROCESSING LOOP
@@ -333,10 +302,10 @@ fn spawn_derived_writers(
 
 async fn run_processing_loop(
     subscriber: zmq::Socket,
+    settlement_db: Arc<SettlementDb>,
     csv_writer: &mut csv::Writer<std::fs::File>,
     last_seq: &mut u64,
     last_hash: &mut u64,
-    sot_tx: SotTx,
     balance_tx: BalanceTx,
     trades_tx: TradesTx,
     order_tx: OrderTx,
@@ -361,12 +330,16 @@ async fn run_processing_loop(
             continue;
         }
 
-        // --- Step 3: Dispatch to SOT Writers (sharded by symbol_id) ---
+        // --- Step 3: Write to SOT (SYNCHRONOUS - waits for completion) ---
+        // Uses parallel writes sharded by symbol_id, but WAITS for all to complete
         let t_sot = std::time::Instant::now();
-        dispatch_sot_to_writers(&verified, &sot_tx).await;
+        if let Err(e) = write_sot_parallel(&settlement_db, &verified).await {
+            log::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
+            continue;
+        }
         let d_sot = t_sot.elapsed();
 
-        // --- Step 4: Dispatch to Derived Writers ---
+        // --- Step 4: Dispatch to Derived Writers (only after SOT is complete!) ---
         let t_dispatch = std::time::Instant::now();
         let batch_trades = dispatch_to_writers(
             &verified,
@@ -390,18 +363,17 @@ async fn run_processing_loop(
         let total_ops = (total_msgs as f64 * 1_000_000.0) / total_processing_us.max(1) as f64;
 
         // Buffer capacity monitoring (remaining = available slots, lower = more backed up)
-        let sot_cap: usize = sot_tx.iter().map(|tx| tx.capacity()).sum();
         let bal_cap: usize = balance_tx.iter().map(|tx| tx.capacity()).sum();
         let trd_cap = trades_tx.capacity();
         let ord_cap = order_tx.capacity();
         let sr_cap = starrocks_tx.capacity();
 
         log::info!(target: LOG_TARGET,
-            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s | buf: sot={} bal={} trd={} ord={} sr={}",
+            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s | buf: bal={} trd={} ord={} sr={}",
             last_seq, total_msgs, total_trades,
             batch_size, batch_ops, d_sot, d_dispatch,
             total_ops,
-            sot_cap, bal_cap, trd_cap, ord_cap, sr_cap
+            bal_cap, trd_cap, ord_cap, sr_cap
         );
     }
 }
@@ -486,25 +458,51 @@ fn verify_batch(
     verified
 }
 
-/// Dispatch verified outputs to parallel SOT writers (sharded by symbol_id)
-async fn dispatch_sot_to_writers(outputs: &[EngineOutput], sot_tx: &SotTx) {
+/// Write outputs to SOT in parallel, sharded by symbol_id
+/// SYNCHRONOUS - waits for ALL writes to complete before returning
+async fn write_sot_parallel(
+    db: &Arc<SettlementDb>,
+    outputs: &[EngineOutput],
+) -> Result<(), anyhow::Error> {
     use std::collections::HashMap;
 
-    // Partition outputs by symbol_id
-    let mut sharded_outputs: HashMap<usize, Vec<EngineOutput>> = HashMap::new();
+    // Partition outputs by symbol_id for parallel writes
+    let mut sharded_outputs: HashMap<u32, Vec<EngineOutput>> = HashMap::new();
 
     for output in outputs {
-        // Shard by symbol_id % NUM_SOT_WRITERS
-        let shard = (output.symbol_id as usize) % sot_tx.len();
-        sharded_outputs.entry(shard).or_insert_with(Vec::new).push(output.clone());
+        sharded_outputs
+            .entry(output.symbol_id)
+            .or_insert_with(Vec::new)
+            .push(output.clone());
     }
 
-    // Send to each shard's writer
-    for (shard, shard_outputs) in sharded_outputs {
-        if let Err(e) = sot_tx[shard].send(shard_outputs).await {
-            log::error!(target: LOG_TARGET, "SOT dispatch to shard {} failed: {}", shard, e);
+    // Spawn parallel write tasks for each symbol partition
+    let futures: Vec<_> = sharded_outputs
+        .into_iter()
+        .map(|(symbol_id, shard_outputs)| {
+            let db = db.clone();
+            async move {
+                let count = shard_outputs.len();
+                let t_start = std::time::Instant::now();
+                let result = db.write_engine_outputs_batch(&shard_outputs).await;
+                log::info!(target: LOG_TARGET, "[SOT symbol={}] wrote {} outputs in {:?}",
+                    symbol_id, count, t_start.elapsed());
+                result
+            }
+        })
+        .collect();
+
+    // Wait for ALL writes to complete
+    let results = join_all(futures).await;
+
+    // Check for any errors
+    for result in results {
+        if let Err(e) = result {
+            return Err(e);
         }
     }
+
+    Ok(())
 }
 
 /// Dispatch verified outputs to all derived writers
