@@ -29,7 +29,7 @@ const LOG_TARGET: &str = "settlement";
 // === CONFIGURATION ===
 const MAX_BATCH_SIZE: usize = 500;
 const MAX_DRAIN_BATCH: usize = 200; // Max items to drain from channel per write
-const NUM_BALANCE_WRITERS: usize = 16; // Parallel balance writers for higher throughput
+const NUM_BALANCE_WRITERS: usize = 4; // Parallel balance writers for higher throughput
 const DERIVED_WRITER_BUFFER: usize = 10_000;
 
 // ============================================================================
