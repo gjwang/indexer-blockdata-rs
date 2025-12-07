@@ -1,12 +1,8 @@
-use scylla::{Session, SessionBuilder};
 use anyhow::Result;
+use scylla::{Session, SessionBuilder};
 
 async fn setup_db() -> Result<Session> {
-    SessionBuilder::new()
-        .known_node("localhost:9042")
-        .build()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))
+    SessionBuilder::new().known_node("localhost:9042").build().await.map_err(|e| anyhow::anyhow!(e))
 }
 
 #[tokio::test]
@@ -29,8 +25,11 @@ async fn test_invalid_version_increment_cql() -> Result<()> {
 
     // Check for "Invalid operation" or similar
     // Note: The exact message depends on ScyllaDB version, but "Invalid operation" was seen in logs.
-    assert!(msg.to_lowercase().contains("invalid operation") || msg.contains("SyntaxException"),
-            "Unexpected error message: {}", msg);
+    assert!(
+        msg.to_lowercase().contains("invalid operation") || msg.contains("SyntaxException"),
+        "Unexpected error message: {}",
+        msg
+    );
 
     Ok(())
 }
@@ -42,7 +41,8 @@ async fn test_valid_version_update_cql() -> Result<()> {
 
     // Valid syntax: Absolute value usage
     // SET version = ?
-    let good_cql = "UPDATE settlement.user_balances SET version = ? WHERE user_id = 9999 AND asset_id = 1";
+    let good_cql =
+        "UPDATE settlement.user_balances SET version = ? WHERE user_id = 9999 AND asset_id = 1";
 
     let result = session.query(good_cql, (100i64,)).await;
 

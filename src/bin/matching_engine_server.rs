@@ -10,8 +10,8 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use disruptor::*;
 
-use fetcher::ledger::LedgerCommand;
 use fetcher::engine_output::EngineOutput;
+use fetcher::ledger::LedgerCommand;
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::client_order::calculate_checksum;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
@@ -104,10 +104,8 @@ impl MessageDeduplicator {
             }
 
             // Update oldest_tracked_ts from front of queue
-            self.oldest_tracked_ts = self.offset_queue
-                .front()
-                .map(|(_offset, ts)| *ts)
-                .unwrap_or(0);
+            self.oldest_tracked_ts =
+                self.offset_queue.front().map(|(_offset, ts)| *ts).unwrap_or(0);
         }
     }
 }
@@ -195,8 +193,6 @@ impl BalanceProcessor {
     }
 }
 
-
-
 #[tokio::main]
 async fn main() {
     let config = fetcher::configure::load_config().expect("Failed to load config");
@@ -227,8 +223,8 @@ async fn main() {
     if dummy_wal_dir.exists() {
         let _ = fs::remove_dir_all(dummy_wal_dir);
     }
-    let mut engine = MatchingEngine::new(dummy_wal_dir, snap_dir, false)
-        .expect("Failed to create engine");
+    let mut engine =
+        MatchingEngine::new(dummy_wal_dir, snap_dir, false).expect("Failed to create engine");
 
     // === Initialize Symbols & Funds (Hardcoded for Demo) ===
     println!("=== Initializing Engine State ===");
@@ -267,7 +263,6 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-
     let balance_topic =
         config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
     let mut balance_processor = BalanceProcessor::new();
@@ -291,7 +286,9 @@ async fn main() {
     let zmq_ctx = zmq::Context::new();
     let sync_req = zmq_ctx.socket(zmq::REQ).expect("Failed to create REQ socket");
     let sync_port = config.zeromq.as_ref().unwrap().settlement_port + 2;
-    sync_req.connect(&format!("tcp://localhost:{}", sync_port)).expect("Failed to connect to sync port");
+    sync_req
+        .connect(&format!("tcp://localhost:{}", sync_port))
+        .expect("Failed to connect to sync port");
     sync_req.send(&b"PING"[..], 0).expect("Failed to send PING");
 
     match sync_req.recv_bytes(0) {
@@ -333,8 +330,11 @@ async fn main() {
 
         // Check for messages outside our tracked dedup window
         if msg_dedup.is_outside_tracked_window(msg_ts) {
-            println!("[ME] OUTSIDE TRACKED WINDOW - ts={} < oldest={}",
-                msg_ts, msg_dedup.get_oldest_ts());
+            println!(
+                "[ME] OUTSIDE TRACKED WINDOW - ts={} < oldest={}",
+                msg_ts,
+                msg_dedup.get_oldest_ts()
+            );
             return;
         }
 
@@ -345,15 +345,34 @@ async fn main() {
                     let mut engine_outputs = Vec::with_capacity(batch.len());
                     let mut input_seq = engine.get_output_seq();
 
-                    for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in batch.iter() {
+                    for (
+                        symbol_id,
+                        order_id,
+                        side,
+                        order_type,
+                        price,
+                        quantity,
+                        user_id,
+                        timestamp,
+                    ) in batch.iter()
+                    {
                         let msg_id = *order_id as i64;
-                        if msg_dedup.is_duplicate(msg_id) { continue; }
+                        if msg_dedup.is_duplicate(msg_id) {
+                            continue;
+                        }
                         msg_dedup.mark_processed(msg_id, msg_ts);
 
                         input_seq += 1;
                         if let Ok((_, output)) = engine.add_order_and_build_output(
-                            input_seq, *symbol_id, *order_id, *side, *order_type,
-                            *price, *quantity, *user_id, *timestamp,
+                            input_seq,
+                            *symbol_id,
+                            *order_id,
+                            *side,
+                            *order_type,
+                            *price,
+                            *quantity,
+                            *user_id,
+                            *timestamp,
                             format!("kafka_{}", order_id),
                         ) {
                             engine_outputs.push(output);
@@ -361,13 +380,16 @@ async fn main() {
                     }
 
                     if !engine_outputs.is_empty() {
-                        *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(engine_outputs));
+                        *event.engine_outputs.lock().unwrap() =
+                            Some(std::sync::Arc::new(engine_outputs));
                     }
                 }
                 // Single ID: check once at top
                 EngineCommand::CancelOrder { symbol_id, order_id } => {
                     let msg_id = *order_id as i64;
-                    if msg_dedup.is_duplicate(msg_id) { return; }
+                    if msg_dedup.is_duplicate(msg_id) {
+                        return;
+                    }
                     msg_dedup.mark_processed(msg_id, msg_ts);
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
@@ -378,12 +400,17 @@ async fn main() {
                     req.request_id().hash(&mut h);
                     let msg_id = h.finish() as i64;
 
-                    if msg_dedup.is_duplicate(msg_id) { return; }
+                    if msg_dedup.is_duplicate(msg_id) {
+                        return;
+                    }
                     msg_dedup.mark_processed(msg_id, msg_ts);
 
-                    if let Ok(outputs) = balance_processor.process_balance_request(&mut engine, req.clone()) {
+                    if let Ok(outputs) =
+                        balance_processor.process_balance_request(&mut engine, req.clone())
+                    {
                         if !outputs.is_empty() {
-                            *event.engine_outputs.lock().unwrap() = Some(std::sync::Arc::new(outputs));
+                            *event.engine_outputs.lock().unwrap() =
+                                Some(std::sync::Arc::new(outputs));
                         }
                     }
                 }
@@ -425,7 +452,10 @@ async fn main() {
                 } else {
                     // Update counters
                     zmq_out_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    zmq_trd_cnt.fetch_add(output.trades.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                    zmq_trd_cnt.fetch_add(
+                        output.trades.len() as u64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
             }
         }
@@ -448,8 +478,10 @@ async fn main() {
                 let elapsed = zmq_start.lock().unwrap().elapsed().as_secs_f64();
                 let ops = if elapsed > 0.0 { total_outputs as f64 / elapsed } else { 0.0 };
 
-                println!("[ME-OUTPUT] outputs={} trades={} | {:.0} outputs/s",
-                    total_outputs, total_trades, ops);
+                println!(
+                    "[ME-OUTPUT] outputs={} trades={} | {:.0} outputs/s",
+                    total_outputs, total_trades, ops
+                );
                 *last = std::time::Instant::now();
             }
         }
@@ -610,7 +642,8 @@ async fn main() {
                                 let batch_clone = place_orders.clone();
                                 let offset_clone = pending_batch_offset.clone();
                                 producer.publish(|event| {
-                                    event.command = Some(EngineCommand::PlaceOrderBatch(batch_clone));
+                                    event.command =
+                                        Some(EngineCommand::PlaceOrderBatch(batch_clone));
                                     event.kafka_offset = offset_clone;
                                     event.timestamp = timestamp;
                                 });

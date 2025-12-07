@@ -20,13 +20,18 @@ mod order_lifecycle_integration_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         // Place order
-        let (_results, commands) = engine.add_order_batch(vec![(
-            1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000,
-        )]);
+        let (_results, commands) =
+            engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000)]);
 
         // Verify OrderUpdate(New) emitted
         let updates: Vec<&OrderUpdate> = commands
@@ -52,7 +57,13 @@ mod order_lifecycle_integration_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         // Place order
@@ -83,9 +94,8 @@ mod order_lifecycle_integration_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Try to place order without funds
-        let (results, _commands) = engine.add_order_batch(vec![(
-            1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000,
-        )]);
+        let (results, _commands) =
+            engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000)]);
 
         // Verify order processed (executed as Rejected)
         assert!(results[0].is_ok(), "Order should be processed (Rejected event)");
@@ -100,7 +110,13 @@ mod order_lifecycle_integration_tests {
         for user_id in 1..=3 {
             engine
                 .ledger
-                .apply(&LedgerCommand::Deposit { user_id, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+                .apply(&LedgerCommand::Deposit {
+                    user_id,
+                    asset_id: 200,
+                    amount: 100000,
+                    balance_after: 0,
+                    version: 0,
+                })
                 .unwrap();
         }
 
@@ -133,7 +149,7 @@ mod order_lifecycle_integration_tests {
             client_order_id: Some("CID_101".to_string()),
             user_id: 1,
             symbol_id: 1,
-            side: 1, // Buy
+            side: 1,       // Buy
             order_type: 1, // Limit
             status: OrderStatus::New,
             price: 50000,
@@ -163,7 +179,7 @@ mod order_lifecycle_integration_tests {
             client_order_id: None,
             user_id: 1,
             symbol_id: 1,
-            side: 1, // Buy
+            side: 1,       // Buy
             order_type: 1, // Limit
             status: OrderStatus::Filled,
             price: 50000,

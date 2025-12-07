@@ -1,8 +1,7 @@
-
 #[cfg(test)]
 mod balance_field_tests {
-    use crate::matching_engine_base::MatchingEngine;
     use crate::ledger::{Ledger, LedgerCommand};
+    use crate::matching_engine_base::MatchingEngine;
     use crate::models::{OrderType, Side};
     use tempfile::TempDir;
 
@@ -22,7 +21,13 @@ mod balance_field_tests {
         // Deposit 100,000 USDT
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         let balances = engine.ledger.get_user_balances(1).unwrap();
@@ -44,7 +49,16 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Deposit then place order
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         let version_before = engine.ledger.get_balance_version(1, 200);
 
@@ -70,10 +84,28 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Fund buyer with USDT
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Fund seller with BTC
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset_id: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 2,
+                asset_id: 100,
+                amount: 10,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Place sell order (maker)
         engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 1, 2, 1000)]);
@@ -92,7 +124,11 @@ mod balance_field_tests {
         assert_eq!(buyer_usdt.avail, 50000, "Buyer USDT available should be 50,000");
         assert_eq!(buyer_usdt.frozen, 0, "Buyer USDT frozen should be 0");
         assert!(buyer_usdt.version > buyer_usdt_v0, "Buyer USDT version must increment");
-        assert_eq!(buyer_usdt.avail + buyer_usdt.frozen, 50000, "Buyer USDT total should be 50,000");
+        assert_eq!(
+            buyer_usdt.avail + buyer_usdt.frozen,
+            50000,
+            "Buyer USDT total should be 50,000"
+        );
 
         // Verify buyer's BTC (base asset - gained)
         let buyer_btc = buyer_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
@@ -110,8 +146,26 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Fund users
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 }).unwrap();
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset_id: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 2,
+                asset_id: 100,
+                amount: 10,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Record seller's initial state
         let seller_btc_v0 = engine.ledger.get_balance_version(2, 100);
@@ -138,7 +192,11 @@ mod balance_field_tests {
         assert_eq!(seller_usdt.avail, 50000, "Seller USDT available should be 50,000");
         assert_eq!(seller_usdt.frozen, 0, "Seller USDT frozen should be 0");
         assert!(seller_usdt.version > seller_usdt_v0, "Seller USDT version must increment");
-        assert_eq!(seller_usdt.avail + seller_usdt.frozen, 50000, "Seller USDT total should be 50,000");
+        assert_eq!(
+            seller_usdt.avail + seller_usdt.frozen,
+            50000,
+            "Seller USDT total should be 50,000"
+        );
     }
 
     #[test]
@@ -148,8 +206,26 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Fund users
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 200000, balance_after: 0, version: 0 }).unwrap();
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 2, asset_id: 100, amount: 10, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 200000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 2,
+                asset_id: 100,
+                amount: 10,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Buyer orders 4 BTC @ 50,000 = 200,000 USDT
         engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 4, 1, 1000)]);
@@ -175,7 +251,11 @@ mod balance_field_tests {
         // - Still have 100,000 USDT locked (for remaining 2 BTC order)
         assert_eq!(buyer_usdt.avail, 0, "Buyer USDT available should be 0");
         assert_eq!(buyer_usdt.frozen, 100000, "Buyer should still have 100,000 USDT locked");
-        assert_eq!(buyer_usdt.avail + buyer_usdt.frozen, 100000, "Buyer USDT total should be 100,000");
+        assert_eq!(
+            buyer_usdt.avail + buyer_usdt.frozen,
+            100000,
+            "Buyer USDT total should be 100,000"
+        );
 
         // Buyer should have gained 2 BTC
         assert_eq!(buyer_btc.avail, 2, "Buyer should have 2 BTC");
@@ -193,7 +273,11 @@ mod balance_field_tests {
 
         assert_eq!(seller_usdt.avail, 100000, "Seller should have gained 100,000 USDT");
         assert_eq!(seller_usdt.frozen, 0, "Seller USDT frozen should be 0");
-        assert_eq!(seller_usdt.avail + seller_usdt.frozen, 100000, "Seller USDT total should be 100,000");
+        assert_eq!(
+            seller_usdt.avail + seller_usdt.frozen,
+            100000,
+            "Seller USDT total should be 100,000"
+        );
     }
 
     #[test]
@@ -218,7 +302,16 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // First deposit
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 50000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 50000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
@@ -228,7 +321,16 @@ mod balance_field_tests {
         let version_1 = usdt.version;
 
         // Second deposit
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 30000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 30000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
@@ -238,7 +340,16 @@ mod balance_field_tests {
         assert!(usdt.version > version_1, "Version must increment on second deposit");
 
         // Third deposit
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 20000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 20000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
@@ -255,7 +366,16 @@ mod balance_field_tests {
         engine.register_symbol(1, "BTC_USDT".to_string(), 100, 200).unwrap();
 
         // Deposit 100,000
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Place first order (locks 30,000)
         engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 30000, 1, 1, 1000)]);

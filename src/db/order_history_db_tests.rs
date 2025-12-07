@@ -15,7 +15,7 @@ mod tests {
             client_order_id: Some(format!("CID_{}", order_id)),
             user_id,
             symbol_id: 1,
-            side: 1, // Buy
+            side: 1,       // Buy
             order_type: 1, // Limit
             status,
             price: 50000,
@@ -201,7 +201,8 @@ mod tests {
         db.update_order_statistics(user_id, &OrderStatus::New, order_new.timestamp).await.unwrap();
 
         // 2. Partially Filled
-        let order_partial = create_test_order_update(order_id, user_id, OrderStatus::PartiallyFilled, 1);
+        let order_partial =
+            create_test_order_update(order_id, user_id, OrderStatus::PartiallyFilled, 1);
         db.upsert_active_order(&order_partial).await.unwrap();
         db.insert_order_history(&order_partial).await.unwrap();
         db.insert_order_update_stream(&order_partial, 2).await.unwrap();
@@ -211,7 +212,9 @@ mod tests {
         db.delete_active_order(user_id, order_id).await.unwrap();
         db.insert_order_history(&order_filled).await.unwrap();
         db.insert_order_update_stream(&order_filled, 3).await.unwrap();
-        db.update_order_statistics(user_id, &OrderStatus::Filled, order_filled.timestamp).await.unwrap();
+        db.update_order_statistics(user_id, &OrderStatus::Filled, order_filled.timestamp)
+            .await
+            .unwrap();
 
         // All operations should succeed
         println!("✅ Full order lifecycle test passed");

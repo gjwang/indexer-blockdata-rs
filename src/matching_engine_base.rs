@@ -7,16 +7,15 @@ use nix::unistd::{fork, ForkResult};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+use crate::engine_output::{
+    BalanceEvent as EOBalanceEvent, DepositInput, EngineOutput, EngineOutputBuilder, InputBundle,
+    InputData, OrderUpdate as EOOrderUpdate, PlaceOrderInput, TradeOutput, WithdrawInput,
+};
 use crate::fast_ulid::FastUlidHalfGen;
 use crate::ledger::{GlobalLedger, Ledger, LedgerCommand, MatchExecData, ShadowLedger};
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
-use crate::engine_output::{
-    EngineOutput, EngineOutputBuilder, InputBundle, InputData, PlaceOrderInput,
-    DepositInput, WithdrawInput,
-    BalanceEvent as EOBalanceEvent, TradeOutput, OrderUpdate as EOOrderUpdate,
-};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct OrderBook {
@@ -586,13 +585,10 @@ impl MatchingEngine {
     ) -> Result<u64, OrderError> {
         use crate::ledger::{OrderStatus, OrderUpdate};
 
-
-
-
         let (base_asset_id, quote_asset_id) = match asset_map.get(&symbol_id) {
             Some(p) => *p,
             None => {
-                 let rejection = OrderUpdate {
+                let rejection = OrderUpdate {
                     order_id,
                     client_order_id: None,
                     user_id,
@@ -624,9 +620,9 @@ impl MatchingEngine {
         let current_ver = ledger.get_balance_version(user_id, lock_asset);
         // Lock reduces available balance
         let balance_after = if current_bal >= lock_amount {
-             current_bal - lock_amount
+            current_bal - lock_amount
         } else {
-             current_bal // Should fail in apply
+            current_bal // Should fail in apply
         };
         let new_ver = current_ver + 1;
 
@@ -635,9 +631,9 @@ impl MatchingEngine {
             asset_id: lock_asset,
             amount: lock_amount,
             balance_after,
-            version: new_ver
+            version: new_ver,
         }) {
-             let rejection = OrderUpdate {
+            let rejection = OrderUpdate {
                 order_id,
                 client_order_id: None,
                 user_id,
@@ -674,12 +670,14 @@ impl MatchingEngine {
             timestamp,
             match_id: None,
         };
-        ledger.apply(&LedgerCommand::OrderUpdate(new_order_event)).map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        ledger
+            .apply(&LedgerCommand::OrderUpdate(new_order_event))
+            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         // Access OrderBook
         // Note: We need to handle indices carefully.
         if symbol_id as usize >= order_books.len() || order_books[symbol_id as usize].is_none() {
-             let rejection = OrderUpdate {
+            let rejection = OrderUpdate {
                 order_id,
                 client_order_id: None,
                 user_id,
@@ -761,27 +759,36 @@ impl MatchingEngine {
                 if delta >= 0 {
                     *entry += delta as u64;
                 } else {
-                     let abs_d = (-delta) as u64;
-                     if *entry >= abs_d { *entry -= abs_d; } else { *entry = 0; }
+                    let abs_d = (-delta) as u64;
+                    if *entry >= abs_d {
+                        *entry -= abs_d;
+                    } else {
+                        *entry = 0;
+                    }
                 }
                 *entry
             };
 
-            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
+            let buyer_quote_version =
+                get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
             let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset_id, 1);
             let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset_id, 1);
             let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset_id, 1);
 
             // Calculate Balance Snapshots (Avail)
             // Buyer Quote: Avail += Refund
-            let buyer_quote_balance_after = get_and_update_balance(trade.buy_user_id, quote_asset_id, buyer_refund as i64);
+            let buyer_quote_balance_after =
+                get_and_update_balance(trade.buy_user_id, quote_asset_id, buyer_refund as i64);
             // Buyer Base: Avail += Quantity
-            let buyer_base_balance_after = get_and_update_balance(trade.buy_user_id, base_asset_id, trade.quantity as i64);
+            let buyer_base_balance_after =
+                get_and_update_balance(trade.buy_user_id, base_asset_id, trade.quantity as i64);
             // Seller Base: Avail += 0 (Already deducted to Frozen)
-            let seller_base_balance_after = get_and_update_balance(trade.sell_user_id, base_asset_id, 0);
+            let seller_base_balance_after =
+                get_and_update_balance(trade.sell_user_id, base_asset_id, 0);
             // Seller Quote: Avail += Price * Qty
             let cost = trade.price * trade.quantity;
-            let seller_quote_balance_after = get_and_update_balance(trade.sell_user_id, quote_asset_id, cost as i64);
+            let seller_quote_balance_after =
+                get_and_update_balance(trade.sell_user_id, quote_asset_id, cost as i64);
 
             match_batch.push(MatchExecData {
                 trade_id: trade.trade_id,
@@ -917,11 +924,8 @@ impl MatchingEngine {
         let current_bal = ledger.get_balance(user_id, lock_asset);
         let current_frozen = ledger.get_frozen(user_id, lock_asset);
         let current_ver = ledger.get_balance_version(user_id, lock_asset);
-        let balance_after = if current_bal >= lock_amount {
-            current_bal - lock_amount
-        } else {
-            current_bal
-        };
+        let balance_after =
+            if current_bal >= lock_amount { current_bal - lock_amount } else { current_bal };
         let new_ver = current_ver + 1;
 
         if let Err(e) = ledger.apply(&LedgerCommand::Lock {
@@ -995,7 +999,8 @@ impl MatchingEngine {
             timestamp,
             match_id: None,
         };
-        ledger.apply(&LedgerCommand::OrderUpdate(new_order_event))
+        ledger
+            .apply(&LedgerCommand::OrderUpdate(new_order_event))
             .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         // Access OrderBook
@@ -1034,7 +1039,8 @@ impl MatchingEngine {
         }
 
         let book = order_books[symbol_id as usize].as_mut().unwrap();
-        let order = Order { order_id, user_id, symbol_id, side, order_type, price, quantity, timestamp };
+        let order =
+            Order { order_id, user_id, symbol_id, side, order_type, price, quantity, timestamp };
 
         let trades = match book.add_order(order, trade_id_gen, timestamp) {
             Ok(t) => t,
@@ -1080,26 +1086,28 @@ impl MatchingEngine {
             };
 
             // Helper to get and update balance (avail, frozen)
-            let mut get_and_update_balance = |uid: u64, asset_id: u32, delta_avail: i64, delta_frozen: i64| -> (u64, u64) {
-                let entry = temp_balances
-                    .entry((uid, asset_id))
-                    .or_insert_with(|| (ledger.get_balance(uid, asset_id), ledger.get_frozen(uid, asset_id)));
-                if delta_avail >= 0 {
-                    entry.0 += delta_avail as u64;
-                } else {
-                    let abs_d = (-delta_avail) as u64;
-                    entry.0 = entry.0.saturating_sub(abs_d);
-                }
-                if delta_frozen >= 0 {
-                    entry.1 += delta_frozen as u64;
-                } else {
-                    let abs_d = (-delta_frozen) as u64;
-                    entry.1 = entry.1.saturating_sub(abs_d);
-                }
-                *entry
-            };
+            let mut get_and_update_balance =
+                |uid: u64, asset_id: u32, delta_avail: i64, delta_frozen: i64| -> (u64, u64) {
+                    let entry = temp_balances.entry((uid, asset_id)).or_insert_with(|| {
+                        (ledger.get_balance(uid, asset_id), ledger.get_frozen(uid, asset_id))
+                    });
+                    if delta_avail >= 0 {
+                        entry.0 += delta_avail as u64;
+                    } else {
+                        let abs_d = (-delta_avail) as u64;
+                        entry.0 = entry.0.saturating_sub(abs_d);
+                    }
+                    if delta_frozen >= 0 {
+                        entry.1 += delta_frozen as u64;
+                    } else {
+                        let abs_d = (-delta_frozen) as u64;
+                        entry.1 = entry.1.saturating_sub(abs_d);
+                    }
+                    *entry
+                };
 
-            let buyer_quote_version = get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
+            let buyer_quote_version =
+                get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
             let buyer_base_version = get_and_add_version(trade.buy_user_id, base_asset_id, 1);
             let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset_id, 1);
             let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset_id, 1);
@@ -1109,19 +1117,23 @@ impl MatchingEngine {
 
             // Buyer: quote deducted from frozen, base credited to avail
             let (buyer_quote_avail, buyer_quote_frozen) = get_and_update_balance(
-                trade.buy_user_id, quote_asset_id, buyer_refund as i64, -(trade_cost as i64)
+                trade.buy_user_id,
+                quote_asset_id,
+                buyer_refund as i64,
+                -(trade_cost as i64),
             );
-            let (buyer_base_avail, buyer_base_frozen) = get_and_update_balance(
-                trade.buy_user_id, base_asset_id, trade.quantity as i64, 0
-            );
+            let (buyer_base_avail, buyer_base_frozen) =
+                get_and_update_balance(trade.buy_user_id, base_asset_id, trade.quantity as i64, 0);
 
             // Seller: base deducted from frozen, quote credited to avail
             let (seller_base_avail, seller_base_frozen) = get_and_update_balance(
-                trade.sell_user_id, base_asset_id, 0, -(trade.quantity as i64)
+                trade.sell_user_id,
+                base_asset_id,
+                0,
+                -(trade.quantity as i64),
             );
-            let (seller_quote_avail, seller_quote_frozen) = get_and_update_balance(
-                trade.sell_user_id, quote_asset_id, trade_cost as i64, 0
-            );
+            let (seller_quote_avail, seller_quote_frozen) =
+                get_and_update_balance(trade.sell_user_id, quote_asset_id, trade_cost as i64, 0);
 
             // Add trade output
             builder.add_trade(TradeOutput {
@@ -1274,19 +1286,13 @@ impl MatchingEngine {
         let mut results = Vec::with_capacity(requests.len());
         let mut output_cmds = Vec::new();
 
-        for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in requests {
+        for (symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp) in requests
+        {
             // Per-Order Atomic Processing
             // We create a shadow ledger here, but pass it to the logic function.
             // Using a helper method that handles the logic and returns the populated shadow if successful.
             let process_result = self.process_order_atomic(
-                symbol_id,
-                order_id,
-                side,
-                order_type,
-                price,
-                quantity,
-                user_id,
-                timestamp,
+                symbol_id, order_id, side, order_type, price, quantity, user_id, timestamp,
             );
 
             match process_result {
@@ -1346,7 +1352,11 @@ impl MatchingEngine {
 
     /// Public API: Cancel Order (Writes to WAL, then processes)
     /// Returns Vec<LedgerCommand> containing unlock operations and OrderUpdate(Cancelled)
-    pub fn cancel_order(&mut self, symbol_id: u32, order_id: u64) -> Result<Vec<LedgerCommand>, OrderError> {
+    pub fn cancel_order(
+        &mut self,
+        symbol_id: u32,
+        order_id: u64,
+    ) -> Result<Vec<LedgerCommand>, OrderError> {
         // 1. Write to WAL
         if let Some(wal) = &mut self.order_wal {
             wal.log_cancel_order(order_id).map_err(|e| OrderError::Other(e.to_string()))?;
@@ -1367,7 +1377,11 @@ impl MatchingEngine {
 
     /// Internal Logic: Process Cancel (No Input WAL write)
     /// Returns Vec<LedgerCommand> with unlock and OrderUpdate(Cancelled)
-    fn process_cancel(&mut self, symbol_id: u32, order_id: u64) -> Result<Vec<LedgerCommand>, OrderError> {
+    fn process_cancel(
+        &mut self,
+        symbol_id: u32,
+        order_id: u64,
+    ) -> Result<Vec<LedgerCommand>, OrderError> {
         use crate::ledger::{OrderStatus, OrderUpdate};
 
         let book = self
@@ -1381,8 +1395,8 @@ impl MatchingEngine {
         let mut commands = Vec::new();
 
         // Get asset info for unlocking funds
-        let (base_asset_id, quote_asset_id) = *self.asset_map.get(&symbol_id)
-            .ok_or(OrderError::AssetMapNotFound { symbol_id })?;
+        let (base_asset_id, quote_asset_id) =
+            *self.asset_map.get(&symbol_id).ok_or(OrderError::AssetMapNotFound { symbol_id })?;
 
         // Unlock funds based on order side
         let (unlock_asset, unlock_amount) = match cancelled_order.side {
@@ -1397,13 +1411,15 @@ impl MatchingEngine {
         let version = current_ver + 1;
 
         // Apply unlock to ledger
-        self.ledger.apply(&LedgerCommand::Unlock {
-            user_id: cancelled_order.user_id,
-            asset_id: unlock_asset,
-            amount: unlock_amount,
-            balance_after,
-            version,
-        }).map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        self.ledger
+            .apply(&LedgerCommand::Unlock {
+                user_id: cancelled_order.user_id,
+                asset_id: unlock_asset,
+                amount: unlock_amount,
+                balance_after,
+                version,
+            })
+            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         commands.push(LedgerCommand::Unlock {
             user_id: cancelled_order.user_id,
@@ -1432,7 +1448,9 @@ impl MatchingEngine {
         };
 
         // Apply to Ledger for WAL consistency
-        self.ledger.apply(&LedgerCommand::OrderUpdate(order_update.clone())).map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        self.ledger
+            .apply(&LedgerCommand::OrderUpdate(order_update.clone()))
+            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
 
         commands.push(LedgerCommand::OrderUpdate(order_update));
 
@@ -1548,19 +1566,14 @@ impl MatchingEngine {
         asset_id: u32,
         amount: u64,
     ) -> Result<EngineOutput, String> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
 
         // Build input (use next output_seq as input_seq for deposits)
         let input_seq = self.output_seq + 1;
-        let input = InputBundle::new(input_seq, InputData::Deposit(DepositInput {
-            user_id,
-            asset_id,
-            amount,
-            created_at: now,
-        }));
+        let input = InputBundle::new(
+            input_seq,
+            InputData::Deposit(DepositInput { user_id, asset_id, amount, created_at: now }),
+        );
 
         // Get current state before deposit
         let current_bal = self.ledger.get_balance(user_id, asset_id);
@@ -1571,9 +1584,7 @@ impl MatchingEngine {
         let balance_after = current_bal + amount;
         let version = current_ver + 1;
         let cmd = LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version };
-        self.ledger
-            .apply(&cmd)
-            .map_err(|e| format!("Failed to transfer in: {}", e))?;
+        self.ledger.apply(&cmd).map_err(|e| format!("Failed to transfer in: {}", e))?;
 
         // Build balance event
         let balance_event = EOBalanceEvent {
@@ -1594,7 +1605,7 @@ impl MatchingEngine {
             self.output_seq,
             self.last_output_hash,
             input,
-            None, // no order_update for deposit
+            None,   // no order_update for deposit
             vec![], // no trades
             vec![balance_event],
         );
@@ -1611,19 +1622,14 @@ impl MatchingEngine {
         asset_id: u32,
         amount: u64,
     ) -> Result<EngineOutput, String> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
 
         // Build input (use next output_seq as input_seq for withdraws)
         let input_seq = self.output_seq + 1;
-        let input = InputBundle::new(input_seq, InputData::Withdraw(WithdrawInput {
-            user_id,
-            asset_id,
-            amount,
-            created_at: now,
-        }));
+        let input = InputBundle::new(
+            input_seq,
+            InputData::Withdraw(WithdrawInput { user_id, asset_id, amount, created_at: now }),
+        );
 
         // Get current state before withdraw
         let current_bal = self.ledger.get_balance(user_id, asset_id);
@@ -1632,19 +1638,14 @@ impl MatchingEngine {
 
         // Validate sufficient balance
         if current_bal < amount {
-            return Err(format!(
-                "Insufficient balance: have {} need {}",
-                current_bal, amount
-            ));
+            return Err(format!("Insufficient balance: have {} need {}", current_bal, amount));
         }
 
         // Apply withdraw
         let balance_after = current_bal - amount;
         let version = current_ver + 1;
         let cmd = LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version };
-        self.ledger
-            .apply(&cmd)
-            .map_err(|e| format!("Failed to transfer out: {}", e))?;
+        self.ledger.apply(&cmd).map_err(|e| format!("Failed to transfer out: {}", e))?;
 
         // Build balance event
         let balance_event = EOBalanceEvent {
@@ -1665,7 +1666,7 @@ impl MatchingEngine {
             self.output_seq,
             self.last_output_hash,
             input,
-            None, // no order_update for withdraw
+            None,   // no order_update for withdraw
             vec![], // no trades
             vec![balance_event],
         );
@@ -1721,7 +1722,6 @@ mod tests {
         let hash_before = engine1.state_hash;
         let _ = engine1.cancel_order(1, 9999); // Fail
         assert_eq!(engine1.state_hash, hash_before, "Hash should not change on failure");
-
 
         // Cleanup
         let _ = std::fs::remove_dir_all(wal_dir);

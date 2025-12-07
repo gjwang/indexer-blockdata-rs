@@ -22,7 +22,10 @@ impl ZmqPublisher {
         settlement_pub.set_linger(-1)?; // Wait forever to send buffered messages on close
         settlement_pub.set_sndtimeo(-1)?; // Block forever on send when HWM reached
         settlement_pub.connect(&format!("tcp://localhost:{}", settlement_port))?;
-        println!("   [ZMQ] Settlement PUSH connected to port {} (HWM=100, blocking)", settlement_port);
+        println!(
+            "   [ZMQ] Settlement PUSH connected to port {} (HWM=100, blocking)",
+            settlement_port
+        );
 
         let market_data_pub = context.socket(PUB)?;
         market_data_pub.set_sndhwm(1_000_000)?;
@@ -46,13 +49,15 @@ impl ZmqPublisher {
 
     /// Publish EngineOutput bundle to settlement service
     /// This is the preferred method for the new atomic output flow
-    pub fn publish_engine_output(&self, output: &crate::engine_output::EngineOutput) -> Result<(), String> {
+    pub fn publish_engine_output(
+        &self,
+        output: &crate::engine_output::EngineOutput,
+    ) -> Result<(), String> {
         match serde_json::to_vec(output) {
             Ok(data) => {
-                self.settlement_pub.send(&data, 0)
-                    .map_err(|e| format!("ZMQ send failed: {}", e))
+                self.settlement_pub.send(&data, 0).map_err(|e| format!("ZMQ send failed: {}", e))
             }
-            Err(e) => Err(format!("Serialization failed: {}", e))
+            Err(e) => Err(format!("Serialization failed: {}", e)),
         }
     }
 }

@@ -60,7 +60,9 @@ async fn main() {
             match db_clone.health_check().await {
                 Ok(true) => log::debug!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection active"),
                 Ok(false) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB connection lost!"),
-                Err(e) => log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB health check error: {}", e),
+                Err(e) => {
+                    log::error!(target: LOG_TARGET, "[HEALTH] ScyllaDB health check error: {}", e)
+                }
             }
         }
     });
@@ -96,7 +98,7 @@ async fn main() {
             Ok(d) => {
                 log::info!(target: LOG_TARGET, "📨 Received {} bytes from ZMQ", d.len());
                 d
-            },
+            }
             Err(e) => {
                 log::error!(target: LOG_TARGET, "ZMQ recv bytes error: {}", e);
                 continue;
@@ -153,26 +155,58 @@ async fn main() {
             Ok(LedgerCommand::MatchExecBatch(trades)) => {
                 log::info!(target: LOG_TARGET, "Received MatchExecBatch with {} trades", trades.len());
                 for trade in trades {
-                     // Process buyer
-                     if let Err(e) = process_trade_fill(&order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, trade.match_seq).await {
-                         log::error!(target: LOG_TARGET, "Failed to process buy fill: {}", e);
-                     }
-                     // Process seller
-                     if let Err(e) = process_trade_fill(&order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, trade.match_seq).await {
-                         log::error!(target: LOG_TARGET, "Failed to process sell fill: {}", e);
-                     }
+                    // Process buyer
+                    if let Err(e) = process_trade_fill(
+                        &order_history_db,
+                        trade.buyer_user_id,
+                        trade.buy_order_id,
+                        trade.quantity,
+                        trade.match_seq,
+                    )
+                    .await
+                    {
+                        log::error!(target: LOG_TARGET, "Failed to process buy fill: {}", e);
+                    }
+                    // Process seller
+                    if let Err(e) = process_trade_fill(
+                        &order_history_db,
+                        trade.seller_user_id,
+                        trade.sell_order_id,
+                        trade.quantity,
+                        trade.match_seq,
+                    )
+                    .await
+                    {
+                        log::error!(target: LOG_TARGET, "Failed to process sell fill: {}", e);
+                    }
                 }
             }
             Ok(LedgerCommand::MatchExec(trade)) => {
-                 log::info!(target: LOG_TARGET, "Received Single MatchExec");
-                 // Process buyer
-                 if let Err(e) = process_trade_fill(&order_history_db, trade.buyer_user_id, trade.buy_order_id, trade.quantity, trade.match_seq).await {
-                     log::error!(target: LOG_TARGET, "Failed to process buy fill: {}", e);
-                 }
-                 // Process seller
-                 if let Err(e) = process_trade_fill(&order_history_db, trade.seller_user_id, trade.sell_order_id, trade.quantity, trade.match_seq).await {
-                     log::error!(target: LOG_TARGET, "Failed to process sell fill: {}", e);
-                 }
+                log::info!(target: LOG_TARGET, "Received Single MatchExec");
+                // Process buyer
+                if let Err(e) = process_trade_fill(
+                    &order_history_db,
+                    trade.buyer_user_id,
+                    trade.buy_order_id,
+                    trade.quantity,
+                    trade.match_seq,
+                )
+                .await
+                {
+                    log::error!(target: LOG_TARGET, "Failed to process buy fill: {}", e);
+                }
+                // Process seller
+                if let Err(e) = process_trade_fill(
+                    &order_history_db,
+                    trade.seller_user_id,
+                    trade.sell_order_id,
+                    trade.quantity,
+                    trade.match_seq,
+                )
+                .await
+                {
+                    log::error!(target: LOG_TARGET, "Failed to process sell fill: {}", e);
+                }
             }
             Ok(_other_command) => {
                 log::debug!(target: LOG_TARGET, "Received other LedgerCommand (ignored)");
@@ -205,7 +239,12 @@ async fn process_order_update(
             db.init_user_statistics(order_update.user_id, order_update.timestamp).await?;
 
             // 5. Update statistics
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            db.update_order_statistics(
+                order_update.user_id,
+                &order_update.status,
+                order_update.timestamp,
+            )
+            .await?;
 
             log::debug!(target: LOG_TARGET, "  → Inserted into active_orders + history");
         }
@@ -232,7 +271,12 @@ async fn process_order_update(
             db.insert_order_update_stream(order_update, event_id).await?;
 
             // 4. Update statistics
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            db.update_order_statistics(
+                order_update.user_id,
+                &order_update.status,
+                order_update.timestamp,
+            )
+            .await?;
 
             log::debug!(target: LOG_TARGET, "  → Deleted from active_orders (filled)");
         }
@@ -247,7 +291,12 @@ async fn process_order_update(
             db.insert_order_update_stream(order_update, event_id).await?;
 
             // 4. Update statistics
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            db.update_order_statistics(
+                order_update.user_id,
+                &order_update.status,
+                order_update.timestamp,
+            )
+            .await?;
 
             log::debug!(target: LOG_TARGET, "  → Deleted from active_orders (cancelled)");
         }
@@ -259,7 +308,12 @@ async fn process_order_update(
             db.insert_order_update_stream(order_update, event_id).await?;
 
             // 3. Update statistics
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            db.update_order_statistics(
+                order_update.user_id,
+                &order_update.status,
+                order_update.timestamp,
+            )
+            .await?;
 
             log::debug!(target: LOG_TARGET, "  → Inserted into history only (rejected)");
         }

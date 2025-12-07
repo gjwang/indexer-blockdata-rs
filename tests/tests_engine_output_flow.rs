@@ -1,9 +1,9 @@
 // Integration tests for EngineOutput flow
 // Tests the full pipeline: MatchingEngine -> EngineOutput -> Settlement verification
 
+use fetcher::engine_output::GENESIS_HASH;
 use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::{OrderType, Side};
-use fetcher::engine_output::GENESIS_HASH;
 
 /// Test that add_order_and_build_output produces valid EngineOutput
 #[test]
@@ -20,18 +20,20 @@ fn test_matching_engine_produces_valid_engine_output() {
     engine.transfer_in_to_trading_account(1002, 1, 100).unwrap(); // User 2: 100 BTC
 
     // Place a buy order using the new method
-    let (order_id, output) = engine.add_order_and_build_output(
-        1,                    // input_seq
-        0,                    // symbol_id
-        1,                    // order_id
-        Side::Buy,
-        OrderType::Limit,
-        15000,               // price
-        10,                  // quantity
-        1001,                // user_id
-        1700000000000,       // timestamp
-        "test_order_1".into(),
-    ).unwrap();
+    let (order_id, output) = engine
+        .add_order_and_build_output(
+            1, // input_seq
+            0, // symbol_id
+            1, // order_id
+            Side::Buy,
+            OrderType::Limit,
+            15000,         // price
+            10,            // quantity
+            1001,          // user_id
+            1700000000000, // timestamp
+            "test_order_1".into(),
+        )
+        .unwrap();
 
     // Verify output structure
     assert_eq!(order_id, 1);
@@ -82,9 +84,20 @@ fn test_engine_output_chain_verification() {
     engine.transfer_in_to_trading_account(1002, 1, 100).unwrap();
 
     // Place first order
-    let (_, output1) = engine.add_order_and_build_output(
-        1, 0, 1, Side::Buy, OrderType::Limit, 15000, 10, 1001, 1700000000000, "order_1".into(),
-    ).unwrap();
+    let (_, output1) = engine
+        .add_order_and_build_output(
+            1,
+            0,
+            1,
+            Side::Buy,
+            OrderType::Limit,
+            15000,
+            10,
+            1001,
+            1700000000000,
+            "order_1".into(),
+        )
+        .unwrap();
 
     // Verify first output
     assert_eq!(output1.output_seq, 1);
@@ -92,9 +105,20 @@ fn test_engine_output_chain_verification() {
     assert!(output1.verify());
 
     // Place second order (creates a match!)
-    let (_, output2) = engine.add_order_and_build_output(
-        2, 0, 2, Side::Sell, OrderType::Limit, 15000, 10, 1002, 1700000000001, "order_2".into(),
-    ).unwrap();
+    let (_, output2) = engine
+        .add_order_and_build_output(
+            2,
+            0,
+            2,
+            Side::Sell,
+            OrderType::Limit,
+            15000,
+            10,
+            1002,
+            1700000000001,
+            "order_2".into(),
+        )
+        .unwrap();
 
     // Verify second output chains to first
     assert_eq!(output2.output_seq, 2);
@@ -122,8 +146,8 @@ fn test_engine_output_chain_verification() {
 #[test]
 fn test_settlement_chain_verification_logic() {
     use fetcher::engine_output::{
-        EngineOutput, EngineOutputBuilder, InputBundle, InputData, PlaceOrderInput,
-        OrderUpdate as EOOrderUpdate, BalanceEvent as EOBalanceEvent,
+        BalanceEvent as EOBalanceEvent, EngineOutput, EngineOutputBuilder, InputBundle, InputData,
+        OrderUpdate as EOOrderUpdate, PlaceOrderInput,
     };
 
     // Simulate settlement service state
@@ -131,17 +155,20 @@ fn test_settlement_chain_verification_logic() {
     let mut last_seq = 0u64;
 
     // Create first output
-    let input1 = InputBundle::new(1, InputData::PlaceOrder(PlaceOrderInput {
-        order_id: 1,
-        user_id: 1001,
-        symbol_id: 0,
-        side: 1,
-        order_type: 1,
-        price: 15000,
-        quantity: 10,
-        cid: "test1".into(),
-        created_at: 1700000000000,
-    }));
+    let input1 = InputBundle::new(
+        1,
+        InputData::PlaceOrder(PlaceOrderInput {
+            order_id: 1,
+            user_id: 1001,
+            symbol_id: 0,
+            side: 1,
+            order_type: 1,
+            price: 15000,
+            quantity: 10,
+            cid: "test1".into(),
+            created_at: 1700000000000,
+        }),
+    );
 
     let output1 = EngineOutput::new(
         1,
@@ -180,17 +207,20 @@ fn test_settlement_chain_verification_logic() {
     last_seq = output1.output_seq;
 
     // Create second output (chained)
-    let input2 = InputBundle::new(2, InputData::PlaceOrder(PlaceOrderInput {
-        order_id: 2,
-        user_id: 1002,
-        symbol_id: 0,
-        side: 2,
-        order_type: 1,
-        price: 15000,
-        quantity: 10,
-        cid: "test2".into(),
-        created_at: 1700000000001,
-    }));
+    let input2 = InputBundle::new(
+        2,
+        InputData::PlaceOrder(PlaceOrderInput {
+            order_id: 2,
+            user_id: 1002,
+            symbol_id: 0,
+            side: 2,
+            order_type: 1,
+            price: 15000,
+            quantity: 10,
+            cid: "test2".into(),
+            created_at: 1700000000001,
+        }),
+    );
 
     let output2 = EngineOutput::new(
         2,
@@ -218,10 +248,20 @@ fn test_settlement_chain_verification_logic() {
     let bad_output = EngineOutput::new(
         3,
         999999, // Wrong prev_hash!
-        InputBundle::new(3, InputData::PlaceOrder(PlaceOrderInput {
-            order_id: 3, user_id: 1001, symbol_id: 0, side: 1, order_type: 1,
-            price: 15000, quantity: 5, cid: "test3".into(), created_at: 1700000000002,
-        })),
+        InputBundle::new(
+            3,
+            InputData::PlaceOrder(PlaceOrderInput {
+                order_id: 3,
+                user_id: 1001,
+                symbol_id: 0,
+                side: 1,
+                order_type: 1,
+                price: 15000,
+                quantity: 5,
+                cid: "test3".into(),
+                created_at: 1700000000002,
+            }),
+        ),
         None,
         vec![],
         vec![],

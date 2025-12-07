@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
 use chrono::Utc;
+use scylla::batch::Batch;
 use scylla::prepared_statement::PreparedStatement;
 use scylla::{Session, SessionBuilder};
-use scylla::batch::Batch;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::sleep;
@@ -384,10 +384,7 @@ impl SettlementDb {
                     seller_base_balance_after: trade.seller_base_balance_after as i64,
                     seller_quote_balance_after: trade.seller_quote_balance_after as i64,
                 };
-                self.session
-                    .execute(&self.insert_trade_stmt, row)
-                    .await
-                    .map(|_| ())
+                self.session.execute(&self.insert_trade_stmt, row).await.map(|_| ())
             })
             .await?;
         }
@@ -405,7 +402,11 @@ impl SettlementDb {
     }
 
     /// Insert trades in a single ScyllaDB BATCH (much faster than sequential)
-    pub async fn insert_trades_batch(&self, trades: &[crate::engine_output::TradeOutput], output_seq: u64) -> Result<()> {
+    pub async fn insert_trades_batch(
+        &self,
+        trades: &[crate::engine_output::TradeOutput],
+        output_seq: u64,
+    ) -> Result<()> {
         if trades.is_empty() {
             return Ok(());
         }
@@ -422,26 +423,30 @@ impl SettlementDb {
         }
 
         // Build values
-        let values: Vec<_> = trades.iter().map(|t| (
-            trade_date,
-            output_seq as i64,
-            t.trade_id as i64,
-            t.match_seq as i64,
-            t.buy_order_id as i64,
-            t.sell_order_id as i64,
-            t.buyer_user_id as i64,
-            t.seller_user_id as i64,
-            t.price as i64,
-            t.quantity as i64,
-            t.base_asset_id as i32,
-            t.quote_asset_id as i32,
-            t.buyer_refund as i64,
-            t.seller_refund as i64,
-            if t.settled_at > 0 { t.settled_at as i64 } else { settled_at },
-        )).collect();
+        let values: Vec<_> = trades
+            .iter()
+            .map(|t| {
+                (
+                    trade_date,
+                    output_seq as i64,
+                    t.trade_id as i64,
+                    t.match_seq as i64,
+                    t.buy_order_id as i64,
+                    t.sell_order_id as i64,
+                    t.buyer_user_id as i64,
+                    t.seller_user_id as i64,
+                    t.price as i64,
+                    t.quantity as i64,
+                    t.base_asset_id as i32,
+                    t.quote_asset_id as i32,
+                    t.buyer_refund as i64,
+                    t.seller_refund as i64,
+                    if t.settled_at > 0 { t.settled_at as i64 } else { settled_at },
+                )
+            })
+            .collect();
 
-        self.session.batch(&batch, values).await
-            .context("Failed to batch insert trades")?;
+        self.session.batch(&batch, values).await.context("Failed to batch insert trades")?;
 
         log::debug!("Batch inserted {} trades", trades.len());
         Ok(())
@@ -628,7 +633,8 @@ impl SettlementDb {
 
     /// Helper to parse a ScyllaDB row into MatchExecData
     fn parse_trade_row(row: scylla::frame::response::result::Row) -> Result<MatchExecData> {
-        let r: SettledTradeRow = row.into_typed().context("Failed to parse row into SettledTradeRow")?;
+        let r: SettledTradeRow =
+            row.into_typed().context("Failed to parse row into SettledTradeRow")?;
 
         Ok(MatchExecData {
             trade_id: r.trade_id as u64,
@@ -656,7 +662,6 @@ impl SettlementDb {
         })
     }
 
-
     /// Get all balances for a user (from balance_ledger - latest entry per asset)
     pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
         // Query all distinct assets for this user, getting latest seq per asset
@@ -669,7 +674,8 @@ impl SettlementDb {
         let result = self.session.query(QUERY, (user_id as i64,)).await?;
 
         // Group by asset_id, keep only latest seq
-        let mut latest: std::collections::HashMap<i32, (i64, i64, i64, i64, i64)> = std::collections::HashMap::new();
+        let mut latest: std::collections::HashMap<i32, (i64, i64, i64, i64, i64)> =
+            std::collections::HashMap::new();
 
         if let Some(rows) = result.rows {
             for row in rows.into_iter() {
@@ -684,16 +690,15 @@ impl SettlementDb {
             }
         }
 
-        let balances: Vec<UserBalance> = latest.into_iter()
-            .map(|(asset_id, (_, avail, frozen, version, updated_at))| {
-                UserBalance {
-                    user_id,
-                    asset_id: asset_id as u32,
-                    avail: avail as u64,
-                    frozen: frozen as u64,
-                    version: version as u64,
-                    updated_at: updated_at as u64,
-                }
+        let balances: Vec<UserBalance> = latest
+            .into_iter()
+            .map(|(asset_id, (_, avail, frozen, version, updated_at))| UserBalance {
+                user_id,
+                asset_id: asset_id as u32,
+                avail: avail as u64,
+                frozen: frozen as u64,
+                version: version as u64,
+                updated_at: updated_at as u64,
             })
             .collect();
 
@@ -706,8 +711,13 @@ impl SettlementDb {
 
     /// Get current balance from append-only ledger (latest entry)
     /// Returns None if no balance exists (user hasn't deposited yet)
-    pub async fn get_current_balance(&self, user_id: u64, asset_id: u32) -> Result<Option<CurrentBalance>> {
-        let result = self.session
+    pub async fn get_current_balance(
+        &self,
+        user_id: u64,
+        asset_id: u32,
+    ) -> Result<Option<CurrentBalance>> {
+        let result = self
+            .session
             .query(SELECT_LATEST_BALANCE_CQL, (user_id as i64, asset_id as i32))
             .await?;
 
@@ -715,12 +725,7 @@ impl SettlementDb {
             if let Some(row) = rows.into_iter().next() {
                 let (seq, avail, frozen, created_at): (i64, i64, i64, i64) =
                     row.into_typed().context("Failed to parse balance row")?;
-                return Ok(Some(CurrentBalance {
-                    seq,
-                    avail,
-                    frozen,
-                    updated_at: created_at,
-                }));
+                return Ok(Some(CurrentBalance { seq, avail, frozen, updated_at: created_at }));
             }
         }
 
@@ -746,24 +751,33 @@ impl SettlementDb {
 
         // 1. Append to balance_ledger (immutable log)
         self.session
-            .query(INSERT_BALANCE_EVENT_CQL, (
-                user_id as i64,
-                asset_id as i32,
-                seq as i64,
-                delta_avail,
-                delta_frozen,
-                avail,
-                frozen,
-                event_type,
-                ref_id as i64,
-                now,
-            ))
+            .query(
+                INSERT_BALANCE_EVENT_CQL,
+                (
+                    user_id as i64,
+                    asset_id as i32,
+                    seq as i64,
+                    delta_avail,
+                    delta_frozen,
+                    avail,
+                    frozen,
+                    event_type,
+                    ref_id as i64,
+                    now,
+                ),
+            )
             .await
             .context("Failed to insert balance event")?;
 
         // 2. Update user_balances snapshot table for easy querying
-        log::info!("Updating user_balances: user={} asset={} avail={} frozen={} version={}",
-            user_id, asset_id, avail, frozen, seq);
+        log::info!(
+            "Updating user_balances: user={} asset={} avail={} frozen={} version={}",
+            user_id,
+            asset_id,
+            avail,
+            frozen,
+            seq
+        );
 
         if let Err(e) = self.session
             .query(
@@ -804,7 +818,8 @@ impl SettlementDb {
         }
 
         // Build values for all statements
-        let mut values: Vec<(i64, i32, i64, i64, i64, i64, i64, String, i64, i64)> = Vec::with_capacity(events.len());
+        let mut values: Vec<(i64, i32, i64, i64, i64, i64, i64, String, i64, i64)> =
+            Vec::with_capacity(events.len());
         let mut user_values: Vec<(i64, i32, i64, i64, i64, i64)> = Vec::with_capacity(events.len());
 
         for event in events {
@@ -841,20 +856,27 @@ impl SettlementDb {
             ledger_batch.append_statement(ledger_stmt);
         }
 
-        let ledger_values: Vec<_> = events.iter().map(|e| (
-            e.user_id as i64,
-            e.asset_id as i32,
-            e.seq as i64,
-            e.delta_avail,
-            e.delta_frozen,
-            e.avail,
-            e.frozen,
-            e.event_type.clone(),
-            e.ref_id as i64,
-            now as i64,
-        )).collect();
+        let ledger_values: Vec<_> = events
+            .iter()
+            .map(|e| {
+                (
+                    e.user_id as i64,
+                    e.asset_id as i32,
+                    e.seq as i64,
+                    e.delta_avail,
+                    e.delta_frozen,
+                    e.avail,
+                    e.frozen,
+                    e.event_type.clone(),
+                    e.ref_id as i64,
+                    now as i64,
+                )
+            })
+            .collect();
 
-        self.session.batch(&ledger_batch, ledger_values).await
+        self.session
+            .batch(&ledger_batch, ledger_values)
+            .await
             .context("Failed to batch insert balance_ledger")?;
 
         let mut user_batch = Batch::new(BatchType::Unlogged);
@@ -863,16 +885,16 @@ impl SettlementDb {
             user_batch.append_statement(user_stmt);
         }
 
-        let user_values: Vec<_> = events.iter().map(|e| (
-            e.user_id as i64,
-            e.asset_id as i32,
-            e.avail,
-            e.frozen,
-            e.seq as i64,
-            now as i64,
-        )).collect();
+        let user_values: Vec<_> = events
+            .iter()
+            .map(|e| {
+                (e.user_id as i64, e.asset_id as i32, e.avail, e.frozen, e.seq as i64, now as i64)
+            })
+            .collect();
 
-        self.session.batch(&user_batch, user_values).await
+        self.session
+            .batch(&user_batch, user_values)
+            .await
             .context("Failed to batch update user_balances")?;
 
         log::debug!("Batch processed {} balance events", events.len());
@@ -912,7 +934,8 @@ impl SettlementDb {
             new_frozen,
             balance_event_types::DEPOSIT,
             ref_id,
-        ).await?;
+        )
+        .await?;
 
         Ok(CurrentBalance {
             seq: new_seq as i64,
@@ -931,8 +954,13 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
+        let current = self.get_current_balance(user_id, asset_id).await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No balance for user {} asset {} - deposit required first",
+                user_id,
+                asset_id
+            )
+        })?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -953,7 +981,8 @@ impl SettlementDb {
             new_frozen,
             balance_event_types::LOCK,
             ref_id,
-        ).await?;
+        )
+        .await?;
 
         Ok(CurrentBalance {
             seq: new_seq as i64,
@@ -972,8 +1001,13 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
+        let current = self.get_current_balance(user_id, asset_id).await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No balance for user {} asset {} - deposit required first",
+                user_id,
+                asset_id
+            )
+        })?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -994,7 +1028,8 @@ impl SettlementDb {
             new_frozen,
             balance_event_types::UNLOCK,
             ref_id,
-        ).await?;
+        )
+        .await?;
 
         Ok(CurrentBalance {
             seq: new_seq as i64,
@@ -1013,8 +1048,13 @@ impl SettlementDb {
         new_seq: u64,
         ref_id: u64,
     ) -> Result<CurrentBalance> {
-        let current = self.get_current_balance(user_id, asset_id).await?
-            .ok_or_else(|| anyhow::anyhow!("No balance for user {} asset {} - deposit required first", user_id, asset_id))?;
+        let current = self.get_current_balance(user_id, asset_id).await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "No balance for user {} asset {} - deposit required first",
+                user_id,
+                asset_id
+            )
+        })?;
 
         if new_seq <= current.seq as u64 {
             return Ok(current);
@@ -1034,7 +1074,8 @@ impl SettlementDb {
             new_frozen,
             balance_event_types::WITHDRAW,
             ref_id,
-        ).await?;
+        )
+        .await?;
 
         Ok(CurrentBalance {
             seq: new_seq as i64,
@@ -1051,7 +1092,8 @@ impl SettlementDb {
         asset_id: u32,
         limit: u32,
     ) -> Result<Vec<BalanceLedgerEntry>> {
-        let result = self.session
+        let result = self
+            .session
             .query(SELECT_BALANCE_HISTORY_CQL, (user_id as i64, asset_id as i32, limit as i32))
             .await?;
 
@@ -1165,7 +1207,6 @@ mod tests {
         let counter = Arc::new(AtomicU32::new(0));
         let counter_clone = counter.clone();
 
-
         let result = SettlementDb::retry_with_backoff(|| async {
             counter_clone.fetch_add(1, Ordering::SeqCst);
             Err::<(), _>(MockError)
@@ -1209,8 +1250,13 @@ impl SettlementDb {
         let mut attempts = 0;
         loop {
             // Use new append-only balance ledger
-            let current = self.get_current_balance(user_id, asset_id).await?
-                .ok_or_else(|| anyhow::anyhow!("Balance not found for user {} asset {} - deposit required first", user_id, asset_id))?;
+            let current = self.get_current_balance(user_id, asset_id).await?.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Balance not found for user {} asset {} - deposit required first",
+                    user_id,
+                    asset_id
+                )
+            })?;
             let (bal, frozen, ver) = (current.avail, current.frozen, current.seq);
 
             // If version matches (or is newer), we are good.
@@ -1229,11 +1275,11 @@ impl SettlementDb {
 
     pub async fn settle_trade_atomically(&self, trade: &MatchExecData) -> Result<()> {
         // 0. Check if trade already exists (idempotency check)
-        let check_query = "SELECT trade_id FROM settled_trades WHERE trade_date = ? AND trade_id = ?";
+        let check_query =
+            "SELECT trade_id FROM settled_trades WHERE trade_date = ? AND trade_id = ?";
         let trade_date = get_current_date();
-        let existing = self.session
-            .query(check_query, (trade_date as i32, trade.trade_id as i64))
-            .await;
+        let existing =
+            self.session.query(check_query, (trade_date as i32, trade.trade_id as i64)).await;
 
         if let Ok(result) = existing {
             if result.rows_num()? > 0 {
@@ -1293,20 +1339,24 @@ impl SettlementDb {
         // Check data integrity: DB version must be predecessor of ME version (ME - 1)
         // Since trade execution increments version by 1.
         if buyer_base_ver >= trade.buyer_base_version as i64 {
-             if buyer_base_ver == trade.buyer_base_version as i64 {
-                 // Version matches - this can happen if Lock was already applied
-                 // Trade existence was already checked, so we can proceed
-                 log::debug!("Version matches ME (Lock may have been applied): trade={}, buyer_base_ver={}", trade.trade_id, buyer_base_ver);
-             } else {
-                 anyhow::bail!(
+            if buyer_base_ver == trade.buyer_base_version as i64 {
+                // Version matches - this can happen if Lock was already applied
+                // Trade existence was already checked, so we can proceed
+                log::debug!(
+                    "Version matches ME (Lock may have been applied): trade={}, buyer_base_ver={}",
+                    trade.trade_id,
+                    buyer_base_ver
+                );
+            } else {
+                anyhow::bail!(
                     "Version mismatch Buyer Base (DB ahead?): DB={} ME={}",
                     buyer_base_ver,
                     trade.buyer_base_version
                 );
-             }
+            }
         } else if buyer_base_ver != (trade.buyer_base_version as i64 - 1) {
-             // Gap detected
-             anyhow::bail!(
+            // Gap detected
+            anyhow::bail!(
                 "Version gap Buyer Base: DB={} ME={}",
                 buyer_base_ver,
                 trade.buyer_base_version
@@ -1314,27 +1364,51 @@ impl SettlementDb {
         }
 
         if buyer_quote_ver >= trade.buyer_quote_version as i64 {
-             if buyer_quote_ver != trade.buyer_quote_version as i64 {
-                 anyhow::bail!("Version mismatch Buyer Quote (DB ahead?): DB={} ME={}", buyer_quote_ver, trade.buyer_quote_version);
-             }
+            if buyer_quote_ver != trade.buyer_quote_version as i64 {
+                anyhow::bail!(
+                    "Version mismatch Buyer Quote (DB ahead?): DB={} ME={}",
+                    buyer_quote_ver,
+                    trade.buyer_quote_version
+                );
+            }
         } else if buyer_quote_ver != (trade.buyer_quote_version as i64 - 1) {
-             anyhow::bail!("Version gap Buyer Quote: DB={} ME={}", buyer_quote_ver, trade.buyer_quote_version);
+            anyhow::bail!(
+                "Version gap Buyer Quote: DB={} ME={}",
+                buyer_quote_ver,
+                trade.buyer_quote_version
+            );
         }
 
         if seller_base_ver >= trade.seller_base_version as i64 {
-             if seller_base_ver != trade.seller_base_version as i64 {
-                 anyhow::bail!("Version mismatch Seller Base (DB ahead?): DB={} ME={}", seller_base_ver, trade.seller_base_version);
-             }
+            if seller_base_ver != trade.seller_base_version as i64 {
+                anyhow::bail!(
+                    "Version mismatch Seller Base (DB ahead?): DB={} ME={}",
+                    seller_base_ver,
+                    trade.seller_base_version
+                );
+            }
         } else if seller_base_ver != (trade.seller_base_version as i64 - 1) {
-             anyhow::bail!("Version gap Seller Base: DB={} ME={}", seller_base_ver, trade.seller_base_version);
+            anyhow::bail!(
+                "Version gap Seller Base: DB={} ME={}",
+                seller_base_ver,
+                trade.seller_base_version
+            );
         }
 
         if seller_quote_ver >= trade.seller_quote_version as i64 {
-             if seller_quote_ver != trade.seller_quote_version as i64 {
-                 anyhow::bail!("Version mismatch Seller Quote (DB ahead?): DB={} ME={}", seller_quote_ver, trade.seller_quote_version);
-             }
+            if seller_quote_ver != trade.seller_quote_version as i64 {
+                anyhow::bail!(
+                    "Version mismatch Seller Quote (DB ahead?): DB={} ME={}",
+                    seller_quote_ver,
+                    trade.seller_quote_version
+                );
+            }
         } else if seller_quote_ver != (trade.seller_quote_version as i64 - 1) {
-             anyhow::bail!("Version gap Seller Quote: DB={} ME={}", seller_quote_ver, trade.seller_quote_version);
+            anyhow::bail!(
+                "Version gap Seller Quote: DB={} ME={}",
+                seller_quote_ver,
+                trade.seller_quote_version
+            );
         }
 
         // Calculate new versions
@@ -1380,13 +1454,10 @@ impl SettlementDb {
         // exceeds Scylla driver's 16-element SerializeRow limit
 
         // 5.1 Insert Trade
-        self.session
-            .query(INSERT_TRADE_CQL, trade_values)
-            .await
-            .map_err(|e| {
-                log::error!("Trade insert failed: {:?}", e);
-                anyhow::anyhow!("Failed to insert trade: {}", e)
-            })?;
+        self.session.query(INSERT_TRADE_CQL, trade_values).await.map_err(|e| {
+            log::error!("Trade insert failed: {:?}", e);
+            anyhow::anyhow!("Failed to insert trade: {}", e)
+        })?;
 
         // 5.2 Append balance events to ledger (append-only)
         let trade_ref_id = trade.trade_id;
@@ -1402,33 +1473,36 @@ impl SettlementDb {
             buyer_base_frozen, // Keep frozen as is
             balance_event_types::TRADE_CREDIT,
             trade_ref_id,
-        ).await?;
+        )
+        .await?;
 
         // Buyer Quote: Spent quote asset (from frozen)
         self.append_balance_event(
             trade.buyer_user_id,
             trade.quote_asset_id,
             new_buyer_quote_ver as u64,
-            0, // avail doesn't change (was already locked)
+            0,             // avail doesn't change (was already locked)
             -quote_amount, // frozen decreases
             new_buyer_quote,
             buyer_quote_frozen - quote_amount, // Update frozen
             balance_event_types::TRADE_DEBIT,
             trade_ref_id,
-        ).await?;
+        )
+        .await?;
 
         // Seller Base: Spent base asset (from frozen)
         self.append_balance_event(
             trade.seller_user_id,
             trade.base_asset_id,
             new_seller_base_ver as u64,
-            0, // avail doesn't change (was already locked)
+            0,         // avail doesn't change (was already locked)
             -quantity, // frozen decreases
             new_seller_base,
             seller_base_frozen - quantity, // Update frozen
             balance_event_types::TRADE_DEBIT,
             trade_ref_id,
-        ).await?;
+        )
+        .await?;
 
         // Seller Quote: Receives quote asset
         self.append_balance_event(
@@ -1436,12 +1510,13 @@ impl SettlementDb {
             trade.quote_asset_id,
             new_seller_quote_ver as u64,
             quote_amount, // avail increases
-            0, // frozen stays same
+            0,            // frozen stays same
             new_seller_quote,
             seller_quote_frozen,
             balance_event_types::TRADE_CREDIT,
             trade_ref_id,
-        ).await?;
+        )
+        .await?;
 
         log::debug!(
             "Settled trade {} (buyer={}, seller={})",
@@ -1472,19 +1547,19 @@ impl SettlementDb {
     /// Get the last processed chain state for crash recovery
     /// Reads from engine_output_log (the source of truth) instead of a separate state table
     pub async fn get_chain_state(&self) -> Result<(u64, u64)> {
-        const QUERY: &str = "SELECT output_seq, hash FROM engine_output_log ORDER BY output_seq DESC LIMIT 1";
+        const QUERY: &str =
+            "SELECT output_seq, hash FROM engine_output_log ORDER BY output_seq DESC LIMIT 1";
 
-        let result = self.session.query(QUERY, &[]).await
+        let result = self
+            .session
+            .query(QUERY, &[])
+            .await
             .context("Failed to query engine_output_log for chain state")?;
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
-                let seq: i64 = row.columns[0].as_ref()
-                    .and_then(|v| v.as_bigint())
-                    .unwrap_or(0);
-                let hash: i64 = row.columns[1].as_ref()
-                    .and_then(|v| v.as_bigint())
-                    .unwrap_or(0);
+                let seq: i64 = row.columns[0].as_ref().and_then(|v| v.as_bigint()).unwrap_or(0);
+                let hash: i64 = row.columns[1].as_ref().and_then(|v| v.as_bigint()).unwrap_or(0);
                 return Ok((seq as u64, hash as u64));
             }
         }
@@ -1497,7 +1572,9 @@ impl SettlementDb {
         const QUERY: &str = "INSERT INTO settlement_state (partition_key, last_output_seq, last_hash, updated_at) VALUES ('main', ?, ?, ?)";
 
         let now = get_current_timestamp_ms();
-        self.session.query(QUERY, (last_output_seq as i64, last_hash as i64, now as i64)).await
+        self.session
+            .query(QUERY, (last_output_seq as i64, last_hash as i64, now as i64))
+            .await
             .context("Failed to save settlement_state")?;
 
         Ok(())
@@ -1505,27 +1582,39 @@ impl SettlementDb {
 
     /// Write EngineOutput to log (Source of Truth)
     /// This is the single source of truth - chain state can be recovered by reading the latest entry
-    pub async fn write_engine_output(&self, output: &crate::engine_output::EngineOutput) -> Result<()> {
+    pub async fn write_engine_output(
+        &self,
+        output: &crate::engine_output::EngineOutput,
+    ) -> Result<()> {
         const QUERY: &str = "INSERT INTO engine_output_log (output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?)";
 
-        let output_bytes = serde_json::to_vec(output)
-            .context("Failed to serialize EngineOutput")?;
+        let output_bytes =
+            serde_json::to_vec(output).context("Failed to serialize EngineOutput")?;
         let now = get_current_timestamp_ms();
 
-        self.session.query(QUERY, (
-            output.output_seq as i64,
-            output.hash as i64,
-            output.prev_hash as i64,
-            output_bytes,
-            now,
-        )).await.context("Failed to write engine_output_log")?;
+        self.session
+            .query(
+                QUERY,
+                (
+                    output.output_seq as i64,
+                    output.hash as i64,
+                    output.prev_hash as i64,
+                    output_bytes,
+                    now,
+                ),
+            )
+            .await
+            .context("Failed to write engine_output_log")?;
 
         Ok(())
     }
 
     /// Batch write multiple EngineOutputs to log (Source of Truth) - ULTRA FAST
     /// Writes all outputs in a single ScyllaDB batch for maximum throughput
-    pub async fn write_engine_outputs_batch(&self, outputs: &[crate::engine_output::EngineOutput]) -> Result<()> {
+    pub async fn write_engine_outputs_batch(
+        &self,
+        outputs: &[crate::engine_output::EngineOutput],
+    ) -> Result<()> {
         if outputs.is_empty() {
             return Ok(());
         }
@@ -1540,8 +1629,8 @@ impl SettlementDb {
         let now = get_current_timestamp_ms();
 
         for output in outputs {
-            let output_bytes = serde_json::to_vec(output)
-                .context("Failed to serialize EngineOutput")?;
+            let output_bytes =
+                serde_json::to_vec(output).context("Failed to serialize EngineOutput")?;
 
             batch.append_statement(QUERY);
             values.push((
@@ -1553,7 +1642,9 @@ impl SettlementDb {
             ));
         }
 
-        self.session.batch(&batch, values).await
+        self.session
+            .batch(&batch, values)
+            .await
             .context("Failed to batch write engine_output_log")?;
 
         Ok(())
@@ -1563,7 +1654,10 @@ impl SettlementDb {
     pub async fn engine_output_exists(&self, output_seq: u64) -> Result<bool> {
         const QUERY: &str = "SELECT output_seq FROM engine_output_log WHERE output_seq = ? LIMIT 1";
 
-        let result = self.session.query(QUERY, (output_seq as i64,)).await
+        let result = self
+            .session
+            .query(QUERY, (output_seq as i64,))
+            .await
             .context("Failed to check engine_output_log")?;
 
         Ok(result.rows.is_some() && !result.rows.unwrap().is_empty())

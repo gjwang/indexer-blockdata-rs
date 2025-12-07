@@ -21,10 +21,7 @@ impl OrderHistoryDb {
         let session = builder.build().await?;
         session.use_keyspace(&config.keyspace, false).await?;
 
-        Ok(Self {
-            session: Arc::new(session),
-            keyspace: config.keyspace.clone(),
-        })
+        Ok(Self { session: Arc::new(session), keyspace: config.keyspace.clone() })
     }
 
     /// Health check
@@ -82,49 +79,64 @@ impl OrderHistoryDb {
     pub async fn delete_active_order(&self, user_id: u64, order_id: u64) -> Result<()> {
         let query = "DELETE FROM active_orders WHERE user_id = ? AND order_id = ?";
 
-        self.session
-            .query(query, (user_id as i64, order_id as i64))
-            .await?;
+        self.session.query(query, (user_id as i64, order_id as i64)).await?;
 
         Ok(())
     }
 
     /// Get active order state
-    pub async fn get_active_order(&self, user_id: u64, order_id: u64) -> Result<Option<OrderUpdate>> {
-            let query = "SELECT user_id, order_id, client_order_id, symbol_id, price, qty, filled_qty, status, created_at, side, order_type FROM active_orders WHERE user_id = ? AND order_id = ?";
+    pub async fn get_active_order(
+        &self,
+        user_id: u64,
+        order_id: u64,
+    ) -> Result<Option<OrderUpdate>> {
+        let query = "SELECT user_id, order_id, client_order_id, symbol_id, price, qty, filled_qty, status, created_at, side, order_type FROM active_orders WHERE user_id = ? AND order_id = ?";
         let result = self.session.query(query, (user_id as i64, order_id as i64)).await?;
 
         if let Some(rows) = result.rows {
-             for row in rows {
-                 if let Ok((uid, oid, cid, sym_id, price, qty, filled, status_val, ts, side_val, type_val)) = row.into_typed::<(i64, i64, String, i32, i64, i64, i64, i8, i64, i8, i8)>() {
-                     let status = match status_val {
-                         1 => OrderStatus::New,
-                         3 => OrderStatus::PartiallyFilled,
-                         4 => OrderStatus::Filled,
-                         5 => OrderStatus::Cancelled,
-                         6 => OrderStatus::Rejected,
-                         7 => OrderStatus::Expired,
-                         _ => OrderStatus::New,
-                     };
+            for row in rows {
+                if let Ok((
+                    uid,
+                    oid,
+                    cid,
+                    sym_id,
+                    price,
+                    qty,
+                    filled,
+                    status_val,
+                    ts,
+                    side_val,
+                    type_val,
+                )) = row.into_typed::<(i64, i64, String, i32, i64, i64, i64, i8, i64, i8, i8)>()
+                {
+                    let status = match status_val {
+                        1 => OrderStatus::New,
+                        3 => OrderStatus::PartiallyFilled,
+                        4 => OrderStatus::Filled,
+                        5 => OrderStatus::Cancelled,
+                        6 => OrderStatus::Rejected,
+                        7 => OrderStatus::Expired,
+                        _ => OrderStatus::New,
+                    };
 
-                     return Ok(Some(OrderUpdate {
-                         order_id: oid as u64,
-                         client_order_id: if cid.is_empty() { None } else { Some(cid) },
-                         user_id: uid as u64,
-                         symbol_id: sym_id as u32,
-                         side: side_val as u8,
-                         order_type: type_val as u8,
-                         status,
-                         price: price as u64,
-                         qty: qty as u64,
-                         filled_qty: filled as u64,
-                         avg_fill_price: None,
-                         rejection_reason: None,
-                         timestamp: ts as u64,
-                         match_id: None,
-                     }));
-                 }
-             }
+                    return Ok(Some(OrderUpdate {
+                        order_id: oid as u64,
+                        client_order_id: if cid.is_empty() { None } else { Some(cid) },
+                        user_id: uid as u64,
+                        symbol_id: sym_id as u32,
+                        side: side_val as u8,
+                        order_type: type_val as u8,
+                        status,
+                        price: price as u64,
+                        qty: qty as u64,
+                        filled_qty: filled as u64,
+                        avg_fill_price: None,
+                        rejection_reason: None,
+                        timestamp: ts as u64,
+                        match_id: None,
+                    }));
+                }
+            }
         }
         Ok(None)
     }
@@ -181,7 +193,11 @@ impl OrderHistoryDb {
     // ========================================================================
 
     /// Insert order update event into stream
-    pub async fn insert_order_update_stream(&self, order: &OrderUpdate, event_id: u64) -> Result<()> {
+    pub async fn insert_order_update_stream(
+        &self,
+        order: &OrderUpdate,
+        event_id: u64,
+    ) -> Result<()> {
         // Calculate event_date (Days since epoch)
         let event_date = (order.timestamp / 8640_0000) as i32;
 
@@ -230,20 +246,26 @@ impl OrderHistoryDb {
     // ========================================================================
 
     /// Update order statistics for a user
-    pub async fn update_order_statistics(&self, user_id: u64, status: &OrderStatus, timestamp: u64) -> Result<()> {
+    pub async fn update_order_statistics(
+        &self,
+        user_id: u64,
+        status: &OrderStatus,
+        timestamp: u64,
+    ) -> Result<()> {
         // 1. Fetch current statistics
         let select_query = "SELECT total_orders, filled_orders, cancelled_orders, rejected_orders FROM order_statistics WHERE user_id = ?";
         let current_stats = self.session.query(select_query, (user_id as i64,)).await?;
 
-        let (mut total, mut filled, mut cancelled, mut rejected) = if let Some(rows) = current_stats.rows {
-            if let Some(row) = rows.into_iter().next() {
-                row.into_typed::<(i32, i32, i32, i32)>().unwrap_or((0, 0, 0, 0))
+        let (mut total, mut filled, mut cancelled, mut rejected) =
+            if let Some(rows) = current_stats.rows {
+                if let Some(row) = rows.into_iter().next() {
+                    row.into_typed::<(i32, i32, i32, i32)>().unwrap_or((0, 0, 0, 0))
+                } else {
+                    (0, 0, 0, 0)
+                }
             } else {
                 (0, 0, 0, 0)
-            }
-        } else {
-            (0, 0, 0, 0)
-        };
+            };
 
         // 2. Increment counters
         match status {
@@ -252,7 +274,7 @@ impl OrderHistoryDb {
             OrderStatus::Cancelled => cancelled += 1,
             OrderStatus::Rejected => rejected += 1,
             OrderStatus::Expired => cancelled += 1,
-             _ => {}
+            _ => {}
         }
 
         // 3. Upsert updated statistics
@@ -295,9 +317,7 @@ impl OrderHistoryDb {
             IF NOT EXISTS
         ";
 
-        self.session
-            .query(query, (user_id as i64, timestamp as i64, timestamp as i64))
-            .await?;
+        self.session.query(query, (user_id as i64, timestamp as i64, timestamp as i64)).await?;
 
         Ok(())
     }

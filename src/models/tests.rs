@@ -10,7 +10,7 @@ mod tests {
             client_order_id: Some("cid_001".to_string()),
             user_id: 1,
             symbol_id: 1,
-            side: 1, // Buy
+            side: 1,       // Buy
             order_type: 1, // Limit
             status: OrderStatus::Filled,
             price: 50000,
@@ -23,7 +23,8 @@ mod tests {
         };
 
         let json = serde_json::to_string(&update).expect("Serialization failed");
-        let deserialized: OrderUpdate = serde_json::from_str(&json).expect("Deserialization failed");
+        let deserialized: OrderUpdate =
+            serde_json::from_str(&json).expect("Deserialization failed");
 
         assert_eq!(deserialized.order_id, 12345);
         assert_eq!(deserialized.status, OrderStatus::Filled);
@@ -38,7 +39,7 @@ mod tests {
             client_order_id: None,
             user_id: 2,
             symbol_id: 2,
-            side: 2, // Sell
+            side: 2,       // Sell
             order_type: 2, // Market
             status: OrderStatus::New,
             price: 3000,

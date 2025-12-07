@@ -57,13 +57,16 @@ async fn main() {
     let subscriber = setup_zmq(&zmq_config);
 
     // --- File Writers ---
-    let data_dir = configure::prepare_data_dir(&config.data_dir)
-        .unwrap_or_else(|e| {
-            log::error!(target: LOG_TARGET, "Data dir error: {}", e);
-            "./data".to_string()
+    let data_dir = configure::prepare_data_dir(&config.data_dir).unwrap_or_else(|e| {
+        log::error!(target: LOG_TARGET, "Data dir error: {}", e);
+        "./data".to_string()
+    });
+    let backup_csv_path =
+        std::path::PathBuf::from(&data_dir).join(if config.backup_csv_file.is_empty() {
+            "settled_trades.csv"
+        } else {
+            &config.backup_csv_file
         });
-    let backup_csv_path = std::path::PathBuf::from(&data_dir)
-        .join(if config.backup_csv_file.is_empty() { "settled_trades.csv" } else { &config.backup_csv_file });
     let mut csv_writer = create_csv_writer(&backup_csv_path);
 
     // --- Load Chain State (Crash Recovery) ---
@@ -86,7 +89,8 @@ async fn main() {
         trades_tx,
         order_tx,
         starrocks_tx,
-    ).await;
+    )
+    .await;
 }
 
 // ============================================================================
@@ -107,7 +111,9 @@ async fn connect_settlement_db(config: &fetcher::configure::ScyllaDbConfig) -> A
     }
 }
 
-async fn connect_order_history_db(config: &fetcher::configure::ScyllaDbConfig) -> Arc<OrderHistoryDb> {
+async fn connect_order_history_db(
+    config: &fetcher::configure::ScyllaDbConfig,
+) -> Arc<OrderHistoryDb> {
     log::info!(target: LOG_TARGET, "Connecting to ScyllaDB (OrderHistory)...");
     match OrderHistoryDb::connect(config).await {
         Ok(db) => {
@@ -204,7 +210,8 @@ fn spawn_derived_writers(
     });
 
     // Trades Writer
-    let (trades_tx, mut trades_rx) = mpsc::channel::<(Vec<TradeOutput>, u64)>(DERIVED_WRITER_BUFFER);
+    let (trades_tx, mut trades_rx) =
+        mpsc::channel::<(Vec<TradeOutput>, u64)>(DERIVED_WRITER_BUFFER);
     let db = settlement_db.clone();
     tokio::spawn(async move {
         while let Some((trades, seq)) = trades_rx.recv().await {
@@ -220,7 +227,8 @@ fn spawn_derived_writers(
     tokio::spawn(async move {
         while let Some(outputs) = order_rx.recv().await {
             // Process all order updates in parallel
-            let futures: Vec<_> = outputs.iter()
+            let futures: Vec<_> = outputs
+                .iter()
                 .map(|output| process_engine_order_update_fast(&db, output))
                 .collect();
             join_all(futures).await;
@@ -228,12 +236,14 @@ fn spawn_derived_writers(
     });
 
     // StarRocks Writer - PARALLEL HTTP calls
-    let (starrocks_tx, mut starrocks_rx) = mpsc::channel::<Vec<StarRocksTrade>>(DERIVED_WRITER_BUFFER);
+    let (starrocks_tx, mut starrocks_rx) =
+        mpsc::channel::<Vec<StarRocksTrade>>(DERIVED_WRITER_BUFFER);
     let sr_client = starrocks_client;
     tokio::spawn(async move {
         while let Some(trades) = starrocks_rx.recv().await {
             // Process all trades in parallel
-            let futures: Vec<_> = trades.into_iter()
+            let futures: Vec<_> = trades
+                .into_iter()
                 .map(|trade| {
                     let client = sr_client.clone();
                     async move {
@@ -295,7 +305,15 @@ async fn run_processing_loop(
 
         // --- Step 4: Dispatch to Derived Writers ---
         let t_dispatch = std::time::Instant::now();
-        let batch_trades = dispatch_to_writers(&verified, &balance_tx, &trades_tx, &order_tx, &starrocks_tx, csv_writer).await;
+        let batch_trades = dispatch_to_writers(
+            &verified,
+            &balance_tx,
+            &trades_tx,
+            &order_tx,
+            &starrocks_tx,
+            csv_writer,
+        )
+        .await;
         let d_dispatch = t_dispatch.elapsed();
 
         // --- Metrics ---
@@ -304,7 +322,8 @@ async fn run_processing_loop(
         total_trades += batch_trades as u64;
         total_processing_us += t_start.elapsed().as_micros() as u64;
 
-        let batch_ops = (batch_size as f64 * 1_000_000.0) / t_start.elapsed().as_micros().max(1) as f64;
+        let batch_ops =
+            (batch_size as f64 * 1_000_000.0) / t_start.elapsed().as_micros().max(1) as f64;
         let total_ops = (total_msgs as f64 * 1_000_000.0) / total_processing_us.max(1) as f64;
 
         log::info!(target: LOG_TARGET,
@@ -419,38 +438,45 @@ async fn dispatch_to_writers(
             let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
 
             // StarRocks trades
-            let sr_trades: Vec<StarRocksTrade> = output.trades.iter().map(|trade| {
-                let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
-                let match_exec = fetcher::ledger::MatchExecData {
-                    trade_id: trade.trade_id,
-                    buy_order_id: trade.buy_order_id,
-                    sell_order_id: trade.sell_order_id,
-                    buyer_user_id: trade.buyer_user_id,
-                    seller_user_id: trade.seller_user_id,
-                    price: trade.price,
-                    quantity: trade.quantity,
-                    base_asset_id: trade.base_asset_id,
-                    quote_asset_id: trade.quote_asset_id,
-                    buyer_refund: trade.buyer_refund,
-                    seller_refund: trade.seller_refund,
-                    match_seq: trade.match_seq,
-                    output_sequence: output.output_seq,
-                    settled_at: trade.settled_at,
-                    buyer_quote_version: 0,
-                    buyer_base_version: 0,
-                    seller_base_version: 0,
-                    seller_quote_version: 0,
-                    buyer_quote_balance_after: 0,
-                    buyer_base_balance_after: 0,
-                    seller_base_balance_after: 0,
-                    seller_quote_balance_after: 0,
-                };
-                let _ = csv_writer.serialize(&match_exec);
-                StarRocksTrade::from_match_exec(&match_exec, ts)
-            }).collect();
+            let sr_trades: Vec<StarRocksTrade> = output
+                .trades
+                .iter()
+                .map(|trade| {
+                    let ts = if trade.settled_at > 0 {
+                        trade.settled_at as i64
+                    } else {
+                        Utc::now().timestamp_millis()
+                    };
+                    let match_exec = fetcher::ledger::MatchExecData {
+                        trade_id: trade.trade_id,
+                        buy_order_id: trade.buy_order_id,
+                        sell_order_id: trade.sell_order_id,
+                        buyer_user_id: trade.buyer_user_id,
+                        seller_user_id: trade.seller_user_id,
+                        price: trade.price,
+                        quantity: trade.quantity,
+                        base_asset_id: trade.base_asset_id,
+                        quote_asset_id: trade.quote_asset_id,
+                        buyer_refund: trade.buyer_refund,
+                        seller_refund: trade.seller_refund,
+                        match_seq: trade.match_seq,
+                        output_sequence: output.output_seq,
+                        settled_at: trade.settled_at,
+                        buyer_quote_version: 0,
+                        buyer_base_version: 0,
+                        seller_base_version: 0,
+                        seller_quote_version: 0,
+                        buyer_quote_balance_after: 0,
+                        buyer_base_balance_after: 0,
+                        seller_base_balance_after: 0,
+                        seller_quote_balance_after: 0,
+                    };
+                    let _ = csv_writer.serialize(&match_exec);
+                    StarRocksTrade::from_match_exec(&match_exec, ts)
+                })
+                .collect();
             let _ = starrocks_tx.send(sr_trades).await;
         }
-
     }
 
     // Order Updates - send entire batch at once
@@ -478,7 +504,11 @@ async fn process_order_update_parallel(
                 db.insert_order_history(order_update),
                 db.insert_order_update_stream(order_update, event_id),
                 db.init_user_statistics(order_update.user_id, order_update.timestamp),
-                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+                db.update_order_statistics(
+                    order_update.user_id,
+                    &order_update.status,
+                    order_update.timestamp
+                )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() || r5.is_err() {
                 log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
@@ -501,7 +531,11 @@ async fn process_order_update_parallel(
                 db.delete_active_order(order_update.user_id, order_update.order_id),
                 db.insert_order_history(order_update),
                 db.insert_order_update_stream(order_update, event_id),
-                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+                db.update_order_statistics(
+                    order_update.user_id,
+                    &order_update.status,
+                    order_update.timestamp
+                )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() {
                 log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
@@ -512,7 +546,11 @@ async fn process_order_update_parallel(
             let (r1, r2, r3) = tokio::join!(
                 db.insert_order_history(order_update),
                 db.insert_order_update_stream(order_update, event_id),
-                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+                db.update_order_statistics(
+                    order_update.user_id,
+                    &order_update.status,
+                    order_update.timestamp
+                )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() {
                 log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
@@ -522,10 +560,7 @@ async fn process_order_update_parallel(
 }
 
 /// Fast parallel order update processing
-async fn process_engine_order_update_fast(
-    db: &OrderHistoryDb,
-    output: &EngineOutput,
-) {
+async fn process_engine_order_update_fast(db: &OrderHistoryDb, output: &EngineOutput) {
     if let InputData::PlaceOrder(ref place_order) = output.input.data {
         if let Some(ref order_update) = output.order_update {
             let status = match order_update.status {
@@ -547,7 +582,11 @@ async fn process_engine_order_update_fast(
                 price: place_order.price,
                 qty: place_order.quantity,
                 filled_qty: order_update.filled_qty,
-                avg_fill_price: if order_update.avg_price > 0 { Some(order_update.avg_price) } else { None },
+                avg_fill_price: if order_update.avg_price > 0 {
+                    Some(order_update.avg_price)
+                } else {
+                    None
+                },
                 rejection_reason: None,
                 timestamp: order_update.updated_at,
                 match_id: None,
@@ -557,4 +596,3 @@ async fn process_engine_order_update_fast(
         }
     }
 }
-

@@ -1,8 +1,7 @@
-
 #[cfg(test)]
 mod order_lifecycle_tests {
-    use crate::matching_engine_base::MatchingEngine;
     use crate::ledger::{LedgerCommand, OrderStatus, OrderUpdate};
+    use crate::matching_engine_base::MatchingEngine;
     use crate::models::{OrderError, OrderType, Side};
     use tempfile::TempDir;
 
@@ -23,19 +22,25 @@ mod order_lifecycle_tests {
         // Fund user
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         // Place order
         let (results, commands) = engine.add_order_batch(vec![(
-            1,      // symbol_id
-            12345,  // order_id
+            1,     // symbol_id
+            12345, // order_id
             Side::Buy,
             OrderType::Limit,
-            50000,  // price
-            1,      // quantity
-            1,      // user_id
-            1000,   // timestamp
+            50000, // price
+            1,     // quantity
+            1,     // user_id
+            1000,  // timestamp
         )]);
 
         // Verify order was accepted
@@ -69,14 +74,14 @@ mod order_lifecycle_tests {
 
         // Attempt to place order
         let (results, _commands) = engine.add_order_batch(vec![(
-            1,      // symbol_id
-            12345,  // order_id
+            1,     // symbol_id
+            12345, // order_id
             Side::Buy,
             OrderType::Limit,
-            50000,  // price
-            1,      // quantity
-            1,      // user_id
-            1000,   // timestamp
+            50000, // price
+            1,     // quantity
+            1,     // user_id
+            1000,  // timestamp
         )]);
 
         // Verify order was accepted for processing (result Ok)
@@ -98,7 +103,11 @@ mod order_lifecycle_tests {
         assert!(update.rejection_reason.is_some());
 
         let reason = update.rejection_reason.as_ref().unwrap();
-        assert!(reason.contains("Insufficient funds") || reason.contains("LedgerError"), "Reason was: {}", reason);
+        assert!(
+            reason.contains("Insufficient funds") || reason.contains("LedgerError"),
+            "Reason was: {}",
+            reason
+        );
     }
 
     #[test]
@@ -112,7 +121,13 @@ mod order_lifecycle_tests {
         for user_id in 1..=3 {
             engine
                 .ledger
-                .apply(&LedgerCommand::Deposit { user_id, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+                .apply(&LedgerCommand::Deposit {
+                    user_id,
+                    asset_id: 200,
+                    amount: 100000,
+                    balance_after: 0,
+                    version: 0,
+                })
                 .unwrap();
         }
 
@@ -151,13 +166,18 @@ mod order_lifecycle_tests {
         // Fund user
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         // Place order
-        let (_results, _commands) = engine.add_order_batch(vec![(
-            1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000,
-        )]);
+        let (_results, _commands) =
+            engine.add_order_batch(vec![(1, 101, Side::Buy, OrderType::Limit, 50000, 1, 1, 1000)]);
 
         // Cancel order
         let cancel_commands = engine.cancel_order(1, 101).expect("Cancel should succeed");
@@ -187,7 +207,13 @@ mod order_lifecycle_tests {
         // Fund user with 100,000 USDT
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 200, amount: 100000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 200,
+                amount: 100000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         // Place order (locks 50,000 USDT)

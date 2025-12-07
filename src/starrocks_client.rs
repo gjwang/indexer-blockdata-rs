@@ -73,7 +73,8 @@ impl StarRocksClient {
         let payload = serde_json::to_string(&trades)?;
         // println!("[DEBUG] StarRocks Payload: {}", payload); // Uncomment for verbose debug
 
-        let response = self.client
+        let response = self
+            .client
             .put(&self.url)
             .basic_auth("root", Some(""))
             .header("label", &label)

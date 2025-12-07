@@ -69,11 +69,11 @@ pub struct PlaceOrderInput {
     pub order_id: u64,
     pub user_id: u64,
     pub symbol_id: u32,
-    pub side: u8,        // 1=Buy, 2=Sell
-    pub order_type: u8,  // 1=Limit, 2=Market
+    pub side: u8,       // 1=Buy, 2=Sell
+    pub order_type: u8, // 1=Limit, 2=Market
     pub price: u64,
     pub quantity: u64,
-    pub cid: String,     // Client order ID
+    pub cid: String, // Client order ID
     pub created_at: u64,
 }
 
@@ -126,13 +126,13 @@ pub struct TradeOutput {
 pub struct BalanceEvent {
     pub user_id: u64,
     pub asset_id: u32,
-    pub seq: u64,          // Balance sequence (version)
-    pub delta_avail: i64,  // Change to available
-    pub delta_frozen: i64, // Change to frozen
-    pub avail: i64,        // Balance after
-    pub frozen: i64,       // Frozen after
+    pub seq: u64,           // Balance sequence (version)
+    pub delta_avail: i64,   // Change to available
+    pub delta_frozen: i64,  // Change to frozen
+    pub avail: i64,         // Balance after
+    pub frozen: i64,        // Frozen after
     pub event_type: String, // "deposit", "lock", "unlock", "withdraw", "trade_credit", "trade_debit"
-    pub ref_id: u64,       // Order ID or Trade ID
+    pub ref_id: u64,        // Order ID or Trade ID
 }
 
 /// Order status update
@@ -157,15 +157,8 @@ impl EngineOutput {
         trades: Vec<TradeOutput>,
         balance_events: Vec<BalanceEvent>,
     ) -> Self {
-        let mut output = Self {
-            output_seq,
-            prev_hash,
-            input,
-            order_update,
-            trades,
-            balance_events,
-            hash: 0,
-        };
+        let mut output =
+            Self { output_seq, prev_hash, input, order_update, trades, balance_events, hash: 0 };
         output.hash = output.compute_hash();
         output
     }
@@ -290,11 +283,7 @@ impl InputBundle {
     pub fn new(input_seq: u64, data: InputData) -> Self {
         let serialized = serde_json::to_vec(&data).unwrap_or_default();
         let crc = crc32fast::hash(&serialized);
-        Self {
-            input_seq,
-            crc,
-            data,
-        }
+        Self { input_seq, crc, data }
     }
 
     /// Verify CRC against stored value
@@ -444,12 +433,15 @@ mod tests {
 
     #[test]
     fn test_chain_verification() {
-        let input1 = InputBundle::new(1, InputData::Deposit(DepositInput {
-            user_id: 1001,
-            asset_id: 1,
-            amount: 1000000,
-            created_at: 1700000000000,
-        }));
+        let input1 = InputBundle::new(
+            1,
+            InputData::Deposit(DepositInput {
+                user_id: 1001,
+                asset_id: 1,
+                amount: 1000000,
+                created_at: 1700000000000,
+            }),
+        );
 
         let output1 = EngineOutput::new(
             1,
@@ -470,12 +462,15 @@ mod tests {
             }],
         );
 
-        let input2 = InputBundle::new(2, InputData::Deposit(DepositInput {
-            user_id: 1001,
-            asset_id: 2,
-            amount: 2000000,
-            created_at: 1700000001000,
-        }));
+        let input2 = InputBundle::new(
+            2,
+            InputData::Deposit(DepositInput {
+                user_id: 1001,
+                asset_id: 2,
+                amount: 2000000,
+                created_at: 1700000001000,
+            }),
+        );
 
         let output2 = EngineOutput::new(
             2,
@@ -507,12 +502,15 @@ mod tests {
 
     #[test]
     fn test_input_crc() {
-        let input = InputBundle::new(1, InputData::Deposit(DepositInput {
-            user_id: 1001,
-            asset_id: 1,
-            amount: 1000000,
-            created_at: 1700000000000,
-        }));
+        let input = InputBundle::new(
+            1,
+            InputData::Deposit(DepositInput {
+                user_id: 1001,
+                asset_id: 1,
+                amount: 1000000,
+                created_at: 1700000000000,
+            }),
+        );
 
         assert!(input.verify_crc());
     }
@@ -529,7 +527,7 @@ mod tests {
                 order_id: 12345,
                 user_id: 1001,
                 symbol_id: 0,
-                side: 1, // Buy
+                side: 1,       // Buy
                 order_type: 1, // Limit
                 price: 15000,
                 quantity: 100,

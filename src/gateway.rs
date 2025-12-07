@@ -4,13 +4,13 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use axum::extract::Query;
 use axum::{
     extract::{Extension, Json},
     http::StatusCode,
-    Router,
     routing::post,
+    Router,
 };
-use axum::extract::Query;
 use rust_decimal::Decimal;
 use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
@@ -19,11 +19,11 @@ use crate::client_order_convertor::client_order_convert;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::ledger::MatchExecData;
+use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::models::{
-    ApiResponse, BalanceRequest, ClientOrder, OrderStatus, u64_to_decimal_string,
+    u64_to_decimal_string, ApiResponse, BalanceRequest, ClientOrder, OrderStatus,
     UserAccountManager,
 };
-use crate::models::balance_manager::{BalanceManager, ClientBalance};
 use crate::symbol_manager::SymbolManager;
 use crate::user_account::Balance;
 
@@ -61,7 +61,7 @@ pub trait OrderPublisher: Send + Sync {
         topic: String,
         key: String,
         payload: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output=Result<(), String>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 }
 
 pub struct SimulatedFundingAccount {
@@ -252,24 +252,26 @@ async fn transfer_out(
     // Update Balance in DB using append-only ledger
     if let Some(db) = &state.db {
         // Get current seq and use next seq for withdraw
-        let current = db.get_current_balance(payload.user_id, asset_id)
+        let current = db
+            .get_current_balance(payload.user_id, asset_id)
             .await
             .map_err(|e| {
                 eprintln!("DB Error getting balance: {}", e);
                 StatusCode::INTERNAL_SERVER_ERROR
             })?
             .ok_or_else(|| {
-                eprintln!("No balance for user {} asset {} - deposit required first", payload.user_id, asset_id);
+                eprintln!(
+                    "No balance for user {} asset {} - deposit required first",
+                    payload.user_id, asset_id
+                );
                 StatusCode::BAD_REQUEST
             })?;
 
         let next_seq = (current.seq + 1) as u64;
-        db.withdraw(payload.user_id, asset_id, raw_amount, next_seq, 0)
-            .await
-            .map_err(|e| {
-                eprintln!("DB Error: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+        db.withdraw(payload.user_id, asset_id, raw_amount, next_seq, 0).await.map_err(|e| {
+            eprintln!("DB Error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     } else {
         eprintln!("DB not initialized");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
@@ -507,7 +509,8 @@ async fn get_order_history(
             price_decimals: u32,
         }
 
-        let mut orders_map: std::collections::HashMap<u64, OrderAgg> = std::collections::HashMap::new();
+        let mut orders_map: std::collections::HashMap<u64, OrderAgg> =
+            std::collections::HashMap::new();
 
         for t in trades {
             // Filter by symbol

@@ -25,7 +25,13 @@ mod tests {
         // Deposit funds for User 1: 1000 Asset 2 (Quote)
         engine
             .ledger
-            .apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 2, amount: 1000, balance_after: 0, version: 0 })
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 2,
+                amount: 1000,
+                balance_after: 0,
+                version: 0,
+            })
             .unwrap();
 
         //    // Add order: Buy 50 @ 10 (Cost 500) -> Success
@@ -39,7 +45,16 @@ mod tests {
         let mut engine = setup_engine(&temp_dir);
 
         // Deposit funds for User 1: 500 Asset 2 (Quote)
-        engine.ledger.apply(&LedgerCommand::Deposit { user_id: 1, asset_id: 2, amount: 500, balance_after: 0, version: 0 }).unwrap();
+        engine
+            .ledger
+            .apply(&LedgerCommand::Deposit {
+                user_id: 1,
+                asset_id: 2,
+                amount: 500,
+                balance_after: 0,
+                version: 0,
+            })
+            .unwrap();
 
         // Add order: Buy 100 @ 10 (Cost 1000) -> Fails (Balance 500)
         let result = engine.add_order(0, 1, Side::Buy, OrderType::Limit, 10, 100, 1, 0);
