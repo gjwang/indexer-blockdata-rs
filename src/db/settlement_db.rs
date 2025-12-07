@@ -844,19 +844,25 @@ impl SettlementDb {
         //         now as i64,
         //     ));
         // }
+        let now = get_current_timestamp_ms();
 
         // Execute alternating batch (ledger, user, ledger, user, ...)
         // Actually, ScyllaDB batch with different statement types is tricky
         // Let's use a simpler approach: batch all ledger, then batch all user_balances
 
+        // Chunk into smaller batches if needed (ScyllaDB limit ~5000-10000 items)
+    const MAX_BATCH_ITEMS: usize = 5000;
+    let t_start = std::time::Instant::now();
+
+    for chunk in events.chunks(MAX_BATCH_ITEMS) {
         let mut ledger_batch = Batch::new(BatchType::Unlogged);
-        // Note: Can't use IF NOT EXISTS (LWT) in batch - idempotency ensured by primary key
         let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        for _ in events {
+
+        for _ in chunk {
             ledger_batch.append_statement(ledger_stmt);
         }
 
-        let ledger_values: Vec<_> = events
+        let chunk_values: Vec<_> = chunk
             .iter()
             .map(|e| {
                 (
@@ -874,12 +880,11 @@ impl SettlementDb {
             })
             .collect();
 
-        let t_start = std::time::Instant::now();
-
         self.session
-            .batch(&ledger_batch, ledger_values)
+            .batch(&ledger_batch, chunk_values)
             .await
             .context("Failed to batch insert balance_ledger")?;
+    }
 
         let total_time = t_start.elapsed();
 
