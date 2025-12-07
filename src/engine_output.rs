@@ -112,6 +112,7 @@ pub struct WithdrawInput {
 pub struct TradeOutput {
     pub trade_id: u64,
     pub match_seq: u64,
+    pub symbol_id: u32,  // Symbol for this trade (for SOT sharding)
     pub buy_order_id: u64,
     pub sell_order_id: u64,
     pub buyer_user_id: u64,
@@ -161,10 +162,9 @@ impl EngineOutput {
         trades: Vec<TradeOutput>,
         balance_events: Vec<BalanceEvent>,
     ) -> Self {
-        // TODO: Determine symbol_id from trades/orders once they have symbol_id field
-        // For now, use 0 (all operations in single shard = no parallelism yet)
-        // Future: trades.first().map(|t| t.symbol_id).unwrap_or(0)
-        let symbol_id = 0;
+        // Determine symbol_id from first trade if available
+        // 0 = system operations (deposits, withdrawals, no trades)
+        let symbol_id = trades.first().map(|t| t.symbol_id).unwrap_or(0);
 
         let mut output = Self {
             output_seq,
@@ -569,6 +569,7 @@ mod tests {
         builder.add_trade(TradeOutput {
             trade_id: 99999,
             match_seq: 1,
+            symbol_id: 1, // BTC/USDT
             buy_order_id: 12345,
             sell_order_id: 12346,
             buyer_user_id: 1001,
