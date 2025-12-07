@@ -881,60 +881,13 @@ impl SettlementDb {
             .await
             .context("Failed to batch insert balance_ledger")?;
 
-        let ledger_time = t_start.elapsed();
-
-        // Update user_balances SNAPSHOT - only write FINAL state per (user_id, asset_id)
-        // This is efficient: instead of writing every event, we just write the last one
-        use std::collections::HashMap;
-        let mut latest: HashMap<(u64, u32), &crate::engine_output::BalanceEvent> = HashMap::new();
-        for event in events {
-            let key = (event.user_id, event.asset_id);
-            match latest.get(&key) {
-                Some(existing) if existing.seq >= event.seq => {} // Keep existing (higher seq)
-                _ => {
-                    latest.insert(key, event);
-                }
-            }
-        }
-
-        let mut user_time = std::time::Duration::default();
-        if !latest.is_empty() {
-            let t_user = std::time::Instant::now();
-            let mut user_batch = Batch::new(BatchType::Unlogged);
-            let user_stmt = "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)";
-            for _ in 0..latest.len() {
-                user_batch.append_statement(user_stmt);
-            }
-
-            let user_values: Vec<_> = latest
-                .values()
-                .map(|e| {
-                    (
-                        e.user_id as i64,
-                        e.asset_id as i32,
-                        e.avail,
-                        e.frozen,
-                        e.seq as i64,
-                        now as i64,
-                    )
-                })
-                .collect();
-
-            self.session
-                .batch(&user_batch, user_values)
-                .await
-                .context("Failed to batch update user_balances snapshot")?;
-
-            user_time = t_user.elapsed();
-        }
-
         let total_time = t_start.elapsed();
+
+        // NOTE: user_balances snapshot write is DISABLED for performance
+        // User balances are now queried directly from balance_ledger
         log::info!(
-            "Balance writer: {} events, {} snapshots | ledger={:.2}ms, user={:.2}ms, total={:.2}ms",
+            "Balance writer: {} events, ledger_only={:.2}ms",
             events.len(),
-            latest.len(),
-            ledger_time.as_micros() as f64 / 1000.0,
-            user_time.as_micros() as f64 / 1000.0,
             total_time.as_micros() as f64 / 1000.0
         );
         Ok(())
