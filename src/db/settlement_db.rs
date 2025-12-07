@@ -1470,11 +1470,12 @@ impl SettlementDb {
     }
 
     /// Get the last processed chain state for crash recovery
+    /// Reads from engine_output_log (the source of truth) instead of a separate state table
     pub async fn get_chain_state(&self) -> Result<(u64, u64)> {
-        const QUERY: &str = "SELECT last_output_seq, last_hash FROM settlement_state WHERE partition_key = 'main'";
+        const QUERY: &str = "SELECT output_seq, hash FROM engine_output_log ORDER BY output_seq DESC LIMIT 1";
 
         let result = self.session.query(QUERY, &[]).await
-            .context("Failed to query settlement_state")?;
+            .context("Failed to query engine_output_log for chain state")?;
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
@@ -1503,7 +1504,7 @@ impl SettlementDb {
     }
 
     /// Write EngineOutput to log (Source of Truth)
-    /// This MUST be called FIRST before any derived state updates
+    /// This is the single source of truth - chain state can be recovered by reading the latest entry
     pub async fn write_engine_output(&self, output: &crate::engine_output::EngineOutput) -> Result<()> {
         const QUERY: &str = "INSERT INTO engine_output_log (output_seq, hash, prev_hash, output_data, created_at) VALUES (?, ?, ?, ?, ?)";
 
@@ -1516,7 +1517,7 @@ impl SettlementDb {
             output.hash as i64,
             output.prev_hash as i64,
             output_bytes,
-            now as i64,
+            now,
         )).await.context("Failed to write engine_output_log")?;
 
         Ok(())

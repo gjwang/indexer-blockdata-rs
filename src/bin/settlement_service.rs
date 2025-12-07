@@ -299,6 +299,94 @@ async fn process_trade_fill(
     Ok(())
 }
 
+/// Process order update from EngineOutput (if present)
+async fn process_engine_order_update(
+    db: &OrderHistoryDb,
+    output: &EngineOutput,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let InputData::PlaceOrder(ref place_order) = output.input.data {
+        if let Some(ref order_update) = output.order_update {
+            let status = match order_update.status {
+                1 => OrderStatus::New,
+                2 => OrderStatus::PartiallyFilled,
+                3 => OrderStatus::Filled,
+                4 => OrderStatus::Cancelled,
+                _ => OrderStatus::Rejected,
+            };
+
+            let ledger_order_update = OrderUpdate {
+                order_id: order_update.order_id,
+                client_order_id: Some(place_order.cid.clone()),
+                user_id: order_update.user_id,
+                symbol_id: place_order.symbol_id,
+                side: place_order.side,
+                order_type: place_order.order_type,
+                status,
+                price: place_order.price,
+                qty: place_order.quantity,
+                filled_qty: order_update.filled_qty,
+                avg_fill_price: if order_update.avg_price > 0 { Some(order_update.avg_price) } else { None },
+                rejection_reason: None,
+                timestamp: order_update.updated_at,
+                match_id: None,
+            };
+
+            if let Err(e) = process_order_update(db, &ledger_order_update, 0).await {
+                log::warn!("Order history update failed: {}", e);
+            } else {
+                log::info!(target: LOG_TARGET, "Processed Order #{}", ledger_order_update.order_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Result of engine output verification
+enum VerifyResult {
+    /// Already processed, skip
+    Skip,
+    /// Verification passed
+    Ok,
+    /// Verification failed with error message
+    Err(String),
+}
+
+/// Verify EngineOutput chain integrity and idempotency
+fn verify_engine_output(
+    output: &EngineOutput,
+    last_output_seq: u64,
+    last_processed_hash: u64,
+) -> VerifyResult {
+    // 1. Idempotency: Skip if already processed
+    if output.output_seq <= last_output_seq && last_output_seq > 0 {
+        return VerifyResult::Skip;
+    }
+
+    // 2. Hash chain verification
+    if !output.verify_prev_hash(last_processed_hash) {
+        return VerifyResult::Err(format!(
+            "Chain verification failed: expected prev_hash={}, got={}",
+            last_processed_hash, output.prev_hash
+        ));
+    }
+
+    // 3. Output integrity verification
+    if !output.verify() {
+        return VerifyResult::Err(format!(
+            "Output hash verification failed for seq={}",
+            output.output_seq
+        ));
+    }
+
+    // 4. Sequence gap warning (not an error, just a warning)
+    if output.output_seq != last_output_seq + 1 {
+        log::warn!(target: LOG_TARGET,
+            "Sequence gap: expected {}, got {}", last_output_seq + 1, output.output_seq);
+    }
+
+    VerifyResult::Ok
+}
+
 /// Process EngineOutput bundle atomically with chain verification
 /// ATOMIC: All operations must succeed, or we fail and retry the whole output
 async fn process_engine_output<W: std::io::Write>(
@@ -313,32 +401,15 @@ async fn process_engine_output<W: std::io::Write>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let t_start = std::time::Instant::now();
 
-    // 1. Idempotency: Skip if already processed
-    if output.output_seq <= *last_output_seq && *last_output_seq > 0 {
-        log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
-        return Ok(());
-    }
-
-    // 2-4. Verification (hash chain, output integrity, sequence)
+    // Verify chain integrity and idempotency
     let t_verify = std::time::Instant::now();
-
-    if !output.verify_prev_hash(*last_processed_hash) {
-        return Err(format!(
-            "Chain verification failed: expected prev_hash={}, got={}",
-            *last_processed_hash, output.prev_hash
-        ).into());
-    }
-
-    if !output.verify() {
-        return Err(format!(
-            "Output hash verification failed for seq={}",
-            output.output_seq
-        ).into());
-    }
-
-    if output.output_seq != *last_output_seq + 1 {
-        log::warn!(target: LOG_TARGET,
-            "Sequence gap: expected {}, got {}", *last_output_seq + 1, output.output_seq);
+    match verify_engine_output(output, *last_output_seq, *last_processed_hash) {
+        VerifyResult::Skip => {
+            log::debug!(target: LOG_TARGET, "Skipping already processed seq={}", output.output_seq);
+            return Ok(());
+        }
+        VerifyResult::Err(msg) => return Err(msg.into()),
+        VerifyResult::Ok => {}
     }
     let d_verify = t_verify.elapsed();
 
@@ -349,43 +420,32 @@ async fn process_engine_output<W: std::io::Write>(
     let output_hash = output.hash;
 
     const MAX_RETRIES: u32 = 3;
-    const INITIAL_DELAY_MS: u64 = 100;
 
     let mut last_error: Option<String> = None;
 
-    for attempt in 0..MAX_RETRIES {
-        if attempt > 0 {
-            let delay = INITIAL_DELAY_MS * (1 << (attempt - 1)); // Exponential backoff
-            log::warn!(target: LOG_TARGET, "Retrying DB writes (attempt {}/{}), waiting {}ms...",
-                attempt + 1, MAX_RETRIES, delay);
-            tokio::time::sleep(tokio::time::Duration::from_millis(delay)).await;
-        }
+    // Run ALL DB writes in parallel
+    let (log_result, bal_result, trade_result, order_result) = tokio::join!(
+        settlement_db.write_engine_output(output),
+        settlement_db.append_balance_events_batch(&output.balance_events),
+        settlement_db.insert_trades_batch(&output.trades, output_seq),
+        process_engine_order_update(&order_history_db, output),//todo: to settlement_db.insert_order_
+        //TODO: update order history
 
-        // Run ALL DB writes in parallel
-        let (log_result, bal_result, trade_result, persist_result) = tokio::join!(
-            settlement_db.write_engine_output(output),
-            settlement_db.append_balance_events_batch(&output.balance_events),
-            settlement_db.insert_trades_batch(&output.trades, output_seq),
-            settlement_db.save_chain_state(output_seq, output_hash),
-        );
+    );
 
-        // Check if all succeeded
-        let log_ok = log_result.is_ok();
-        let bal_ok = bal_result.is_ok();
-        let trade_ok = trade_result.is_ok();
-        let persist_ok = persist_result.is_ok();
+    // Check if all succeeded
+    let log_ok = log_result.is_ok();
+    let bal_ok = bal_result.is_ok();
+    let trade_ok = trade_result.is_ok();
+    let order_ok = order_result.is_ok();
 
-        if log_ok && bal_ok && trade_ok && persist_ok {
-            last_error = None;
-            break;
-        }
-
+    if !(log_ok && bal_ok && trade_ok && order_ok) {
         // Build error message for failed operations
         let mut errors = Vec::new();
         if let Err(e) = log_result { errors.push(format!("log: {}", e)); }
         if let Err(e) = bal_result { errors.push(format!("bal: {}", e)); }
         if let Err(e) = trade_result { errors.push(format!("trade: {}", e)); }
-        if let Err(e) = persist_result { errors.push(format!("persist: {}", e)); }
+        if let Err(e) = order_result { errors.push(format!("order: {}", e)); }
         last_error = Some(errors.join(", "));
     }
 
@@ -450,57 +510,15 @@ async fn process_engine_output<W: std::io::Write>(
     }
     let d_trade = t_trade.elapsed();
 
-    // 7. Process order update (if present) - Background (not critical for settlement)
-    let t_order = std::time::Instant::now();
-    if let InputData::PlaceOrder(ref place_order) = output.input.data {
-        if let Some(ref order_update) = output.order_update {
-            let status = match order_update.status {
-                1 => OrderStatus::New,
-                2 => OrderStatus::PartiallyFilled,
-                3 => OrderStatus::Filled,
-                4 => OrderStatus::Cancelled,
-                _ => OrderStatus::Rejected,
-            };
-
-            let ledger_order_update = OrderUpdate {
-                order_id: order_update.order_id,
-                client_order_id: Some(place_order.cid.clone()),
-                user_id: order_update.user_id,
-                symbol_id: place_order.symbol_id,
-                side: place_order.side,
-                order_type: place_order.order_type,
-                status,
-                price: place_order.price,
-                qty: place_order.quantity,
-                filled_qty: order_update.filled_qty,
-                avg_fill_price: if order_update.avg_price > 0 { Some(order_update.avg_price) } else { None },
-                rejection_reason: None,
-                timestamp: order_update.updated_at,
-                match_id: None,
-            };
-
-            // Spawn to background - order history is "nice to have", not critical
-            let ohs_db = order_history_db.clone();
-            tokio::spawn(async move {
-                if let Err(e) = process_order_update(&ohs_db, &ledger_order_update, 0).await {
-                    log::warn!("Order history update failed: {}", e);
-                } else {
-                    log::info!(target: "settlement", "Processed Fill Order #{}", ledger_order_update.order_id);
-                }
-            });
-        }
-    }
-    let d_order = t_order.elapsed();
-
     // 8. Flush CSV
     csv_writer.flush()?;
 
     let d_total = t_start.elapsed();
 
-    // Log timing
+    // Log timing (order processing is now included in d_db via tokio::join!)
     log::info!(target: LOG_TARGET,
-        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?} order={:?}",
-        output_seq, d_total, d_verify, d_db, d_trade, d_order);
+        "[PROFILE] seq={} total={:?} verify={:?} db={:?} trade={:?}",
+        output_seq, d_total, d_verify, d_db, d_trade);
 
     Ok(())
 }
