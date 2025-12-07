@@ -808,42 +808,42 @@ impl SettlementDb {
         let now = get_current_timestamp_ms();
 
         // Add all balance_ledger inserts and user_balances updates to batch
-        for event in events {
-            // balance_ledger insert
-            batch.append_statement(INSERT_BALANCE_EVENT_CQL);
-            // user_balances update
-            batch.append_statement(
-                "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
-            );
-        }
+        // for event in events {
+        //     // balance_ledger insert
+        //     batch.append_statement(INSERT_BALANCE_EVENT_CQL);
+        //     // user_balances update
+        //     // batch.append_statement(
+        //     //     "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)"
+        //     // );
+        // }
 
-        // Build values for all statements
-        let mut values: Vec<(i64, i32, i64, i64, i64, i64, i64, String, i64, i64)> =
-            Vec::with_capacity(events.len());
-        let mut user_values: Vec<(i64, i32, i64, i64, i64, i64)> = Vec::with_capacity(events.len());
+        // // Build values for all statements
+        // let mut values: Vec<(i64, i32, i64, i64, i64, i64, i64, String, i64, i64)> =
+        //     Vec::with_capacity(events.len());
+        // let mut user_values: Vec<(i64, i32, i64, i64, i64, i64)> = Vec::with_capacity(events.len());
 
-        for event in events {
-            values.push((
-                event.user_id as i64,
-                event.asset_id as i32,
-                event.seq as i64,
-                event.delta_avail,
-                event.delta_frozen,
-                event.avail,
-                event.frozen,
-                event.event_type.clone(),
-                event.ref_id as i64,
-                now as i64,
-            ));
-            user_values.push((
-                event.user_id as i64,
-                event.asset_id as i32,
-                event.avail,
-                event.frozen,
-                event.seq as i64,
-                now as i64,
-            ));
-        }
+        // for event in events {
+        //     values.push((
+        //         event.user_id as i64,
+        //         event.asset_id as i32,
+        //         event.seq as i64,
+        //         event.delta_avail,
+        //         event.delta_frozen,
+        //         event.avail,
+        //         event.frozen,
+        //         event.event_type.clone(),
+        //         event.ref_id as i64,
+        //         now as i64,
+        //     ));
+        //     user_values.push((
+        //         event.user_id as i64,
+        //         event.asset_id as i32,
+        //         event.avail,
+        //         event.frozen,
+        //         event.seq as i64,
+        //         now as i64,
+        //     ));
+        // }
 
         // Execute alternating batch (ledger, user, ledger, user, ...)
         // Actually, ScyllaDB batch with different statement types is tricky
