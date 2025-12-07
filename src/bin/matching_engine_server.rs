@@ -395,6 +395,18 @@ async fn main() {
     // CRITICAL: Offset must be committed AFTER processing to prevent message loss
     let zmq_pub_clone = zmq_publisher.clone();
     let consumer_for_commit = consumer.clone();
+
+    // Profiling counters for ZMQ output
+    let zmq_output_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let zmq_trade_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let zmq_start_time = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let zmq_last_report = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+
+    let zmq_out_cnt = zmq_output_count.clone();
+    let zmq_trd_cnt = zmq_trade_count.clone();
+    let zmq_start = zmq_start_time.clone();
+    let zmq_last = zmq_last_report.clone();
+
     let zmq_and_commit = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
         // 1. Publish EngineOutput bundles
         let outputs_arc = { event.engine_outputs.lock().unwrap().as_ref().cloned() };
@@ -411,8 +423,9 @@ async fn main() {
                 if let Err(e) = zmq_pub_clone.publish_engine_output(output) {
                     eprintln!("[ZMQ ERROR] Failed to publish EngineOutput: {}", e);
                 } else {
-                    println!("[ZMQ] Published EngineOutput seq={} trades={} balance_events={}",
-                        output.output_seq, output.trades.len(), output.balance_events.len());
+                    // Update counters
+                    zmq_out_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    zmq_trd_cnt.fetch_add(output.trades.len() as u64, std::sync::atomic::Ordering::Relaxed);
                 }
             }
         }
@@ -425,6 +438,19 @@ async fn main() {
                 if let Err(e) = consumer_for_commit.store_offset(topic, *partition, *offset) {
                     eprintln!("Failed to store offset: {}", e);
                 }
+            }
+
+            // Report ZMQ output throughput every second
+            let mut last = zmq_last.lock().unwrap();
+            if last.elapsed() >= std::time::Duration::from_secs(1) {
+                let total_outputs = zmq_out_cnt.load(std::sync::atomic::Ordering::Relaxed);
+                let total_trades = zmq_trd_cnt.load(std::sync::atomic::Ordering::Relaxed);
+                let elapsed = zmq_start.lock().unwrap().elapsed().as_secs_f64();
+                let ops = if elapsed > 0.0 { total_outputs as f64 / elapsed } else { 0.0 };
+
+                println!("[ME-OUTPUT] outputs={} trades={} | {:.0} outputs/s",
+                    total_outputs, total_trades, ops);
+                *last = std::time::Instant::now();
             }
         }
     };

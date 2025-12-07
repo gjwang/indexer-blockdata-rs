@@ -23,8 +23,8 @@ async fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let total_count: u64 = 1000_000;
 
-    let concurrency = 10;
-    let interval_ms = 1;
+    let concurrency = 100;
+    let interval_ms = 0;
 
     let mut handles = Vec::new();
 
