@@ -21,6 +21,10 @@ pub struct EngineOutput {
     /// Genesis output has prev_hash = 0
     pub prev_hash: u64,
 
+    /// Primary symbol for this output (for SOT sharding)
+    /// 0 = system/multi-symbol operations, otherwise symbol_id from first trade/order
+    pub symbol_id: u32,
+
     // === INPUT (Self-contained) ===
     /// Original input data with integrity check
     pub input: InputBundle,
@@ -157,8 +161,21 @@ impl EngineOutput {
         trades: Vec<TradeOutput>,
         balance_events: Vec<BalanceEvent>,
     ) -> Self {
-        let mut output =
-            Self { output_seq, prev_hash, input, order_update, trades, balance_events, hash: 0 };
+        // TODO: Determine symbol_id from trades/orders once they have symbol_id field
+        // For now, use 0 (all operations in single shard = no parallelism yet)
+        // Future: trades.first().map(|t| t.symbol_id).unwrap_or(0)
+        let symbol_id = 0;
+
+        let mut output = Self {
+            output_seq,
+            prev_hash,
+            symbol_id,
+            input,
+            order_update,
+            trades,
+            balance_events,
+            hash: 0,
+        };
         output.hash = output.compute_hash();
         output
     }
@@ -170,6 +187,7 @@ impl EngineOutput {
         // Chain header
         data.extend_from_slice(&self.output_seq.to_le_bytes());
         data.extend_from_slice(&self.prev_hash.to_le_bytes());
+        data.extend_from_slice(&self.symbol_id.to_le_bytes());  // Include symbol_id in hash
 
         // Input
         data.extend_from_slice(&self.input.input_seq.to_le_bytes());
