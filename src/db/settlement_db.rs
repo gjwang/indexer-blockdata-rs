@@ -850,41 +850,37 @@ impl SettlementDb {
         // Actually, ScyllaDB batch with different statement types is tricky
         // Let's use a simpler approach: batch all ledger, then batch all user_balances
 
-        // Chunk into smaller batches if needed (ScyllaDB limit ~5000-10000 items)
-    const MAX_BATCH_ITEMS: usize = 5000;
-    let t_start = std::time::Instant::now();
+        let t_start = std::time::Instant::now();
 
-    for chunk in events.chunks(MAX_BATCH_ITEMS) {
-        let mut ledger_batch = Batch::new(BatchType::Unlogged);
-        let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    let mut ledger_batch = Batch::new(BatchType::Unlogged);
+    let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-        for _ in chunk {
-            ledger_batch.append_statement(ledger_stmt);
-        }
-
-        let chunk_values: Vec<_> = chunk
-            .iter()
-            .map(|e| {
-                (
-                    e.user_id as i64,
-                    e.asset_id as i32,
-                    e.seq as i64,
-                    e.delta_avail,
-                    e.delta_frozen,
-                    e.avail,
-                    e.frozen,
-                    e.event_type.clone(),
-                    e.ref_id as i64,
-                    now as i64,
-                )
-            })
-            .collect();
-
-        self.session
-            .batch(&ledger_batch, chunk_values)
-            .await
-            .context("Failed to batch insert balance_ledger")?;
+    for _ in events {
+        ledger_batch.append_statement(ledger_stmt);
     }
+
+    let ledger_values: Vec<_> = events
+        .iter()
+        .map(|e| {
+            (
+                e.user_id as i64,
+                e.asset_id as i32,
+                e.seq as i64,
+                e.delta_avail,
+                e.delta_frozen,
+                e.avail,
+                e.frozen,
+                e.event_type.clone(),
+                e.ref_id as i64,
+                now as i64,
+            )
+        })
+        .collect();
+
+    self.session
+        .batch(&ledger_batch, ledger_values)
+        .await
+        .context("Failed to batch insert balance_ledger")?;
 
         let total_time = t_start.elapsed();
 
