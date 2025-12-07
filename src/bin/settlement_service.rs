@@ -431,67 +431,19 @@ async fn dispatch_to_writers(
     starrocks_tx: &StarRocksTx,
     csv_writer: &mut csv::Writer<std::fs::File>,
 ) -> usize {
-    let mut all_balance_events = Vec::new();
-    let mut all_trades = Vec::new();
-    let mut last_output_seq = 0u64;
+    let mut trade_count = 0;
 
     for output in outputs {
-        // Collect Balance Events
+        // Send Balance Events per-output
         if !output.balance_events.is_empty() {
-            all_balance_events.extend(output.balance_events.clone());
+            let _ = balance_tx.send(output.balance_events.clone()).await;
         }
 
-        // Collect Trades (flatten into single Vec)
+        // Send Trades per-output (preserve output_seq association)
         if !output.trades.is_empty() {
-            all_trades.extend(output.trades.clone());
-            last_output_seq = output.output_seq;
-
-            // CSV backup (still per-trade for now)
-            // for trade in &output.trades {
-            //     let ts = if trade.settled_at > 0 {
-            //         trade.settled_at as i64
-            //     } else {
-            //         Utc::now().timestamp_millis()
-            //     };
-            //     let match_exec = fetcher::ledger::MatchExecData {
-            //         trade_id: trade.trade_id,
-            //         buy_order_id: trade.buy_order_id,
-            //         sell_order_id: trade.sell_order_id,
-            //         buyer_user_id: trade.buyer_user_id,
-            //         seller_user_id: trade.seller_user_id,
-            //         price: trade.price,
-            //         quantity: trade.quantity,
-            //         base_asset_id: trade.base_asset_id,
-            //         quote_asset_id: trade.quote_asset_id,
-            //         buyer_refund: trade.buyer_refund,
-            //         seller_refund: trade.seller_refund,
-            //         match_seq: trade.match_seq,
-            //         output_sequence: output.output_seq,
-            //         settled_at: trade.settled_at,
-            //         buyer_quote_version: 0,
-            //         buyer_base_version: 0,
-            //         seller_base_version: 0,
-            //         seller_quote_version: 0,
-            //         buyer_quote_balance_after: 0,
-            //         buyer_base_balance_after: 0,
-            //         seller_base_balance_after: 0,
-            //         seller_quote_balance_after: 0,
-            //     };
-            //     let _ = csv_writer.serialize(&match_exec);
-            // }
+            trade_count += output.trades.len();
+            let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
         }
-    }
-
-    let trade_count = all_trades.len();
-
-    // Send all balance events as ONE batch
-    if !all_balance_events.is_empty() {
-        let _ = balance_tx.send(all_balance_events).await;
-    }
-
-    // Send all trades as ONE batch (flattened, not per-output!)
-    if !all_trades.is_empty() {
-        let _ = trades_tx.send((all_trades, last_output_seq)).await;
     }
 
     // Order Updates - send entire batch at once
