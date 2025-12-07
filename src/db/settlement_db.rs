@@ -874,10 +874,14 @@ impl SettlementDb {
             })
             .collect();
 
+        let t_start = std::time::Instant::now();
+
         self.session
             .batch(&ledger_batch, ledger_values)
             .await
             .context("Failed to batch insert balance_ledger")?;
+
+        let ledger_time = t_start.elapsed();
 
         // Update user_balances SNAPSHOT - only write FINAL state per (user_id, asset_id)
         // This is efficient: instead of writing every event, we just write the last one
@@ -887,11 +891,15 @@ impl SettlementDb {
             let key = (event.user_id, event.asset_id);
             match latest.get(&key) {
                 Some(existing) if existing.seq >= event.seq => {} // Keep existing (higher seq)
-                _ => { latest.insert(key, event); }
+                _ => {
+                    latest.insert(key, event);
+                }
             }
         }
 
+        let mut user_time = std::time::Duration::default();
         if !latest.is_empty() {
+            let t_user = std::time::Instant::now();
             let mut user_batch = Batch::new(BatchType::Unlogged);
             let user_stmt = "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)";
             for _ in 0..latest.len() {
@@ -901,7 +909,14 @@ impl SettlementDb {
             let user_values: Vec<_> = latest
                 .values()
                 .map(|e| {
-                    (e.user_id as i64, e.asset_id as i32, e.avail, e.frozen, e.seq as i64, now as i64)
+                    (
+                        e.user_id as i64,
+                        e.asset_id as i32,
+                        e.avail,
+                        e.frozen,
+                        e.seq as i64,
+                        now as i64,
+                    )
                 })
                 .collect();
 
@@ -909,9 +924,19 @@ impl SettlementDb {
                 .batch(&user_batch, user_values)
                 .await
                 .context("Failed to batch update user_balances snapshot")?;
+
+            user_time = t_user.elapsed();
         }
 
-        log::debug!("Batch processed {} balance events ({} user snapshots)", events.len(), latest.len());
+        let total_time = t_start.elapsed();
+        log::info!(
+            "Balance writer: {} events, {} snapshots | ledger={:.2}ms, user={:.2}ms, total={:.2}ms",
+            events.len(),
+            latest.len(),
+            ledger_time.as_micros() as f64 / 1000.0,
+            user_time.as_micros() as f64 / 1000.0,
+            total_time.as_micros() as f64 / 1000.0
+        );
         Ok(())
     }
 
@@ -1643,52 +1668,49 @@ impl SettlementDb {
         let now = get_current_timestamp_ms();
 
         let mut total_bytes = 0usize;
-    let mut total_compressed = 0usize;
-    let mut min_bytes = usize::MAX;
-    let mut max_bytes = 0usize;
+        let mut total_compressed = 0usize;
+        let mut min_bytes = usize::MAX;
+        let mut max_bytes = 0usize;
 
-    let t_start = std::time::Instant::now();
-    let mut serialize_time_us = 0u64;
-    let mut compress_time_us = 0u64;
+        let t_start = std::time::Instant::now();
+        let mut serialize_time_us = 0u64;
+        let mut compress_time_us = 0u64;
 
-    for output in outputs {
-        // Serialize to binary with bincode (much smaller than JSON)
-        let t_ser = std::time::Instant::now();
-        let binary = bincode::serialize(output).context("Failed to serialize EngineOutput")?;
-        serialize_time_us += t_ser.elapsed().as_micros() as u64;
+        for output in outputs {
+            // Serialize to binary with bincode (much smaller than JSON)
+            let t_ser = std::time::Instant::now();
+            let binary = bincode::serialize(output).context("Failed to serialize EngineOutput")?;
+            serialize_time_us += t_ser.elapsed().as_micros() as u64;
 
-        // Compress with LZ4 (fast and effective)
-        let t_comp = std::time::Instant::now();
-        let compressed = lz4_flex::compress_prepend_size(&binary);
-        compress_time_us += t_comp.elapsed().as_micros() as u64;
+            // Compress with LZ4 (fast and effective)
+            let t_comp = std::time::Instant::now();
+            let compressed = lz4_flex::compress_prepend_size(&binary);
+            compress_time_us += t_comp.elapsed().as_micros() as u64;
 
-        let original_size = binary.len();
-        let compressed_size = compressed.len();
-        total_bytes += original_size;
-        total_compressed += compressed_size;
-        min_bytes = min_bytes.min(compressed_size);
-        max_bytes = max_bytes.max(compressed_size);
+            let original_size = binary.len();
+            let compressed_size = compressed.len();
+            total_bytes += original_size;
+            total_compressed += compressed_size;
+            min_bytes = min_bytes.min(compressed_size);
+            max_bytes = max_bytes.max(compressed_size);
 
-        batch.append_statement(QUERY);
-        values.push((
-            output.output_seq as i64,
-            output.hash as i64,
-            output.prev_hash as i64,
-            compressed,
-            now,
-        ));
-    }
+            batch.append_statement(QUERY);
+            values.push((
+                output.output_seq as i64,
+                output.hash as i64,
+                output.prev_hash as i64,
+                compressed,
+                now,
+            ));
+        }
 
-    let total_prep_time = t_start.elapsed();
-    let avg_original = total_bytes / outputs.len().max(1);
-    let avg_compressed = total_compressed / outputs.len().max(1);
-    let compression_ratio = if total_bytes > 0 {
-        100 - (total_compressed * 100 / total_bytes)
-    } else {
-        0
-    };
+        let total_prep_time = t_start.elapsed();
+        let avg_original = total_bytes / outputs.len().max(1);
+        let avg_compressed = total_compressed / outputs.len().max(1);
+        let compression_ratio =
+            if total_bytes > 0 { 100 - (total_compressed * 100 / total_bytes) } else { 0 };
 
-    log::info!(
+        log::info!(
         "SOT batch: {} outputs, bin={}KB, compressed={}KB ({}% saved), avg={}/{}B, min={}B, max={}B | timings: ser={:.2}ms, comp={:.2}ms, total={:.2}ms",
         outputs.len(),
         total_bytes / 1024,
