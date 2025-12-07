@@ -1647,12 +1647,20 @@ impl SettlementDb {
     let mut min_bytes = usize::MAX;
     let mut max_bytes = 0usize;
 
+    let t_start = std::time::Instant::now();
+    let mut serialize_time_us = 0u64;
+    let mut compress_time_us = 0u64;
+
     for output in outputs {
         // Serialize to binary with bincode (much smaller than JSON)
+        let t_ser = std::time::Instant::now();
         let binary = bincode::serialize(output).context("Failed to serialize EngineOutput")?;
+        serialize_time_us += t_ser.elapsed().as_micros() as u64;
 
         // Compress with LZ4 (fast and effective)
+        let t_comp = std::time::Instant::now();
         let compressed = lz4_flex::compress_prepend_size(&binary);
+        compress_time_us += t_comp.elapsed().as_micros() as u64;
 
         let original_size = binary.len();
         let compressed_size = compressed.len();
@@ -1671,6 +1679,7 @@ impl SettlementDb {
         ));
     }
 
+    let total_prep_time = t_start.elapsed();
     let avg_original = total_bytes / outputs.len().max(1);
     let avg_compressed = total_compressed / outputs.len().max(1);
     let compression_ratio = if total_bytes > 0 {
@@ -1680,7 +1689,7 @@ impl SettlementDb {
     };
 
     log::info!(
-        "SOT batch: {} outputs, bin={}KB, compressed={}KB ({}% saved), avg={}/{}B, min={}B, max={}B",
+        "SOT batch: {} outputs, bin={}KB, compressed={}KB ({}% saved), avg={}/{}B, min={}B, max={}B | timings: ser={:.2}ms, comp={:.2}ms, total={:.2}ms",
         outputs.len(),
         total_bytes / 1024,
         total_compressed / 1024,
@@ -1688,7 +1697,10 @@ impl SettlementDb {
         avg_original,
         avg_compressed,
         min_bytes,
-        max_bytes
+        max_bytes,
+        serialize_time_us as f64 / 1000.0,
+        compress_time_us as f64 / 1000.0,
+        total_prep_time.as_micros() as f64 / 1000.0
     );
 
         self.session
