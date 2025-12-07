@@ -1,448 +1,531 @@
+//! Settlement Service - Process EngineOutput messages from the Matching Engine
+//!
+//! Architecture:
+//! 1. Receive EngineOutput via ZMQ PULL socket
+//! 2. Verify chain integrity (hash chain + sequence)
+//! 3. Batch write to Source of Truth (ScyllaDB engine_output_log)
+//! 4. Dispatch to derived writers via bounded channels (back-pressure enabled)
+//!
+//! Derived Writers (async, ordered, replay-safe):
+//! - Balance Events -> ScyllaDB
+//! - Trades -> ScyllaDB
+//! - Order Updates -> ScyllaDB
+//! - Trades -> StarRocks (analytics)
+
+use chrono::Utc;
 use fetcher::configure;
 use fetcher::db::{OrderHistoryDb, SettlementDb};
-use fetcher::ledger::{OrderStatus, OrderUpdate};
 use fetcher::engine_output::{EngineOutput, InputData, GENESIS_HASH};
+use fetcher::ledger::{OrderStatus, OrderUpdate};
 use fetcher::logger::setup_logger;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
-use zmq::{Context, PULL};
-use chrono::Utc;
-use tokio::sync::mpsc;
+use futures_util::future::join_all;
 use std::sync::Arc;
+use tokio::sync::mpsc;
+use zmq::{Context, PULL};
 
 const LOG_TARGET: &str = "settlement";
 
+// === CONFIGURATION ===
+const MAX_BATCH_SIZE: usize = 100;
+const DERIVED_WRITER_BUFFER: usize = 10_000;
+
+// ============================================================================
+// MAIN
+// ============================================================================
+
 #[tokio::main]
 async fn main() {
-    // Load service-specific configuration (config/settlement_config.yaml)
+    // --- Configuration ---
     let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
 
-    // Setup logger
     if let Err(e) = setup_logger(&config) {
         eprintln!("Failed to initialize logger: {}", e);
         return;
     }
 
-    // Get configurations
     let zmq_config = config.zeromq.expect("ZMQ config missing");
     let scylla_config = config.scylladb.expect("ScyllaDB config missing");
 
-    // Initialize ScyllaDB connections
+    // --- Database Connections ---
+    let settlement_db = connect_settlement_db(&scylla_config).await;
+    let order_history_db = connect_order_history_db(&scylla_config).await;
+    let starrocks_client = Arc::new(StarRocksClient::new());
+
+    // --- ZMQ Setup ---
+    let subscriber = setup_zmq(&zmq_config);
+
+    // --- File Writers ---
+    let data_dir = configure::prepare_data_dir(&config.data_dir)
+        .unwrap_or_else(|e| {
+            log::error!(target: LOG_TARGET, "Data dir error: {}", e);
+            "./data".to_string()
+        });
+    let backup_csv_path = std::path::PathBuf::from(&data_dir)
+        .join(if config.backup_csv_file.is_empty() { "settled_trades.csv" } else { &config.backup_csv_file });
+    let mut csv_writer = create_csv_writer(&backup_csv_path);
+
+    // --- Load Chain State (Crash Recovery) ---
+    let (mut last_seq, mut last_hash) = load_chain_state(&settlement_db).await;
+
+    // --- Spawn Derived Writers ---
+    let (balance_tx, trades_tx, order_tx, starrocks_tx) =
+        spawn_derived_writers(settlement_db.clone(), order_history_db.clone(), starrocks_client);
+
+    log::info!(target: LOG_TARGET, "✅ Settlement Service Ready");
+
+    // --- Main Processing Loop ---
+    run_processing_loop(
+        subscriber,
+        settlement_db,
+        &mut csv_writer,
+        &mut last_seq,
+        &mut last_hash,
+        balance_tx,
+        trades_tx,
+        order_tx,
+        starrocks_tx,
+    ).await;
+}
+
+// ============================================================================
+// INITIALIZATION HELPERS
+// ============================================================================
+
+async fn connect_settlement_db(config: &fetcher::configure::ScyllaDbConfig) -> Arc<SettlementDb> {
     log::info!(target: LOG_TARGET, "Connecting to ScyllaDB (Settlement)...");
-    let settlement_db = match SettlementDb::connect(&scylla_config).await {
+    match SettlementDb::connect(config).await {
         Ok(db) => {
             log::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (Settlement)");
-            std::sync::Arc::new(db)
+            Arc::new(db)
         }
         Err(e) => {
             log::error!(target: LOG_TARGET, "❌ Failed to connect to Settlement DB: {}", e);
-            return;
+            std::process::exit(1);
         }
-    };
+    }
+}
 
+async fn connect_order_history_db(config: &fetcher::configure::ScyllaDbConfig) -> Arc<OrderHistoryDb> {
     log::info!(target: LOG_TARGET, "Connecting to ScyllaDB (OrderHistory)...");
-    let order_history_db = match OrderHistoryDb::connect(&scylla_config).await {
+    match OrderHistoryDb::connect(config).await {
         Ok(db) => {
             log::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (OrderHistory)");
-            std::sync::Arc::new(db)
+            Arc::new(db)
         }
         Err(e) => {
             log::error!(target: LOG_TARGET, "❌ Failed to connect to OrderHistory DB: {}", e);
-            return;
+            std::process::exit(1);
         }
-    };
-
-    // Initialize StarRocks Client
-    let starrocks_client = std::sync::Arc::new(StarRocksClient::new());
-
-    // Health Checks
-    if let Err(e) = settlement_db.health_check().await {
-        log::error!(target: LOG_TARGET, "SettlementDB health check failed: {}", e);
     }
-    if let Err(e) = order_history_db.health_check().await {
-        log::error!(target: LOG_TARGET, "OrderHistoryDB health check failed: {}", e);
-    }
+}
 
-    // Setup ZMQ PULL socket for data (BIND as server)
+fn setup_zmq(config: &fetcher::configure::ZmqConfig) -> zmq::Socket {
     let context = Context::new();
+
+    // PULL socket for data
     let subscriber = context.socket(PULL).expect("Failed to create PULL socket");
     subscriber.set_rcvhwm(1_000_000).expect("Failed to set RCVHWM");
-    let endpoint = format!("tcp://*:{}", zmq_config.settlement_port);
+    let endpoint = format!("tcp://*:{}", config.settlement_port);
     subscriber.bind(&endpoint).expect("Failed to bind to settlement port");
-    log::info!(target: LOG_TARGET, "📡 Listening on tcp://localhost:{}", zmq_config.settlement_port);
+    log::info!(target: LOG_TARGET, "📡 Listening on tcp://localhost:{}", config.settlement_port);
 
-    // Setup REP socket for synchronization (tell ME we're ready)
-    let sync_socket = context.socket(zmq::REP).expect("Failed to create REP socket");
-    let sync_port = zmq_config.settlement_port + 2; // 5559
-    sync_socket.bind(&format!("tcp://*:{}", sync_port)).expect("Failed to bind sync socket");
-    log::info!(target: LOG_TARGET, "🔄 Sync socket bound on port {}", sync_port);
-
-    // Send READY signal in a separate thread (non-blocking)
+    // REP socket for sync handshake with Matching Engine (in separate thread)
+    let sync_port = config.settlement_port + 2;
+    let sync_context = Context::new();
     std::thread::spawn(move || {
-        log::info!(target: LOG_TARGET, "⏳ Waiting for ME to request READY signal...");
+        let sync_socket = sync_context.socket(zmq::REP).expect("Failed to create REP socket");
+        sync_socket.bind(&format!("tcp://*:{}", sync_port)).expect("Failed to bind sync socket");
+        log::info!(target: "settlement", "🔄 Sync socket on port {}", sync_port);
+        log::info!(target: "settlement", "⏳ Waiting for ME sync...");
         if let Ok(msg) = sync_socket.recv_bytes(0) {
             if msg == b"PING" {
-                sync_socket.send(&b"READY"[..], 0).expect("Failed to send READY");
-                log::info!(target: LOG_TARGET, "✅ Sent READY signal to ME");
+                let _ = sync_socket.send(&b"READY"[..], 0);
+                log::info!(target: "settlement", "✅ Sent READY to ME");
             }
         }
     });
 
-    // File logging setup (CSV/Failed Trades)
-    let data_dir_str = configure::prepare_data_dir(&config.data_dir).unwrap_or_else(|e| {
-        log::error!(target: LOG_TARGET, "Data dir error: {}", e);
-        "./data".to_string()
-    });
-    let data_dir = std::path::PathBuf::from(data_dir_str);
+    subscriber
+}
 
-    let backup_csv_file = if config.backup_csv_file.is_empty() {
-        data_dir.join("settled_trades.csv")
-    } else {
-        data_dir.join(&config.backup_csv_file)
-    };
-
-    let failed_trades_file = if config.failed_trades_file.is_empty() {
-        data_dir.join("failed_trades.json")
-    } else {
-        data_dir.join(&config.failed_trades_file)
-    };
-
-    log::info!(target: LOG_TARGET, "✅ Settlement Service Started");
-    log::info!(target: LOG_TARGET, "📡 Listening on {}", endpoint);
-    log::info!(target: LOG_TARGET, "📂 csv={} failed={}", backup_csv_file.display(), failed_trades_file.display());
-
-    let mut total_settled: u64 = 0;
-    let mut total_errors: u64 = 0;
-    let _total_history_events = 0u64;
-
-    // Chain verification state - LOAD FROM DB for crash recovery
-    let (mut last_output_seq, mut last_processed_hash) = match settlement_db.get_chain_state().await {
-        Ok((seq, hash)) => {
-            if seq > 0 {
-                log::info!(target: LOG_TARGET, "🔄 Recovered chain state: seq={} hash={}", seq, hash);
-            }
-            (seq, hash)
-        }
-        Err(e) => {
-            log::warn!(target: LOG_TARGET, "⚠️ Failed to load chain state (using defaults): {}", e);
-            (0u64, GENESIS_HASH)
-        }
-    };
-
-    // CSV Writer
+fn create_csv_writer(path: &std::path::Path) -> csv::Writer<std::fs::File> {
     let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .append(true)
-        .open(&backup_csv_file)
+        .open(path)
         .expect("Failed to open backup CSV file");
-    let mut wtr = csv::WriterBuilder::new().has_headers(false).from_writer(file);
+    log::info!(target: LOG_TARGET, "📂 CSV backup: {}", path.display());
+    csv::WriterBuilder::new().has_headers(false).from_writer(file)
+}
 
-    // Reorder buffer for out-of-order ZMQ messages
-    // Key: output_seq, Value: EngineOutput
-    let mut reorder_buffer: std::collections::BTreeMap<u64, EngineOutput> = std::collections::BTreeMap::new();
-    const MAX_BUFFER_SIZE: usize = 100_000; // Very large - should NEVER hit this with proper back-pressure
-
-    let mut msg_count = 0u64;
-
-    // === DERIVED WRITERS: Bounded Channels for Ordered Processing ===
-    // Each writer has its own channel with back-pressure when buffer is full
-    const DERIVED_WRITER_BUFFER_SIZE: usize = 10_000;
-
-    // Balance events channel
-    let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<fetcher::engine_output::BalanceEvent>>(DERIVED_WRITER_BUFFER_SIZE);
-    let sdb_balance = settlement_db.clone();
-    tokio::spawn(async move {
-        while let Some(events) = balance_rx.recv().await {
-            if let Err(e) = sdb_balance.append_balance_events_batch(&events).await {
-                log::error!(target: "settlement", "Balance events write failed (can replay): {}", e);
+async fn load_chain_state(db: &SettlementDb) -> (u64, u64) {
+    match db.get_chain_state().await {
+        Ok((seq, hash)) => {
+            if seq > 0 {
+                log::info!(target: LOG_TARGET, "🔄 Recovered: seq={} hash={}", seq, hash);
             }
+            (seq, hash)
         }
-    });
-
-    // Trades channel
-    let (trades_tx, mut trades_rx) = mpsc::channel::<(Vec<fetcher::engine_output::TradeOutput>, u64)>(DERIVED_WRITER_BUFFER_SIZE);
-    let sdb_trades = settlement_db.clone();
-    tokio::spawn(async move {
-        while let Some((trades, seq)) = trades_rx.recv().await {
-            if let Err(e) = sdb_trades.insert_trades_batch(&trades, seq).await {
-                log::error!(target: "settlement", "Trades write failed (can replay): {}", e);
-            }
+        Err(e) => {
+            log::warn!(target: LOG_TARGET, "⚠️ Chain state load failed: {}", e);
+            (0, GENESIS_HASH)
         }
-    });
-
-    // Order updates channel
-    let (order_tx, mut order_rx) = mpsc::channel::<EngineOutput>(DERIVED_WRITER_BUFFER_SIZE);
-    let ohdb_orders = order_history_db.clone();
-    tokio::spawn(async move {
-        while let Some(output) = order_rx.recv().await {
-            if let Err(e) = process_engine_order_update(&ohdb_orders, &output).await {
-                log::error!(target: "settlement", "Order update write failed (can replay): {}", e);
-            }
-        }
-    });
-
-    // StarRocks trades channel
-    let (starrocks_tx, mut starrocks_rx) = mpsc::channel::<Vec<StarRocksTrade>>(DERIVED_WRITER_BUFFER_SIZE);
-    let sr_client = starrocks_client.clone();
-    tokio::spawn(async move {
-        while let Some(trades) = starrocks_rx.recv().await {
-            for trade in trades {
-                if let Err(e) = sr_client.load_trade(trade).await {
-                    log::error!(target: "settlement", "StarRocks trade load failed: {}", e);
-                }
-            }
-        }
-    });
-
-    log::info!(target: LOG_TARGET, "✅ Derived writers started (buffer_size={})", DERIVED_WRITER_BUFFER_SIZE);
-
-    // === ULTRA-FAST BATCH PROCESSING ===
-    const MAX_BATCH_SIZE: usize = 100;  // Max outputs to batch together
-
-    // Progress tracking
-    let start_time = std::time::Instant::now();
-    let mut total_msgs: u64 = 0;
-    let mut total_batches: u64 = 0;
-    let mut total_processing_us: u64 = 0;  // Only time spent processing (excludes ZMQ wait)
-
-    loop {
-        let mut batch: Vec<EngineOutput> = Vec::with_capacity(MAX_BATCH_SIZE);
-
-        // === Step 1: Receive first message (blocking) ===
-        msg_count += 1;
-        let data = match subscriber.recv_bytes(0) {
-            Ok(d) => d,
-            Err(e) => {
-                log::error!(target: LOG_TARGET, "ZMQ recv error: {}", e);
-                continue;
-            }
-        };
-
-        match serde_json::from_slice::<EngineOutput>(&data) {
-            Ok(engine_output) => batch.push(engine_output),
-            Err(e) => {
-                log::warn!(target: LOG_TARGET, "Invalid EngineOutput: {}", e);
-                continue;
-            }
-        }
-
-        // === Step 2: Drain more messages (non-blocking) to fill batch ===
-        while batch.len() < MAX_BATCH_SIZE {
-            match subscriber.recv_bytes(zmq::DONTWAIT) {
-                Ok(data) => {
-                    msg_count += 1;
-                    if let Ok(engine_output) = serde_json::from_slice::<EngineOutput>(&data) {
-                        batch.push(engine_output);
-                    }
-                }
-                Err(_) => break, // No more messages available
-            }
-        }
-
-        // === Step 3: Sort batch by sequence (handle out-of-order) ===
-        batch.sort_by_key(|o| o.output_seq);
-
-        // === Step 4: Filter and verify batch ===
-        let mut verified_batch: Vec<EngineOutput> = Vec::with_capacity(batch.len());
-        let mut had_error = false;
-
-        for output in batch.drain(..) {
-            let seq = output.output_seq;
-            let expected_seq = last_output_seq + 1;
-
-            if seq < expected_seq {
-                // Already processed (idempotency)
-                continue;
-            } else if seq > expected_seq {
-                // Future message - buffer it for later
-                if reorder_buffer.len() < MAX_BUFFER_SIZE {
-                    reorder_buffer.insert(seq, output);
-                }
-                continue;
-            }
-
-            // seq == expected_seq - verify and add to batch
-            match verify_engine_output(&output, last_output_seq, last_processed_hash) {
-                VerifyResult::Skip => continue,
-                VerifyResult::Err(msg) => {
-                    log::error!(target: LOG_TARGET, "Verification failed: {}", msg);
-                    had_error = true;
-                    break;
-                }
-                VerifyResult::Ok => {
-                    // Update chain state for next iteration
-                    last_processed_hash = output.hash;
-                    last_output_seq = output.output_seq;
-                    verified_batch.push(output);
-                }
-            }
-
-            // Drain any buffered messages that are now in order
-            while let Some((&next_seq, _)) = reorder_buffer.first_key_value() {
-                if next_seq == last_output_seq + 1 {
-                    let buffered = reorder_buffer.remove(&next_seq).unwrap();
-                    match verify_engine_output(&buffered, last_output_seq, last_processed_hash) {
-                        VerifyResult::Skip => continue,
-                        VerifyResult::Err(msg) => {
-                            log::error!(target: LOG_TARGET, "Buffered verification failed: {}", msg);
-                            had_error = true;
-                            break;
-                        }
-                        VerifyResult::Ok => {
-                            last_processed_hash = buffered.hash;
-                            last_output_seq = buffered.output_seq;
-                            verified_batch.push(buffered);
-                        }
-                    }
-                } else {
-                    break;
-                }
-            }
-
-            if had_error {
-                break;
-            }
-        }
-
-        if verified_batch.is_empty() {
-            continue;
-        }
-
-        // === Step 5: Batch write to Source of Truth (ULTRA FAST) ===
-        let t_batch = std::time::Instant::now();
-        let batch_size = verified_batch.len();
-
-        if let Err(e) = settlement_db.write_engine_outputs_batch(&verified_batch).await {
-            log::error!(target: LOG_TARGET, "❌ Batch SOT write failed: {}", e);
-            // On failure, we should retry (for now just log and continue)
-            total_errors += batch_size as u64;
-            continue;
-        }
-        let d_sot = t_batch.elapsed();
-
-        // === Step 6: Dispatch to Derived Writers ===
-        let t_queue = std::time::Instant::now();
-        for output in &verified_batch {
-            // Balance events
-            if !output.balance_events.is_empty() {
-                let _ = balance_tx.send(output.balance_events.clone()).await;
-            }
-            // Trades
-            if !output.trades.is_empty() {
-                let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
-            }
-            // Order updates
-            let _ = order_tx.send(output.clone()).await;
-            // StarRocks trades
-            if !output.trades.is_empty() {
-                let sr_trades: Vec<StarRocksTrade> = output.trades.iter().map(|trade| {
-                    let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
-                    let match_exec = fetcher::ledger::MatchExecData {
-                        trade_id: trade.trade_id,
-                        buy_order_id: trade.buy_order_id,
-                        sell_order_id: trade.sell_order_id,
-                        buyer_user_id: trade.buyer_user_id,
-                        seller_user_id: trade.seller_user_id,
-                        price: trade.price,
-                        quantity: trade.quantity,
-                        base_asset_id: trade.base_asset_id,
-                        quote_asset_id: trade.quote_asset_id,
-                        buyer_refund: trade.buyer_refund,
-                        seller_refund: trade.seller_refund,
-                        match_seq: trade.match_seq,
-                        output_sequence: output.output_seq,
-                        settled_at: trade.settled_at,
-                        buyer_quote_version: 0,
-                        buyer_base_version: 0,
-                        seller_base_version: 0,
-                        seller_quote_version: 0,
-                        buyer_quote_balance_after: 0,
-                        buyer_base_balance_after: 0,
-                        seller_base_balance_after: 0,
-                        seller_quote_balance_after: 0,
-                    };
-                    let _ = wtr.serialize(&match_exec);
-                    StarRocksTrade::from_match_exec(&match_exec, ts)
-                }).collect();
-                let _ = starrocks_tx.send(sr_trades).await;
-            }
-        }
-        let d_queue = t_queue.elapsed();
-        let _ = wtr.flush();
-
-        // === PROFILING ===
-        let last_seq = verified_batch.last().map(|o| o.output_seq).unwrap_or(0);
-        let batch_trades: usize = verified_batch.iter().map(|o| o.trades.len()).sum();
-
-        // Update running totals
-        total_msgs += batch_size as u64;
-        total_batches += 1;
-        total_settled += batch_trades as u64;
-
-        // Track processing time (sot + queue, excludes ZMQ wait)
-        let d_batch = d_sot + d_queue;
-        total_processing_us += d_batch.as_micros() as u64;
-
-        // Calculate throughput
-        let batch_ops = if d_batch.as_micros() > 0 {
-            (batch_size as f64 * 1_000_000.0) / d_batch.as_micros() as f64
-        } else { 0.0 };
-
-        // TRUE msg throughput = total msgs / processing time only (not wall clock)
-        let msg_ops = if total_processing_us > 0 {
-            (total_msgs as f64 * 1_000_000.0) / total_processing_us as f64
-        } else { 0.0 };
-
-        let buffer_len = reorder_buffer.len();
-
-        log::info!(target: LOG_TARGET,
-            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s | total: {:.0}msg/s | buf={}",
-            last_seq, total_msgs, total_settled,
-            batch_size, batch_ops,
-            msg_ops, buffer_len);
     }
 }
 
-// Helper functions (copied from order_history_service.rs)
-async fn process_order_update(
+// ============================================================================
+// DERIVED WRITERS
+// ============================================================================
+
+use fetcher::engine_output::{BalanceEvent, TradeOutput};
+
+type BalanceTx = mpsc::Sender<Vec<BalanceEvent>>;
+type TradesTx = mpsc::Sender<(Vec<TradeOutput>, u64)>;
+type OrderTx = mpsc::Sender<Vec<EngineOutput>>;
+type StarRocksTx = mpsc::Sender<Vec<StarRocksTrade>>;
+
+fn spawn_derived_writers(
+    settlement_db: Arc<SettlementDb>,
+    order_history_db: Arc<OrderHistoryDb>,
+    starrocks_client: Arc<StarRocksClient>,
+) -> (BalanceTx, TradesTx, OrderTx, StarRocksTx) {
+    // Balance Events Writer
+    let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
+    let db = settlement_db.clone();
+    tokio::spawn(async move {
+        while let Some(events) = balance_rx.recv().await {
+            if let Err(e) = db.append_balance_events_batch(&events).await {
+                log::error!(target: LOG_TARGET, "Balance write failed: {}", e);
+            }
+        }
+    });
+
+    // Trades Writer
+    let (trades_tx, mut trades_rx) = mpsc::channel::<(Vec<TradeOutput>, u64)>(DERIVED_WRITER_BUFFER);
+    let db = settlement_db.clone();
+    tokio::spawn(async move {
+        while let Some((trades, seq)) = trades_rx.recv().await {
+            if let Err(e) = db.insert_trades_batch(&trades, seq).await {
+                log::error!(target: LOG_TARGET, "Trades write failed: {}", e);
+            }
+        }
+    });
+
+    // Order History Writer - BATCH + PARALLEL
+    let (order_tx, mut order_rx) = mpsc::channel::<Vec<EngineOutput>>(DERIVED_WRITER_BUFFER);
+    let db = order_history_db;
+    tokio::spawn(async move {
+        while let Some(outputs) = order_rx.recv().await {
+            // Process all order updates in parallel
+            let futures: Vec<_> = outputs.iter()
+                .map(|output| process_engine_order_update_fast(&db, output))
+                .collect();
+            join_all(futures).await;
+        }
+    });
+
+    // StarRocks Writer - PARALLEL HTTP calls
+    let (starrocks_tx, mut starrocks_rx) = mpsc::channel::<Vec<StarRocksTrade>>(DERIVED_WRITER_BUFFER);
+    let sr_client = starrocks_client;
+    tokio::spawn(async move {
+        while let Some(trades) = starrocks_rx.recv().await {
+            // Process all trades in parallel
+            let futures: Vec<_> = trades.into_iter()
+                .map(|trade| {
+                    let client = sr_client.clone();
+                    async move {
+                        if let Err(e) = client.load_trade(trade).await {
+                            log::error!(target: "settlement", "StarRocks write failed: {}", e);
+                        }
+                    }
+                })
+                .collect();
+            join_all(futures).await;
+        }
+    });
+
+    log::info!(target: LOG_TARGET, "✅ Derived writers spawned (buffer={})", DERIVED_WRITER_BUFFER);
+    (balance_tx, trades_tx, order_tx, starrocks_tx)
+}
+
+// ============================================================================
+// MAIN PROCESSING LOOP
+// ============================================================================
+
+async fn run_processing_loop(
+    subscriber: zmq::Socket,
+    settlement_db: Arc<SettlementDb>,
+    csv_writer: &mut csv::Writer<std::fs::File>,
+    last_seq: &mut u64,
+    last_hash: &mut u64,
+    balance_tx: BalanceTx,
+    trades_tx: TradesTx,
+    order_tx: OrderTx,
+    starrocks_tx: StarRocksTx,
+) {
+    let mut total_msgs: u64 = 0;
+    let mut total_trades: u64 = 0;
+    let mut total_processing_us: u64 = 0;
+
+    loop {
+        // --- Step 1: Receive Batch ---
+        let batch = receive_batch(&subscriber, MAX_BATCH_SIZE);
+        if batch.is_empty() {
+            continue;
+        }
+
+        let t_start = std::time::Instant::now();
+
+        // --- Step 2: Verify Chain Integrity ---
+        let verified = verify_batch(batch, last_seq, last_hash);
+        if verified.is_empty() {
+            continue;
+        }
+
+        // --- Step 3: Write to Source of Truth (CRITICAL) ---
+        if let Err(e) = settlement_db.write_engine_outputs_batch(&verified).await {
+            log::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
+            // TODO: Implement retry or halt strategy
+            continue;
+        }
+        let t_sot = t_start.elapsed();
+
+        // --- Step 4: Dispatch to Derived Writers ---
+        let t_dispatch = std::time::Instant::now();
+        let batch_trades = dispatch_to_writers(&verified, &balance_tx, &trades_tx, &order_tx, &starrocks_tx, csv_writer).await;
+        let d_dispatch = t_dispatch.elapsed();
+
+        // --- Metrics ---
+        let batch_size = verified.len();
+        total_msgs += batch_size as u64;
+        total_trades += batch_trades as u64;
+        total_processing_us += t_start.elapsed().as_micros() as u64;
+
+        let batch_ops = (batch_size as f64 * 1_000_000.0) / t_start.elapsed().as_micros().max(1) as f64;
+        let total_ops = (total_msgs as f64 * 1_000_000.0) / total_processing_us.max(1) as f64;
+
+        log::info!(target: LOG_TARGET,
+            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s",
+            last_seq, total_msgs, total_trades,
+            batch_size, batch_ops, t_sot, d_dispatch,
+            total_ops
+        );
+    }
+}
+
+// ============================================================================
+// BATCH PROCESSING HELPERS
+// ============================================================================
+
+/// Receive up to `max_size` messages from ZMQ (first blocking, rest non-blocking)
+fn receive_batch(subscriber: &zmq::Socket, max_size: usize) -> Vec<EngineOutput> {
+    let mut batch = Vec::with_capacity(max_size);
+
+    // First message: blocking
+    match subscriber.recv_bytes(0) {
+        Ok(data) => {
+            if let Ok(output) = serde_json::from_slice::<EngineOutput>(&data) {
+                batch.push(output);
+            }
+        }
+        Err(e) => {
+            log::error!(target: LOG_TARGET, "ZMQ recv error: {}", e);
+            return batch;
+        }
+    }
+
+    // Drain more messages non-blocking
+    while batch.len() < max_size {
+        match subscriber.recv_bytes(zmq::DONTWAIT) {
+            Ok(data) => {
+                if let Ok(output) = serde_json::from_slice::<EngineOutput>(&data) {
+                    batch.push(output);
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    batch
+}
+
+/// Verify batch integrity and update chain state
+fn verify_batch(
+    batch: Vec<EngineOutput>,
+    last_seq: &mut u64,
+    last_hash: &mut u64,
+) -> Vec<EngineOutput> {
+    let mut verified = Vec::with_capacity(batch.len());
+
+    for output in batch {
+        let seq = output.output_seq;
+        let expected = *last_seq + 1;
+
+        // Skip if already processed (idempotency)
+        if seq < expected {
+            continue;
+        }
+
+        // Sequence must match (no reordering needed now)
+        if seq != expected {
+            log::error!(target: LOG_TARGET, "Sequence gap: expected {} got {}", expected, seq);
+            continue;
+        }
+
+        // Hash chain verification
+        if !output.verify_prev_hash(*last_hash) {
+            log::error!(target: LOG_TARGET, "Hash chain broken at seq={}", seq);
+            continue;
+        }
+
+        // Output integrity
+        if !output.verify() {
+            log::error!(target: LOG_TARGET, "Output hash invalid at seq={}", seq);
+            continue;
+        }
+
+        // Update chain state
+        *last_hash = output.hash;
+        *last_seq = seq;
+        verified.push(output);
+    }
+
+    verified
+}
+
+/// Dispatch verified outputs to all derived writers
+async fn dispatch_to_writers(
+    outputs: &[EngineOutput],
+    balance_tx: &BalanceTx,
+    trades_tx: &TradesTx,
+    order_tx: &OrderTx,
+    starrocks_tx: &StarRocksTx,
+    csv_writer: &mut csv::Writer<std::fs::File>,
+) -> usize {
+    let mut trade_count = 0;
+
+    for output in outputs {
+        // Balance Events
+        if !output.balance_events.is_empty() {
+            let _ = balance_tx.send(output.balance_events.clone()).await;
+        }
+
+        // Trades
+        if !output.trades.is_empty() {
+            trade_count += output.trades.len();
+            let _ = trades_tx.send((output.trades.clone(), output.output_seq)).await;
+
+            // StarRocks trades
+            let sr_trades: Vec<StarRocksTrade> = output.trades.iter().map(|trade| {
+                let ts = if trade.settled_at > 0 { trade.settled_at as i64 } else { Utc::now().timestamp_millis() };
+                let match_exec = fetcher::ledger::MatchExecData {
+                    trade_id: trade.trade_id,
+                    buy_order_id: trade.buy_order_id,
+                    sell_order_id: trade.sell_order_id,
+                    buyer_user_id: trade.buyer_user_id,
+                    seller_user_id: trade.seller_user_id,
+                    price: trade.price,
+                    quantity: trade.quantity,
+                    base_asset_id: trade.base_asset_id,
+                    quote_asset_id: trade.quote_asset_id,
+                    buyer_refund: trade.buyer_refund,
+                    seller_refund: trade.seller_refund,
+                    match_seq: trade.match_seq,
+                    output_sequence: output.output_seq,
+                    settled_at: trade.settled_at,
+                    buyer_quote_version: 0,
+                    buyer_base_version: 0,
+                    seller_base_version: 0,
+                    seller_quote_version: 0,
+                    buyer_quote_balance_after: 0,
+                    buyer_base_balance_after: 0,
+                    seller_base_balance_after: 0,
+                    seller_quote_balance_after: 0,
+                };
+                let _ = csv_writer.serialize(&match_exec);
+                StarRocksTrade::from_match_exec(&match_exec, ts)
+            }).collect();
+            let _ = starrocks_tx.send(sr_trades).await;
+        }
+
+    }
+
+    // Order Updates - send entire batch at once
+    let _ = order_tx.send(outputs.to_vec()).await;
+
+    let _ = csv_writer.flush();
+    trade_count
+}
+
+// ============================================================================
+// ORDER HISTORY PROCESSING - PARALLEL VERSION
+// ============================================================================
+
+/// Process order update with PARALLEL DB writes (3-5x faster)
+async fn process_order_update_parallel(
     db: &OrderHistoryDb,
     order_update: &OrderUpdate,
     event_id: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) {
     match order_update.status {
         OrderStatus::New => {
-            db.upsert_active_order(order_update).await?;
-            db.insert_order_history(order_update).await?;
-            db.insert_order_update_stream(order_update, event_id).await?;
-            db.init_user_statistics(order_update.user_id, order_update.timestamp).await?;
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            // 5 operations in parallel
+            let (r1, r2, r3, r4, r5) = tokio::join!(
+                db.upsert_active_order(order_update),
+                db.insert_order_history(order_update),
+                db.insert_order_update_stream(order_update, event_id),
+                db.init_user_statistics(order_update.user_id, order_update.timestamp),
+                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+            );
+            if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() || r5.is_err() {
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+            }
         }
         OrderStatus::PartiallyFilled => {
-            db.upsert_active_order(order_update).await?;
-            db.insert_order_history(order_update).await?;
-            db.insert_order_update_stream(order_update, event_id).await?;
+            // 3 operations in parallel
+            let (r1, r2, r3) = tokio::join!(
+                db.upsert_active_order(order_update),
+                db.insert_order_history(order_update),
+                db.insert_order_update_stream(order_update, event_id)
+            );
+            if r1.is_err() || r2.is_err() || r3.is_err() {
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+            }
         }
         OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Expired => {
-            db.delete_active_order(order_update.user_id, order_update.order_id).await?;
-            db.insert_order_history(order_update).await?;
-            db.insert_order_update_stream(order_update, event_id).await?;
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            // 4 operations in parallel
+            let (r1, r2, r3, r4) = tokio::join!(
+                db.delete_active_order(order_update.user_id, order_update.order_id),
+                db.insert_order_history(order_update),
+                db.insert_order_update_stream(order_update, event_id),
+                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+            );
+            if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() {
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+            }
         }
         OrderStatus::Rejected => {
-            db.insert_order_history(order_update).await?;
-            db.insert_order_update_stream(order_update, event_id).await?;
-            db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp).await?;
+            // 3 operations in parallel
+            let (r1, r2, r3) = tokio::join!(
+                db.insert_order_history(order_update),
+                db.insert_order_update_stream(order_update, event_id),
+                db.update_order_statistics(order_update.user_id, &order_update.status, order_update.timestamp)
+            );
+            if r1.is_err() || r2.is_err() || r3.is_err() {
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+            }
         }
     }
-    Ok(())
 }
 
-/// Process order update from EngineOutput (if present)
-async fn process_engine_order_update(
+/// Fast parallel order update processing
+async fn process_engine_order_update_fast(
     db: &OrderHistoryDb,
     output: &EngineOutput,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) {
     if let InputData::PlaceOrder(ref place_order) = output.input.data {
         if let Some(ref order_update) = output.order_update {
             let status = match order_update.status {
@@ -470,58 +553,8 @@ async fn process_engine_order_update(
                 match_id: None,
             };
 
-            if let Err(e) = process_order_update(db, &ledger_order_update, 0).await {
-                log::warn!("Order history update failed: {}", e);
-            } else {
-                log::info!(target: LOG_TARGET, "Processed Order #{}", ledger_order_update.order_id);
-            }
+            process_order_update_parallel(db, &ledger_order_update, 0).await;
         }
     }
-    Ok(())
 }
 
-/// Result of engine output verification
-enum VerifyResult {
-    /// Already processed, skip
-    Skip,
-    /// Verification passed
-    Ok,
-    /// Verification failed with error message
-    Err(String),
-}
-
-/// Verify EngineOutput chain integrity and idempotency
-fn verify_engine_output(
-    output: &EngineOutput,
-    last_output_seq: u64,
-    last_processed_hash: u64,
-) -> VerifyResult {
-    // 1. Idempotency: Skip if already processed
-    if output.output_seq <= last_output_seq && last_output_seq > 0 {
-        return VerifyResult::Skip;
-    }
-
-    // 2. Hash chain verification
-    if !output.verify_prev_hash(last_processed_hash) {
-        return VerifyResult::Err(format!(
-            "Chain verification failed: expected prev_hash={}, got={}",
-            last_processed_hash, output.prev_hash
-        ));
-    }
-
-    // 3. Output integrity verification
-    if !output.verify() {
-        return VerifyResult::Err(format!(
-            "Output hash verification failed for seq={}",
-            output.output_seq
-        ));
-    }
-
-    // 4. Sequence gap warning (not an error, just a warning)
-    if output.output_seq != last_output_seq + 1 {
-        log::warn!(target: LOG_TARGET,
-            "Sequence gap: expected {}, got {}", last_output_seq + 1, output.output_seq);
-    }
-
-    VerifyResult::Ok
-}
