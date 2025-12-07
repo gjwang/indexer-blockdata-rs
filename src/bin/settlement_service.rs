@@ -27,7 +27,8 @@ use zmq::{Context, PULL};
 const LOG_TARGET: &str = "settlement";
 
 // === CONFIGURATION ===
-const MAX_BATCH_SIZE: usize = 100;
+const MAX_BATCH_SIZE: usize = 200;
+const MAX_DRAIN_BATCH: usize = 200; // Max items to drain from channel per write
 const DERIVED_WRITER_BUFFER: usize = 10_000;
 
 // ============================================================================
@@ -203,9 +204,16 @@ fn spawn_derived_writers(
     let db = settlement_db.clone();
     tokio::spawn(async move {
         while let Some(mut all_events) = balance_rx.recv().await {
-            // Drain channel: collect all pending balance events
-            while let Ok(more_events) = balance_rx.try_recv() {
-                all_events.extend(more_events);
+            // Drain channel: collect pending balance events (up to MAX_DRAIN_BATCH)
+            let mut drain_count = 1;
+            while drain_count < MAX_DRAIN_BATCH {
+                match balance_rx.try_recv() {
+                    Ok(more_events) => {
+                        all_events.extend(more_events);
+                        drain_count += 1;
+                    }
+                    Err(_) => break,
+                }
             }
             // Single batch write for ALL drained events
             if let Err(e) = db.append_balance_events_batch(&all_events).await {
@@ -220,10 +228,17 @@ fn spawn_derived_writers(
     let db = settlement_db.clone();
     tokio::spawn(async move {
         while let Some((mut all_trades, mut last_seq)) = trades_rx.recv().await {
-            // Drain channel: collect all pending trades, keeping the last sequence
-            while let Ok((more_trades, seq)) = trades_rx.try_recv() {
-                all_trades.extend(more_trades);
-                last_seq = seq; // Use the sequence of the last received batch
+            // Drain channel: collect pending trades (up to MAX_DRAIN_BATCH)
+            let mut drain_count = 1;
+            while drain_count < MAX_DRAIN_BATCH {
+                match trades_rx.try_recv() {
+                    Ok((more_trades, seq)) => {
+                        all_trades.extend(more_trades);
+                        last_seq = seq; // Use the sequence of the last received batch
+                        drain_count += 1;
+                    }
+                    Err(_) => break,
+                }
             }
             if let Err(e) = db.insert_trades_batch(&all_trades, last_seq).await {
                 log::error!(target: LOG_TARGET, "Trades write failed: {}", e);

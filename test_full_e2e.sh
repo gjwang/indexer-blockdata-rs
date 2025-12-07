@@ -47,7 +47,7 @@ echo ""
 echo "=== Step 4: Starting services ==="
 
 echo "  4.1 Starting Settlement Service..."
-$BIN_DIR/settlement_service > /tmp/settle.log 2>&1 &
+RUST_LOG=settlement=debug,scylla=warn $BIN_DIR/settlement_service > /tmp/settle.log 2>&1 &
 SETTLE_PID=$!
 sleep 2
 

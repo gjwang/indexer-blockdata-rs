@@ -1642,9 +1642,18 @@ impl SettlementDb {
         let mut values = Vec::with_capacity(outputs.len());
         let now = get_current_timestamp_ms();
 
+        let mut total_bytes = 0usize;
+        let mut min_bytes = usize::MAX;
+        let mut max_bytes = 0usize;
+
         for output in outputs {
             let output_bytes =
                 serde_json::to_vec(output).context("Failed to serialize EngineOutput")?;
+
+            let size = output_bytes.len();
+            total_bytes += size;
+            min_bytes = min_bytes.min(size);
+            max_bytes = max_bytes.max(size);
 
             batch.append_statement(QUERY);
             values.push((
@@ -1655,6 +1664,16 @@ impl SettlementDb {
                 now,
             ));
         }
+
+        let avg_bytes = total_bytes / outputs.len().max(1);
+        log::info!(
+            "SOT batch: {} outputs, total={}KB, avg={}B, min={}B, max={}B",
+            outputs.len(),
+            total_bytes / 1024,
+            avg_bytes,
+            min_bytes,
+            max_bytes
+        );
 
         self.session
             .batch(&batch, values)
