@@ -1643,37 +1643,53 @@ impl SettlementDb {
         let now = get_current_timestamp_ms();
 
         let mut total_bytes = 0usize;
-        let mut min_bytes = usize::MAX;
-        let mut max_bytes = 0usize;
+    let mut total_compressed = 0usize;
+    let mut min_bytes = usize::MAX;
+    let mut max_bytes = 0usize;
 
-        for output in outputs {
-            let output_bytes =
-                serde_json::to_vec(output).context("Failed to serialize EngineOutput")?;
+    for output in outputs {
+        // Serialize to binary with bincode (much smaller than JSON)
+        let binary = bincode::serialize(output).context("Failed to serialize EngineOutput")?;
 
-            let size = output_bytes.len();
-            total_bytes += size;
-            min_bytes = min_bytes.min(size);
-            max_bytes = max_bytes.max(size);
+        // Compress with LZ4 (fast and effective)
+        let compressed = lz4_flex::compress_prepend_size(&binary);
 
-            batch.append_statement(QUERY);
-            values.push((
-                output.output_seq as i64,
-                output.hash as i64,
-                output.prev_hash as i64,
-                output_bytes,
-                now,
-            ));
-        }
+        let original_size = binary.len();
+        let compressed_size = compressed.len();
+        total_bytes += original_size;
+        total_compressed += compressed_size;
+        min_bytes = min_bytes.min(compressed_size);
+        max_bytes = max_bytes.max(compressed_size);
 
-        let avg_bytes = total_bytes / outputs.len().max(1);
-        log::info!(
-            "SOT batch: {} outputs, total={}KB, avg={}B, min={}B, max={}B",
-            outputs.len(),
-            total_bytes / 1024,
-            avg_bytes,
-            min_bytes,
-            max_bytes
-        );
+        batch.append_statement(QUERY);
+        values.push((
+            output.output_seq as i64,
+            output.hash as i64,
+            output.prev_hash as i64,
+            compressed,
+            now,
+        ));
+    }
+
+    let avg_original = total_bytes / outputs.len().max(1);
+    let avg_compressed = total_compressed / outputs.len().max(1);
+    let compression_ratio = if total_bytes > 0 {
+        100 - (total_compressed * 100 / total_bytes)
+    } else {
+        0
+    };
+
+    log::info!(
+        "SOT batch: {} outputs, bin={}KB, compressed={}KB ({}% saved), avg={}/{}B, min={}B, max={}B",
+        outputs.len(),
+        total_bytes / 1024,
+        total_compressed / 1024,
+        compression_ratio,
+        avg_original,
+        avg_compressed,
+        min_bytes,
+        max_bytes
+    );
 
         self.session
             .batch(&batch, values)
