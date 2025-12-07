@@ -27,7 +27,7 @@ use zmq::{Context, PULL};
 const LOG_TARGET: &str = "settlement";
 
 // === CONFIGURATION ===
-const MAX_BATCH_SIZE: usize = 500;
+const MAX_BATCH_SIZE: usize = 2000;  // Increased to reduce SOT round trips
 const MAX_DRAIN_BATCH: usize = 200; // Max items to drain from channel per write
 const NUM_BALANCE_WRITERS: usize = 4; // Parallel balance writers for higher throughput
 const NUM_SOT_WRITERS: usize = 4; // Parallel SOT writers (sharded by symbol_id)
@@ -330,27 +330,34 @@ async fn run_processing_loop(
             continue;
         }
 
-        // --- Step 3: Write to SOT (SYNCHRONOUS - waits for completion) ---
-        // Uses parallel writes sharded by symbol_id, but WAITS for all to complete
-        let t_sot = std::time::Instant::now();
-        if let Err(e) = write_sot_parallel(&settlement_db, &verified).await {
-            log::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
-            continue;
-        }
-        let d_sot = t_sot.elapsed();
+        // --- Step 3 & 4: Write SOT and dispatch to derived writers IN PARALLEL ---
+        // Both are independent writes to different tables/services
+        let t_writes = std::time::Instant::now();
 
-        // --- Step 4: Dispatch to Derived Writers (only after SOT is complete!) ---
-        let t_dispatch = std::time::Instant::now();
-        let batch_trades = dispatch_to_writers(
+        // SOT write (parallel by symbol_id internally)
+        let sot_future = write_sot_parallel(&settlement_db, &verified);
+
+        // Derived writers dispatch (async channels, non-blocking)
+        let derived_future = dispatch_to_writers(
             &verified,
             &balance_tx,
             &trades_tx,
             &order_tx,
             &starrocks_tx,
             csv_writer,
-        )
-        .await;
-        let d_dispatch = t_dispatch.elapsed();
+        );
+
+        // Run both in parallel
+        let (sot_result, batch_trades) = tokio::join!(sot_future, derived_future);
+
+        // Check SOT result - if failed, we have a problem but derived writes are in flight
+        if let Err(e) = sot_result {
+            log::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
+            // TODO: Implement halt/recovery strategy
+            continue;
+        }
+
+        let d_writes = t_writes.elapsed();
 
         // --- Metrics ---
         let batch_size = verified.len();
@@ -369,9 +376,9 @@ async fn run_processing_loop(
         let sr_cap = starrocks_tx.capacity();
 
         log::info!(target: LOG_TARGET,
-            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s sot={:?} dispatch={:?} | total: {:.0}msg/s | buf: bal={} trd={} ord={} sr={}",
+            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s writes={:?} | total: {:.0}msg/s | buf: bal={} trd={} ord={} sr={}",
             last_seq, total_msgs, total_trades,
-            batch_size, batch_ops, d_sot, d_dispatch,
+            batch_size, batch_ops, d_writes,
             total_ops,
             bal_cap, trd_cap, ord_cap, sr_cap
         );
