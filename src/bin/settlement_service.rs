@@ -200,6 +200,12 @@ async fn main() {
     // === ULTRA-FAST BATCH PROCESSING ===
     const MAX_BATCH_SIZE: usize = 100;  // Max outputs to batch together
 
+    // Progress tracking
+    let start_time = std::time::Instant::now();
+    let mut total_msgs: u64 = 0;
+    let mut total_batches: u64 = 0;
+    let mut total_processing_us: u64 = 0;  // Only time spent processing (excludes ZMQ wait)
+
     loop {
         let mut batch: Vec<EngineOutput> = Vec::with_capacity(MAX_BATCH_SIZE);
 
@@ -366,21 +372,35 @@ async fn main() {
         let _ = wtr.flush();
 
         // === PROFILING ===
-        let first_seq = verified_batch.first().map(|o| o.output_seq).unwrap_or(0);
         let last_seq = verified_batch.last().map(|o| o.output_seq).unwrap_or(0);
-        let total_trades: usize = verified_batch.iter().map(|o| o.trades.len()).sum();
-        let total_events: usize = verified_batch.iter().map(|o| o.balance_events.len()).sum();
+        let batch_trades: usize = verified_batch.iter().map(|o| o.trades.len()).sum();
 
-        let d_total = d_sot + d_queue;
-        let us_per_msg = if batch_size > 0 { d_total.as_micros() as f64 / batch_size as f64 } else { 0.0 };
-        let msgs_per_sec = if d_total.as_micros() > 0 { (batch_size as f64 * 1_000_000.0) / d_total.as_micros() as f64 } else { 0.0 };
+        // Update running totals
+        total_msgs += batch_size as u64;
+        total_batches += 1;
+        total_settled += batch_trades as u64;
+
+        // Track processing time (sot + queue, excludes ZMQ wait)
+        let d_batch = d_sot + d_queue;
+        total_processing_us += d_batch.as_micros() as u64;
+
+        // Calculate throughput
+        let batch_ops = if d_batch.as_micros() > 0 {
+            (batch_size as f64 * 1_000_000.0) / d_batch.as_micros() as f64
+        } else { 0.0 };
+
+        // TRUE msg throughput = total msgs / processing time only (not wall clock)
+        let msg_ops = if total_processing_us > 0 {
+            (total_msgs as f64 * 1_000_000.0) / total_processing_us as f64
+        } else { 0.0 };
+
+        let buffer_len = reorder_buffer.len();
 
         log::info!(target: LOG_TARGET,
-            "[BATCH] n={} seq={}..{} trades={} events={} | sot={:?} queue={:?} | {:.0}µs/msg {:.0}msg/s",
-            batch_size, first_seq, last_seq, total_trades, total_events,
-            d_sot, d_queue, us_per_msg, msgs_per_sec);
-
-        total_settled += total_trades as u64;
+            "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s | total: {:.0}msg/s | buf={}",
+            last_seq, total_msgs, total_settled,
+            batch_size, batch_ops,
+            msg_ops, buffer_len);
     }
 }
 

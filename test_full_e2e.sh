@@ -107,12 +107,13 @@ kill $CLIENT_PID || true
 echo "  Waiting for settlement to catch up (60s)..."
 for i in {1..6}; do
     sleep 10
-    # Count batches processed (new format: [BATCH] n=X seq=...)
-    BATCHES=$(grep -c "\[BATCH\]" /tmp/settle.log 2>/dev/null || echo "0")
-    # Sum up the batch sizes to get total messages processed
-    PROCESSED=$(grep "\[BATCH\]" /tmp/settle.log 2>/dev/null | sed 's/.*n=\([0-9]*\).*/\1/' | awk '{s+=$1}END{print s}' || echo "0")
+    # Get last progress line
+    LAST_PROGRESS=$(grep "\[PROGRESS\]" /tmp/settle.log 2>/dev/null | tail -1)
+    PROCESSED=$(echo "$LAST_PROGRESS" | sed 's/.*msgs=\([0-9]*\).*/\1/' 2>/dev/null || echo "0")
+    TRADES=$(echo "$LAST_PROGRESS" | sed 's/.*trades=\([0-9]*\).*/\1/' 2>/dev/null || echo "0")
+    MSG_OPS=$(echo "$LAST_PROGRESS" | sed 's/.*total: \([0-9]*\)msg.*/\1/' 2>/dev/null || echo "0")
     PUBLISHED=$(grep -c "Published EngineOutput" /tmp/me.log 2>/dev/null || echo "0")
-    echo "    Progress: batches=$BATCHES processed=$PROCESSED / published=$PUBLISHED"
+    echo "    Progress: processed=$PROCESSED/$PUBLISHED trades=$TRADES msg_ops=${MSG_OPS}msg/s"
 done
 
 echo ""
