@@ -118,7 +118,7 @@ impl GroupCommitWal {
         Ok(())
     }
 
-    /// Flush pending entries to disk (fsync)
+    /// Flush pending entries to disk (fdatasync - faster than fsync)
     pub fn flush(&mut self) -> Result<(), WalError> {
         if self.buffer.is_empty() {
             return Ok(());
@@ -129,8 +129,8 @@ impl GroupCommitWal {
             .write_all(self.buffer.as_slice())
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
-        // Sync to disk
-        self.file.sync_all().map_err(|e| WalError::IoError(e.to_string()))?;
+        // Sync data to disk (fdatasync - doesn't sync metadata, faster)
+        self.file.sync_data().map_err(|e| WalError::IoError(e.to_string()))?;
 
         self.bytes_written += self.buffer.len() as u64;
         self.buffer.clear();
