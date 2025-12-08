@@ -11,6 +11,59 @@
 - **UBS**: It holds the money
 - **Core**: It decides if money can be spent
 
+---
+
+## 🚨 CRITICAL: Internal vs Client Struct Naming 🚨
+
+**THIS RULE IS MANDATORY. NO EXCEPTIONS.**
+
+| Layer | Prefix | Values | Example |
+|-------|--------|--------|---------|
+| **Gateway/API** | `Client*` | Decimals (strings) | `ClientOrder`, `ClientBalance` |
+| **UBSCore** | `Internal*` | Raw u64 | `InternalOrder`, `InternalBalance` |
+
+### Why This Matters
+
+```rust
+// ❌ DANGEROUS: Names look similar, easy to mix up
+pub struct Order { price: f64 }     // API layer
+pub struct Order { price: u64 }     // Core layer - CONFLICT!
+
+// ✅ SAFE: Names are explicit, compiler catches mistakes
+pub struct ClientOrder { price: String }     // Gateway: "50000.00"
+pub struct InternalOrder { price: u64 }      // UBSCore: 5000000000000
+```
+
+### Conversion Rule
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          CLIENT (External)                           │
+│   JSON: { "price": "50000.00", "qty": "1.5" }                       │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │  Gateway: ClientOrder → InternalOrder
+                                │  (ONLY place conversion happens)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          UBSCore (Internal)                          │
+│   InternalOrder { price: 5000000000000, qty: 150000000 }            │
+│   Raw u64 ONLY - No decimals, no strings, no floats                 │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Enforcement Rules
+
+| Rule | Enforcement |
+|------|-------------|
+| UBSCore ONLY accepts `Internal*` structs | Compiler type check |
+| Gateway ONLY accepts `Client*` structs | Compiler type check |
+| Conversion happens at Gateway boundary | Single point of conversion |
+| No f64/f32 inside UBSCore | Code review |
+| No String inside UBSCore (for values) | Code review |
+
+---
+
 ## The Golden Rule
 
 > "UBSCore never asks. It knows."

@@ -28,6 +28,15 @@ This documentation describes the architecture for a **Validating Sequencer** - t
 - Never calls an external API
 - If data isn't in RAM, it doesn't exist
 
+## 🚨 Critical: Internal vs Client Naming
+
+| `Client*` (Gateway) | `Internal*` (UBSCore) |
+|---------------------|------------------------|
+| Decimals, Strings | Raw u64 |
+| `ClientOrder` | `InternalOrder` |
+
+**See**: [UBSCORE_ARCHITECTURE.md](./UBSCORE_ARCHITECTURE.md#-critical-internal-vs-client-struct-naming-)
+
 ## Architecture Overview
 
 ```

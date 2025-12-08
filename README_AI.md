@@ -51,6 +51,27 @@ session.prepare(INSERT_USER_CQL).await?;
 
 **📚 See `CODE_QUALITY_RULES.md` for detailed examples and rationale.**
 
+### 🚨 Critical: Internal vs Client Naming
+
+| Layer | Prefix | Values |
+|-------|--------|--------|
+| Gateway/API | `Client*` | Decimals, Strings |
+| UBSCore | `Internal*` | Raw u64 |
+
+```rust
+// ❌ DANGEROUS: Same name, different types
+pub struct Order { price: f64 }    // API
+pub struct Order { price: u64 }    // Core (conflict!)
+
+// ✅ SAFE: Explicit naming
+pub struct ClientOrder { price: String }     // Gateway
+pub struct InternalOrder { price: u64 }      // UBSCore
+```
+
+**Conversion**: Gateway is the ONLY place `Client* → Internal*` happens.
+
+**📚 See `docs/UBSCORE_ARCHITECTURE.md` for complete rules.**
+
 ## 4. 🐳 Docker-First Development (MANDATORY)
 
 **CRITICAL RULE**: All dependency services MUST run in Docker containers in local development.

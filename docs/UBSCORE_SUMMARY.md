@@ -30,6 +30,17 @@
 - Never calls an external API
 - If data isn't in `self.ram`, the data doesn't exist
 
+## 🚨 Critical Naming Convention
+
+| Layer | Prefix | Values | Example |
+|-------|--------|--------|---------|
+| **Gateway/API** | `Client*` | Decimals | `ClientOrder { price: "50000.00" }` |
+| **UBSCore** | `Internal*` | Raw u64 | `InternalOrder { price: 5000000000000 }` |
+
+**Conversion**: Gateway is the ONLY place `Client* → Internal*` happens.
+
+**See**: [UBSCORE_ARCHITECTURE.md](./UBSCORE_ARCHITECTURE.md) for complete rules.
+
 ## Implementation Details
 
 ### A. State Management (The "Hot" Zone)
