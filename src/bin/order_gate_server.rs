@@ -106,7 +106,7 @@ async fn main() {
 
             // Process orders from channel
             while let Ok(request) = rx.recv() {
-                let response = match client.send_order(&request.order, 100) {
+                let response = match client.send_order_and_wait(&request.order, 100) {
                     Ok(resp) => UbsOrderResponse {
                         accepted: resp.is_accepted(),
                         reason_code: resp.reason_code,
