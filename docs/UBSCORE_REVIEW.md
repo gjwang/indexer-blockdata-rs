@@ -186,7 +186,7 @@ impl DeduplicationGuard {
 
 **⚠️ Critical: Replay Mode Exception**
 
-During WAL replay, skip ALL checks:
+During WAL replay, skip ALL time-based checks:
 
 ```rust
 fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
@@ -194,6 +194,41 @@ fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
         return Ok(()); // WAL is pre-validated
     }
     self.dedup_guard.check_and_record(order_id)
+}
+```
+
+**Why Skip Checks During Replay?**
+
+```
+Normal Mode:
+  now = wall_clock_time()
+  if now - order_ts > 5 sec → REJECT
+
+Replay Mode Problem:
+  WAL entry from yesterday: order_ts = 2024-12-07 14:00:00
+  Current time:             now      = 2024-12-08 15:00:00
+  Difference: 25 hours! → Would be REJECTED (WRONG!)
+```
+
+**Replay Rules**:
+1. **Cannot use `now()` as reference** - replayed orders have old timestamps
+2. **WAL is pre-validated** - orders in WAL already passed checks when first received
+3. **Trust the WAL** - if it's in the log, it was valid
+4. **No dedup needed** - WAL entries are already unique (written only once)
+
+**Alternative: Simulated Time During Replay**
+
+For testing/debugging, you can use the order's own timestamp as "now":
+
+```rust
+fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
+    let now = if self.is_replay_mode {
+        order_id.timestamp_ms()  // Use order's timestamp as "now"
+    } else {
+        current_time_ms()        // Use wall clock
+    };
+
+    // Rest of checks use this "now"...
 }
 ```
 
