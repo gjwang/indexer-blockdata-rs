@@ -21,7 +21,7 @@ async fn main() {
 
     let cid_gen = Arc::new(Mutex::new(FastUlidHalfGen::new()));
     let counter = Arc::new(AtomicU64::new(0));
-    let total_count: u64 = 1000_000;
+    let total_count: u64 = 10_000;  // Stress test with 10K iterations
 
     let concurrency = 100;
     let interval_ms = 0;
