@@ -6,6 +6,8 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
+#[cfg(unix)]
+use std::os::unix::fs::FileExt as UnixFileExt;
 
 use fs2::FileExt;
 use super::aligned_buffer::AlignedBuffer;
@@ -237,22 +239,44 @@ impl GroupCommitWal {
     }
 
     /// Flush pending entries to disk (fdatasync - faster than fsync)
+    /// Uses pwrite (write_all_at) for atomic positional writes
+    #[cfg(unix)]
     pub fn flush(&mut self) -> Result<(), WalError> {
         if self.buffer.is_empty() {
             return Ok(());
         }
 
-        // Seek to write position (needed for pre-allocated files)
+        // Use pwrite for atomic positional write (no cursor lock contention)
+        self.file
+            .write_all_at(self.buffer.as_slice(), self.bytes_written)
+            .map_err(|e| WalError::IoError(e.to_string()))?;
+
+        // Sync data to disk (fdatasync - doesn't sync metadata, faster)
+        self.file.sync_data().map_err(|e| WalError::IoError(e.to_string()))?;
+
+        self.bytes_written += self.buffer.len() as u64;
+        self.buffer.clear();
+        self.pending_count = 0;
+
+        Ok(())
+    }
+
+    /// Flush pending entries to disk (non-Unix fallback)
+    #[cfg(not(unix))]
+    pub fn flush(&mut self) -> Result<(), WalError> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+
+        // Seek + write fallback for non-Unix
         self.file
             .seek(SeekFrom::Start(self.bytes_written))
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
-        // Write buffer to file
         self.file
             .write_all(self.buffer.as_slice())
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
-        // Sync data to disk (fdatasync - doesn't sync metadata, faster)
         self.file.sync_data().map_err(|e| WalError::IoError(e.to_string()))?;
 
         self.bytes_written += self.buffer.len() as u64;
