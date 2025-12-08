@@ -462,11 +462,28 @@ fn test_vip_level_capped() {
 - Log error and return error
 - Only panic in tests (use `#[cfg(test)]`)
 
+**📌 NOTE: MAX_BALANCE vs Internal Calculations**
+
+| Layer | Limit | Example |
+|-------|-------|---------|
+| **Final stored value** | MAX_BALANCE (10^18) | Balance in DB |
+| **Internal calculation** | u64::MAX | price × qty |
+| **Overflow detection** | checked_mul | Returns u64::MAX on overflow |
+
+```
+Example: ETH has 18 decimals → 1 ETH = 10^18 wei
+- 1 ETH balance = 1_000_000_000_000_000_000 (fits in MAX_BALANCE)
+- price × qty may exceed MAX_BALANCE temporarily (during calculation)
+- Final result MUST fit in MAX_BALANCE (for DB)
+- Use checked_mul to detect u64 overflow
+```
+
 ```rust
 use thiserror::Error;
 
-/// Maximum balance value (fits in both u64 and positive i64)
-/// 10^18 = 1 quintillion (more than enough for any currency)
+/// Maximum FINAL balance value (fits in both u64 and positive i64)
+/// 10^18 = 1 quintillion (e.g., 1 ETH in wei)
+/// NOTE: Internal calculations may exceed this, but final result must fit
 pub const MAX_BALANCE: u64 = 1_000_000_000_000_000_000;
 
 #[derive(Debug, Error, Clone, PartialEq)]
