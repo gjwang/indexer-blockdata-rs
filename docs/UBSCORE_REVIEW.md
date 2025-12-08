@@ -105,8 +105,11 @@ const EXPIRE_THRESHOLD_MS: u64 = MAX_TIME_DRIFT_MS + EXPIRE_TOLERANCE_MS;
 const MAX_CACHE_SIZE: usize = 1_000_000;   // Hard limit (safety net)
 
 struct DeduplicationGuard {
-    // IndexSet maintains insertion order - oldest at front!
     cache: IndexSet<HalfUlid>,
+
+    // CRITICAL: Track minimum allowed timestamp
+    // Updated when force-evicting due to hard limit
+    min_allowed_ts: u64,
 }
 
 impl DeduplicationGuard {
@@ -114,7 +117,7 @@ impl DeduplicationGuard {
         let now = current_time_ms();
         let order_ts = order_id.timestamp_ms();
 
-        // 1. TIME CHECK (CPU only, no memory access)
+        // 1. TIME CHECK: Normal time window
         if now - order_ts > MAX_TIME_DRIFT_MS {
             return Err(RejectReason::OrderTooOld);
         }
@@ -122,23 +125,33 @@ impl DeduplicationGuard {
             return Err(RejectReason::FutureTimestamp);
         }
 
-        // 2. INLINE EVICTION: Pop expired entries from front
+        // 2. EVICTION BOUNDARY CHECK: Reject if older than evicted entries
+        //    This prevents duplicates of force-evicted IDs!
+        if order_ts < self.min_allowed_ts {
+            return Err(RejectReason::OrderTooOld);
+        }
+
+        // 3. INLINE EVICTION: Pop expired entries from front
         while let Some(oldest) = self.cache.first() {
             if now - oldest.timestamp_ms() > EXPIRE_THRESHOLD_MS {
-                self.cache.pop();  // O(1)
+                let evicted = self.cache.pop().unwrap();
+                // Update boundary (but don't move it backwards)
+                self.min_allowed_ts = self.min_allowed_ts.max(evicted.timestamp_ms());
             } else {
-                break;  // Oldest still valid, stop
+                break;
             }
         }
 
-        // 3. HARD LIMIT CHECK (safety net for clock issues/attacks)
-        if self.cache.len() >= MAX_CACHE_SIZE {
-            // Force evict oldest even if not expired
-            self.cache.pop();
-            log::warn!("Dedup cache hit hard limit, force evicting");
+        // 4. HARD LIMIT CHECK (safety net)
+        while self.cache.len() >= MAX_CACHE_SIZE {
+            let evicted = self.cache.pop().unwrap();
+            // CRITICAL: Update min_allowed_ts to reject future duplicates!
+            self.min_allowed_ts = self.min_allowed_ts.max(evicted.timestamp_ms());
+            log::warn!("Dedup cache hit hard limit, force evicting. min_ts={}",
+                       self.min_allowed_ts);
         }
 
-        // 4. EXACT DUPLICATE CHECK
+        // 5. EXACT DUPLICATE CHECK
         if !self.cache.insert(order_id) {
             return Err(RejectReason::DuplicateOrderId);
         }
