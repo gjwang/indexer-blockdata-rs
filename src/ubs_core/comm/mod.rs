@@ -1,33 +1,38 @@
 //! Communication module for UBSCore
 //!
-//! Uses Aeron IPC for ultra-low latency (~100ns) communication:
-//! - Gateway → UBSCore: Order requests
-//! - UBSCore → Matching Engine: Validated orders
-//! - Matching Engine → UBSCore: Trade fills
+//! Supports two transport modes:
+//! 1. UDP (default) - Simple, low-latency, works across servers
+//! 2. Aeron IPC - Ultra-low latency (~100ns) for same-machine
 //!
-//! # Quick Start (Embedded Driver for Dev)
+//! Gateway ↔ UBSCore via UDP:
+//! - Port 40456: Gateway → UBSCore (orders)
+//! - Port 40457: UBSCore → Gateway (responses)
+//!
+//! # Quick Start (UDP)
 //!
 //! ```ignore
-//! use fetcher::ubs_core::comm::{EmbeddedDriver, AeronConfig};
+//! // Gateway side
+//! let client = UbsClient::new("ubs-host", 40456)?;
+//! let response = client.send_order(&order)?;
 //!
-//! // Launch embedded media driver
-//! let _driver = EmbeddedDriver::launch()?;
-//!
-//! // Create receivers/senders
-//! let config = AeronConfig::default();
-//! let receiver = OrderReceiver::new(config.clone());
+//! // UBSCore side
+//! let server = UbsServer::new(40456)?;
+//! let (req, addr) = server.recv_order()?;
+//! server.send_response(addr, accept_response(...))?;
 //! ```
-//!
-//! See docs/AERON_USAGE.md for full documentation.
 
 pub mod aeron_config;
 pub mod driver;
 pub mod fill_receiver;
 pub mod order_receiver;
 pub mod order_sender;
+pub mod ubs_client;
+pub mod ubs_server;
 
 pub use aeron_config::AeronConfig;
 pub use driver::EmbeddedDriver;
 pub use fill_receiver::{FillMessage, FillReceiver};
 pub use order_receiver::{OrderMessage, OrderReceiver};
 pub use order_sender::{OrderSender, SendError};
+pub use ubs_client::{UbsClient, UbsResponse, OrderRequest, ResponseMessage};
+pub use ubs_server::{UbsServer, accept_response, reject_response};
