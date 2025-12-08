@@ -277,10 +277,10 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         }
         let wal_append_us = t_wal_append_start.elapsed().as_micros();
 
-        // 3. WAL FLUSH ASYNC (schedule flush, don't block)
+        // 3. WAL FLUSH (sync) - fast with pre-allocated file (overwrites only)
         let t_wal_flush_start = Instant::now();
-        if let Err(e) = self.wal.flush_async() {
-            error!("WAL flush_async failed: {:?}", e);
+        if let Err(e) = self.wal.flush() {
+            error!("WAL flush failed: {:?}", e);
         }
         let wal_flush_us = t_wal_flush_start.elapsed().as_micros();
 
