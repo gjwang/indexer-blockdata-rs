@@ -31,7 +31,12 @@ use fetcher::ubs_core::{
     OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType,
 };
 
-const LOG_TARGET: &str = "ubscore";
+// Simple logging macros with target "UBSC"
+const TARGET: &str = "UBSC";
+macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
+macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
+macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
+macro_rules! debug { ($($arg:tt)*) => { log::debug!(target: TARGET, $($arg)*) } }
 
 // === CONFIGURATION ===
 const STATS_INTERVAL_SECS: u64 = 10;
@@ -182,22 +187,22 @@ async fn main() {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
-    log::info!(target: LOG_TARGET, "============================================");
-    log::info!(target: LOG_TARGET, "       UBSCore Service Starting");
-    log::info!(target: LOG_TARGET, "============================================");
-    log::info!(target: LOG_TARGET, "Kafka brokers: {}", service_config.kafka_brokers);
-    log::info!(target: LOG_TARGET, "Orders topic: {}", service_config.orders_topic);
-    log::info!(target: LOG_TARGET, "Validated orders topic: {}", service_config.validated_orders_topic);
-    log::info!(target: LOG_TARGET, "Consumer group: {}", service_config.consumer_group);
-    log::info!(target: LOG_TARGET, "Data directory: {}", service_config.data_dir);
+    info!("============================================");
+    info!("       UBSCore Service Starting");
+    info!("============================================");
+    info!("Kafka brokers: {}", service_config.kafka_brokers);
+    info!("Orders topic: {}", service_config.orders_topic);
+    info!("Validated orders topic: {}", service_config.validated_orders_topic);
+    info!("Consumer group: {}", service_config.consumer_group);
+    info!("Data directory: {}", service_config.data_dir);
 
     // --- Create Data Directory ---
     let data_dir = PathBuf::from(&service_config.data_dir);
     if let Err(e) = std::fs::create_dir_all(&data_dir) {
-        log::error!(target: LOG_TARGET, "❌ Failed to create data directory: {}", e);
+        error!("❌ Failed to create data directory: {}", e);
         std::process::exit(1);
     }
-    log::info!(target: LOG_TARGET, "✅ Data directory ready: {:?}", data_dir);
+    info!("✅ Data directory ready: {:?}", data_dir);
 
     // --- Initialize WAL ---
     let wal_path = data_dir.join("ubscore.wal");
@@ -209,18 +214,18 @@ async fn main() {
 
     let wal = match GroupCommitWal::open(&wal_path, wal_config) {
         Ok(w) => {
-            log::info!(target: LOG_TARGET, "✅ WAL opened: {:?}", wal_path);
+            info!("✅ WAL opened: {:?}", wal_path);
             w
         }
         Err(e) => {
-            log::error!(target: LOG_TARGET, "❌ Failed to open WAL: {:?}", e);
+            error!("❌ Failed to open WAL: {:?}", e);
             std::process::exit(1);
         }
     };
 
     // --- Create Service ---
     let service = Arc::new(UBSCoreService::new(wal));
-    log::info!(target: LOG_TARGET, "✅ UBSCore initialized");
+    info!("✅ UBSCore initialized");
 
     // --- Kafka Producer ---
     let producer: FutureProducer = match ClientConfig::new()
@@ -229,45 +234,56 @@ async fn main() {
         .create()
     {
         Ok(p) => {
-            log::info!(target: LOG_TARGET, "✅ Kafka producer connected");
+            info!("✅ Kafka producer connected");
             p
         }
         Err(e) => {
-            log::error!(target: LOG_TARGET, "❌ Failed to create Kafka producer: {}", e);
+            error!("❌ Failed to create Kafka producer: {}", e);
             std::process::exit(1);
         }
     };
 
     // --- Kafka Consumer ---
+    // Tuned for low latency:
+    // - session.timeout.ms: Faster failure detection
+    // - heartbeat.interval.ms: More frequent heartbeats
+    // - fetch.wait.max.ms: Don't wait too long for batches
+    // - fetch.min.bytes: Don't wait for large batches
     let consumer: StreamConsumer = match ClientConfig::new()
         .set("bootstrap.servers", &service_config.kafka_brokers)
         .set("group.id", &service_config.consumer_group)
         .set("enable.auto.commit", "true")
         .set("auto.offset.reset", "latest")
+        // Low latency tuning
+        .set("session.timeout.ms", "6000") // Faster rebalance (default 45000)
+        .set("heartbeat.interval.ms", "2000") // More frequent heartbeat
+        .set("fetch.wait.max.ms", "100") // Don't wait for batches (default 500)
+        .set("fetch.min.bytes", "1") // Return immediately with any data
+        .set("max.poll.interval.ms", "300000") // Allow longer processing
         .create()
     {
         Ok(c) => {
-            log::info!(target: LOG_TARGET, "✅ Kafka consumer connected");
+            info!("✅ Kafka consumer connected");
             c
         }
         Err(e) => {
-            log::error!(target: LOG_TARGET, "❌ Failed to create Kafka consumer: {}", e);
+            error!("❌ Failed to create Kafka consumer: {}", e);
             std::process::exit(1);
         }
     };
 
     // Subscribe to orders topic
     if let Err(e) = consumer.subscribe(&[&service_config.orders_topic]) {
-        log::error!(target: LOG_TARGET, "❌ Failed to subscribe: {}", e);
+        error!("❌ Failed to subscribe: {}", e);
         std::process::exit(1);
     }
-    log::info!(target: LOG_TARGET, "✅ Subscribed to topic: {}", service_config.orders_topic);
+    info!("✅ Subscribed to topic: {}", service_config.orders_topic);
 
     // --- Mark Ready ---
     service.health.set_ready(true);
     service.health.heartbeat();
-    log::info!(target: LOG_TARGET, "✅ UBSCore Service Ready");
-    log::info!(target: LOG_TARGET, "============================================");
+    info!("✅ UBSCore Service Ready");
+    info!("============================================");
 
     // --- Spawn Stats Reporter ---
     let stats_service = service.clone();
@@ -288,8 +304,7 @@ async fn main() {
             let wal_path = stats_data_dir.join("ubscore.wal");
             let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
-            log::info!(
-                target: LOG_TARGET,
+            info!(
                 "[STATS] uptime={}s | recv={} accept={} reject={} | lat: avg={}µs min={}µs max={}µs | wal: entries={} size={}KB | health={:?}",
                 uptime,
                 snapshot.orders_received,
@@ -339,7 +354,7 @@ async fn run_processing_loop(
     let mut pending_wal_flush: u64 = 0;
     let loop_start = Instant::now();
 
-    log::info!(target: LOG_TARGET, "📥 Starting order processing loop...");
+    info!("📥 Starting order processing loop...");
 
     loop {
         // --- Receive Order ---
@@ -358,8 +373,7 @@ async fn run_processing_loop(
                             let parse_latency_us = parse_timer.elapsed_us();
                             total_processed += 1;
 
-                            log::debug!(
-                                target: LOG_TARGET,
+                            debug!(
                                 "[RECV] order_id={} user={} symbol={} side={:?} price={} qty={} | recv={}µs parse={}µs",
                                 order.order_id,
                                 order.user_id,
@@ -374,7 +388,7 @@ async fn run_processing_loop(
                             // --- Log to WAL ---
                             let wal_timer = LatencyTimer::start();
                             if let Err(e) = service.log_order(&order).await {
-                                log::error!(target: LOG_TARGET, "[WAL_ERROR] {}", e);
+                                error!("[WAL_ERROR] {}", e);
                             }
                             let wal_latency_us = wal_timer.elapsed_us();
                             pending_wal_flush += 1;
@@ -390,12 +404,11 @@ async fn run_processing_loop(
 
                                     // Flush WAL on accepted orders
                                     if let Err(e) = service.flush_wal().await {
-                                        log::error!(target: LOG_TARGET, "[WAL_FLUSH_ERROR] {}", e);
+                                        error!("[WAL_FLUSH_ERROR] {}", e);
                                     }
                                     pending_wal_flush = 0;
 
-                                    log::info!(
-                                        target: LOG_TARGET,
+                                    info!(
                                         "[ACCEPT] order_id={} | wal={}µs process={}µs | total: proc={} accept={} reject={}",
                                         order_id,
                                         wal_latency_us,
@@ -423,8 +436,7 @@ async fn run_processing_loop(
                                                 Ok((partition, offset)) => {
                                                     let forward_latency_us =
                                                         forward_timer.elapsed_us();
-                                                    log::debug!(
-                                                        target: LOG_TARGET,
+                                                    debug!(
                                                         "[FORWARD] order_id={} -> partition={} offset={} | forward={}µs",
                                                         order_id,
                                                         partition,
@@ -433,8 +445,7 @@ async fn run_processing_loop(
                                                     );
                                                 }
                                                 Err((e, _)) => {
-                                                    log::error!(
-                                                        target: LOG_TARGET,
+                                                    error!(
                                                         "[FORWARD_ERROR] order_id={} error={:?}",
                                                         order_id,
                                                         e
@@ -443,8 +454,7 @@ async fn run_processing_loop(
                                             }
                                         }
                                         Err(e) => {
-                                            log::error!(
-                                                target: LOG_TARGET,
+                                            error!(
                                                 "[SERIALIZE_ERROR] order_id={} error={}",
                                                 order_id,
                                                 e
@@ -456,8 +466,7 @@ async fn run_processing_loop(
                                     let process_latency_us = process_timer.elapsed_us();
                                     total_rejected += 1;
 
-                                    log::warn!(
-                                        target: LOG_TARGET,
+                                    warn!(
                                         "[REJECT] order_id={} reason={:?} | wal={}µs process={}µs | total: proc={} accept={} reject={}",
                                         order_id,
                                         reason,
@@ -471,7 +480,7 @@ async fn run_processing_loop(
                                     // Flush WAL periodically even for rejections
                                     if pending_wal_flush >= 100 {
                                         if let Err(e) = service.flush_wal().await {
-                                            log::error!(target: LOG_TARGET, "[WAL_FLUSH_ERROR] {}", e);
+                                            error!("[WAL_FLUSH_ERROR] {}", e);
                                         }
                                         pending_wal_flush = 0;
                                     }
@@ -479,8 +488,7 @@ async fn run_processing_loop(
                             }
                         }
                         Err(e) => {
-                            log::warn!(
-                                target: LOG_TARGET,
+                            warn!(
                                 "[PARSE_ERROR] Failed to deserialize order: {} | payload_len={}",
                                 e,
                                 payload.len()
@@ -490,7 +498,7 @@ async fn run_processing_loop(
                 }
             }
             Err(e) => {
-                log::error!(target: LOG_TARGET, "[KAFKA_ERROR] {}", e);
+                error!("[KAFKA_ERROR] {}", e);
             }
         }
 
@@ -499,8 +507,7 @@ async fn run_processing_loop(
             let elapsed = loop_start.elapsed().as_secs_f64();
             let throughput = total_processed as f64 / elapsed;
 
-            log::info!(
-                target: LOG_TARGET,
+            info!(
                 "[PROGRESS] processed={} accepted={} rejected={} | throughput={:.1} orders/sec",
                 total_processed,
                 total_accepted,

@@ -1,39 +1,48 @@
-/// Logging macros with custom target for cleaner log output
-///
-/// Instead of showing the full binary name (e.g., "settlement_service"),
-/// these macros use a shorter, cleaner target name (e.g., "settlement").
+//! Simple targeted logging
+//!
+//! Usage:
+//! ```rust,ignore
+//! use fetcher::log_macros::Logger;
+//!
+//! static L: Logger = Logger::new("UBSC");
+//!
+//! // Simple messages - clean!
+//! L.info("Starting service");
+//! L.error("Connection failed");
+//!
+//! // With variables - use &format!()
+//! L.info(&format!("Port: {}", 8080));
+//! L.error(&format!("Error: {}", err));
+//! ```
 
-#[macro_export]
-macro_rules! log_info {
-    ($target:expr, $($arg:tt)*) => {
-        log::info!(target: $target, $($arg)*)
-    };
+/// A simple logger with a fixed target.
+#[derive(Debug, Clone, Copy)]
+pub struct Logger {
+    pub target: &'static str,
 }
 
-#[macro_export]
-macro_rules! log_error {
-    ($target:expr, $($arg:tt)*) => {
-        log::error!(target: $target, $($arg)*)
-    };
-}
+impl Logger {
+    pub const fn new(target: &'static str) -> Self {
+        Self { target }
+    }
 
-#[macro_export]
-macro_rules! log_warn {
-    ($target:expr, $($arg:tt)*) => {
-        log::warn!(target: $target, $($arg)*)
-    };
-}
+    #[inline]
+    pub fn info(&self, msg: &str) {
+        log::info!(target: self.target, "{}", msg);
+    }
 
-#[macro_export]
-macro_rules! log_debug {
-    ($target:expr, $($arg:tt)*) => {
-        log::debug!(target: $target, $($arg)*)
-    };
-}
+    #[inline]
+    pub fn warn(&self, msg: &str) {
+        log::warn!(target: self.target, "{}", msg);
+    }
 
-#[macro_export]
-macro_rules! log_trace {
-    ($target:expr, $($arg:tt)*) => {
-        log::trace!(target: $target, $($arg)*)
-    };
+    #[inline]
+    pub fn error(&self, msg: &str) {
+        log::error!(target: self.target, "{}", msg);
+    }
+
+    #[inline]
+    pub fn debug(&self, msg: &str) {
+        log::debug!(target: self.target, "{}", msg);
+    }
 }
