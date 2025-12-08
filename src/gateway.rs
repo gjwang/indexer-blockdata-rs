@@ -361,8 +361,12 @@ async fn create_order(
             response_tx,
         };
 
+        log::info!("[CREATE_ORDER] Sending to UBS handler, order_id={}", order_id);
+
         state.ubs_order_tx.send(request)
             .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "UBS handler not available".to_string()))?;
+
+        log::info!("[CREATE_ORDER] Sent to UBS handler, waiting for response");
 
         // Wait for response
         let response = response_rx.await

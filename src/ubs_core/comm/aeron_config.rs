@@ -64,11 +64,10 @@ pub const UDP_RESPONSES_ENDPOINT: &str = "localhost:40457";
 
 impl Default for AeronConfig {
     fn default() -> Self {
-        // Default to UDP transport (works across servers in production)
-        // Two ports: one for orders, one for responses
+        // Use IPC for development (shared memory, same machine)
         Self {
-            orders_channel: format!("aeron:udp?endpoint={}", UDP_ORDERS_ENDPOINT),
-            responses_channel: format!("aeron:udp?endpoint={}", UDP_RESPONSES_ENDPOINT),
+            orders_channel: IPC_CHANNEL.to_string(),
+            responses_channel: IPC_CHANNEL.to_string(),
             orders_in_stream: streams::ORDERS_IN,
             orders_out_stream: streams::ORDERS_OUT,
             fills_in_stream: streams::FILLS_IN,
@@ -86,17 +85,17 @@ impl AeronConfig {
         Self {
             orders_channel: format!("aeron:udp?endpoint={}", orders_host),
             responses_channel: format!("aeron:udp?endpoint={}", responses_host),
-            ..Default::default()
+            orders_in_stream: streams::ORDERS_IN,
+            orders_out_stream: streams::ORDERS_OUT,
+            fills_in_stream: streams::FILLS_IN,
+            responses_out_stream: streams::RESPONSES_OUT,
+            busy_spin: true,
         }
     }
 
     /// Create config for IPC (shared memory - same machine only, dev/test)
     pub fn ipc() -> Self {
-        Self {
-            orders_channel: IPC_CHANNEL.to_string(),
-            responses_channel: IPC_CHANNEL.to_string(),
-            ..Default::default()
-        }
+        Self::default()
     }
 }
 

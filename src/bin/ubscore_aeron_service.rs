@@ -83,13 +83,21 @@ fn run_aeron_service() {
     }
     info!("✅ Seeded test accounts 1001-1010");
 
+    // --- Launch Embedded Media Driver (for development) ---
+    let _driver = fetcher::ubs_core::comm::EmbeddedDriver::launch()
+        .expect("Failed to launch embedded media driver");
+    info!("✅ Embedded Media Driver launched");
+
+    // Give driver time to initialize
+    std::thread::sleep(Duration::from_millis(500));
+
     // --- Initialize Aeron ---
     let config = AeronConfig::default();
 
     let ctx = AeronContext::new().expect("Failed to create Aeron context");
     let aeron = Aeron::new(&ctx).expect("Failed to create Aeron");
     aeron.start().expect("Failed to start Aeron");
-    info!("✅ Aeron started");
+    info!("✅ Aeron client started");
 
     // Subscription for receiving orders (Gateway → UBSCore)
     let orders_channel = CString::new(config.orders_channel.clone()).unwrap();

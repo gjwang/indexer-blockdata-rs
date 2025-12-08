@@ -94,7 +94,10 @@ impl UbsGatewayClient {
         // Send order
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let position = publication.offer(bytes, handler);
+        log::debug!("[UBS_CLIENT] offer result: position={}, order_id={}", position, order.order_id);
+
         if position <= 0 {
+            log::warn!("[UBS_CLIENT] offer failed: position={}", position);
             return Err(SendError::Unknown(position));
         }
 
