@@ -18,7 +18,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::ubs_core::{InternalOrder, OrderType, Side};
 
-const KAFKA_BROKER: &str = "localhost:9092";
+const KAFKA_BROKER: &str = "localhost:9093";
 const ORDERS_TOPIC: &str = "orders";
 
 #[tokio::main]
