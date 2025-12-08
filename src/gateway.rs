@@ -342,30 +342,40 @@ async fn create_order(
 
     match validation_result {
         Ok(()) => {
-            // 3. Order APPROVED - Forward to ME via Kafka
-            let kafka_start = std::time::Instant::now();
-            let payload = bincode::serialize(&internal_order).unwrap();
-            let key = order_id.to_string();
-
-            if let Err(e) = state
-                .producer
-                .publish(state.kafka_topic.clone(), key, payload)
-                .await
-            {
-                // Kafka publish failed - this is a problem
-                // TODO: Handle this case (retry, rollback lock, etc.)
-                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Forward failed: {}", e)));
-            }
-            let kafka_time = kafka_start.elapsed();
+            // 3. Order APPROVED - WAL confirmed, respond immediately
+            // Kafka publish happens in background (don't block client)
+            let total_time = start.elapsed();
 
             log::info!(
-                "[LATENCY] order_id={} convert={}µs validate+wal={}µs kafka={}µs total={}µs",
+                "[LATENCY] order_id={} convert={}µs validate+wal={}µs total={}µs (kafka=async)",
                 order_id,
                 convert_time.as_micros(),
                 validate_time.as_micros(),
-                kafka_time.as_micros(),
-                start.elapsed().as_micros()
+                total_time.as_micros()
             );
+
+            // Spawn background task for Kafka publish
+            let producer = state.producer.clone();
+            let topic = state.kafka_topic.clone();
+            let payload = bincode::serialize(&internal_order).unwrap();
+            let key = order_id.to_string();
+
+            tokio::spawn(async move {
+                let kafka_start = std::time::Instant::now();
+                if let Err(e) = producer.publish(topic, key.clone(), payload).await {
+                    // Log error but don't fail - order is already in WAL
+                    log::error!(
+                        "[KAFKA_ERROR] order_id={} failed to forward to ME: {} (order is safe in WAL)",
+                        key, e
+                    );
+                } else {
+                    log::debug!(
+                        "[KAFKA_OK] order_id={} forwarded to ME in {}µs",
+                        key,
+                        kafka_start.elapsed().as_micros()
+                    );
+                }
+            });
 
             Ok(Json(ApiResponse::success(OrderResponseData {
                 order_id: order_id.to_string(),
