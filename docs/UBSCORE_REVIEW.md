@@ -74,54 +74,92 @@ The "Next Bullet" strategy for log rotation is a **professional-grade detail** t
 
 ## Areas for Improvement (Critical Gaps)
 
-### 1. ✅ Order ID Deduplication via halfULID (Already Addressed)
+### 1. ✅ Order ID Deduplication via halfULID + Cache Queue (Hybrid Approach)
 
-**Design Choice**: Using halfULID as order_id which embeds timestamp.
+**Design Choice**: halfULID embeds timestamp + fixed-size cache queue for exact checks.
 
-**Elegant Solution**:
-- halfULID contains timestamp in high bits
-- Reject any order with timestamp older than X minutes (e.g., 10 min)
-- No HashSet or Bloom filter needed - just compare timestamps!
+**Hybrid Strategy (Two Layers of Protection)**:
+
+```
+Layer 1: Cache Queue (Exact Duplicate Check)
+├── Fixed size (e.g., 100,000 entries)
+├── O(1) lookup via HashSet
+├── When full, evict oldest entry
+└── Evicted entry's timestamp → becomes min_allowed_ts
+
+Layer 2: Timestamp Window (Reject Old Orders)
+├── Defined by oldest entry in cache (not hardcoded!)
+├── Any order older than min_allowed_ts → rejected immediately
+└── Adapts dynamically to traffic volume
+```
+
+**Implementation**:
 
 ```rust
-const MAX_ORDER_AGE_MS: u64 = 10 * 60 * 1000; // 10 minutes
+struct DeduplicationGuard {
+    // Fixed-size cache for exact duplicate detection
+    cache: IndexSet<HalfUlid>,  // Ordered set, O(1) lookup
+    max_cache_size: usize,
 
-fn validate_order_id(&self, order_id: HalfUlid) -> Result<(), RejectReason> {
-    let order_ts = order_id.timestamp_ms();
-    let now = current_time_ms();
+    // Dynamic time window (derived from cache eviction)
+    min_allowed_ts: u64,
+}
 
-    if now - order_ts > MAX_ORDER_AGE_MS {
-        return Err(RejectReason::OrderTooOld);
+impl DeduplicationGuard {
+    fn check_and_record(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
+        let order_ts = order_id.timestamp_ms();
+
+        // Layer 2: Reject if older than our time window
+        if order_ts < self.min_allowed_ts {
+            return Err(RejectReason::OrderTooOld);
+        }
+
+        // Layer 1: Exact duplicate check in cache
+        if self.cache.contains(&order_id) {
+            return Err(RejectReason::DuplicateOrderId);
+        }
+
+        // Record this order
+        self.cache.insert(order_id);
+
+        // Evict oldest if cache is full
+        if self.cache.len() > self.max_cache_size {
+            let evicted = self.cache.pop_front().unwrap();
+
+            // Update time window based on evicted entry
+            self.min_allowed_ts = evicted.timestamp_ms();
+        }
+
+        Ok(())
     }
-
-    // Also reject future timestamps (clock skew protection)
-    if order_ts > now + 1000 {
-        return Err(RejectReason::FutureTimestamp);
-    }
-
-    Ok(())
 }
 ```
+
+**Why This is Bulletproof**:
+
+| Scenario | Protection |
+|----------|------------|
+| Duplicate within cache window | Exact match in HashSet → rejected |
+| Duplicate older than cache | timestamp < min_allowed_ts → rejected |
+| Replay attack with old ID | timestamp < min_allowed_ts → rejected |
+| New valid order | Passes both checks → accepted |
+
+**Memory Usage**: Fixed O(cache_size), e.g., 100K entries × 8 bytes = 800KB
 
 **⚠️ Critical: Replay Mode Exception**
 
-During WAL replay (recovery), old timestamps must be accepted:
+During WAL replay, skip ALL checks (trust the WAL):
 
 ```rust
-fn validate_order_id(&self, order_id: HalfUlid) -> Result<(), RejectReason> {
-    // Skip timestamp check during replay
+fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
     if self.is_replay_mode {
-        return Ok(()); // Trust the WAL
+        return Ok(()); // WAL is pre-validated
     }
 
-    // Normal validation...
+    self.dedup_guard.check_and_record(order_id)
 }
 ```
 
-**Why this works**:
-- During normal operation: Rejects stale/duplicate orders naturally
-- During replay: All orders from WAL are trusted (already validated when first received)
-- Memory usage: O(1) - no storage of seen IDs needed
 
 
 ### 2. ⚠️ Missing: Graceful Degradation Under Load
