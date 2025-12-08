@@ -5,6 +5,8 @@
 use crate::user_account::{AssetId, UserAccount, UserId};
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::Path;
+use std::sync::Mutex;
 
 use super::debt::{DebtLedger, DebtReason, DebtRecord, EventType};
 use super::dedup::DeduplicationGuard;
@@ -12,6 +14,7 @@ use super::error::RejectReason;
 use super::fee::VipFeeTable;
 use super::order::InternalOrder;
 use super::risk::RiskModel;
+use super::wal::{GroupCommitConfig, GroupCommitWal, WalEntry, WalEntryType};
 
 const HIGH_WATER_MARK: usize = 10_000; // Backpressure threshold
 
@@ -32,6 +35,9 @@ pub struct UBSCore<R: RiskModel> {
 
     // Mode
     is_replay_mode: bool,
+
+    // WAL for durability (optional - None for tests/embedded without persistence)
+    wal: Option<Mutex<GroupCommitWal>>,
 }
 
 impl<R: RiskModel> UBSCore<R> {
@@ -45,7 +51,27 @@ impl<R: RiskModel> UBSCore<R> {
             vip_table: VipFeeTable::default(),
             risk_model,
             is_replay_mode: false,
+            wal: None,
         }
+    }
+
+    /// Create UBSCore with WAL for durability
+    pub fn with_wal(risk_model: R, wal_path: &Path) -> Result<Self, String> {
+        let config = GroupCommitConfig::default();
+        let wal = GroupCommitWal::open(wal_path, config)
+            .map_err(|e| format!("Failed to open WAL: {:?}", e))?;
+
+        Ok(Self {
+            accounts: HashMap::new(),
+            dedup_guard: DeduplicationGuard::new(),
+            debt_ledger: DebtLedger::new(),
+            pending_queue: VecDeque::new(),
+            vip_configs: HashMap::new(),
+            vip_table: VipFeeTable::default(),
+            risk_model,
+            is_replay_mode: false,
+            wal: Some(Mutex::new(wal)),
+        })
     }
 
     /// Set replay mode (use order timestamp instead of wall clock)
@@ -63,7 +89,7 @@ impl<R: RiskModel> UBSCore<R> {
         }
     }
 
-    /// Process incoming order
+    /// Process incoming order (validation only, no WAL)
     pub fn process_order(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
         // 0. BACKPRESSURE CHECK
         if self.pending_queue.len() > HIGH_WATER_MARK {
@@ -88,6 +114,32 @@ impl<R: RiskModel> UBSCore<R> {
 
         // 5. Lock funds
         // TODO: Implement after we have symbol config
+
+        Ok(())
+    }
+
+    /// Process order with WAL persistence
+    /// "Once accepted, never lost" - order is persisted BEFORE returning Ok
+    pub fn process_order_durable(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
+        // 1. Validate first (cheap, no I/O)
+        self.process_order(order.clone())?;
+
+        // 2. If valid, persist to WAL (fsync before returning)
+        if let Some(wal_mutex) = &self.wal {
+            let payload = bincode::serialize(&order)
+                .map_err(|_| RejectReason::InternalError)?;
+
+            let entry = WalEntry::new(WalEntryType::OrderLock, payload);
+
+            let mut wal = wal_mutex.lock()
+                .map_err(|_| RejectReason::InternalError)?;
+
+            wal.append(&entry)
+                .map_err(|_| RejectReason::InternalError)?;
+
+            wal.flush()
+                .map_err(|_| RejectReason::InternalError)?;
+        }
 
         Ok(())
     }

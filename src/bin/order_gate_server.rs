@@ -65,8 +65,15 @@ async fn main() {
         None
     };
 
-    // --- Initialize UBSCore (embedded in Gateway) ---
-    let mut ubs_core = UBSCore::new(SpotRiskModel);
+    // --- Initialize UBSCore with WAL (embedded in Gateway) ---
+    let home = std::env::var("HOME").expect("HOME not set");
+    let data_dir = std::path::PathBuf::from(home).join("gateway_data");
+    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
+    let wal_path = data_dir.join("gateway_ubs.wal");
+
+    let mut ubs_core = UBSCore::with_wal(SpotRiskModel, &wal_path)
+        .expect("Failed to initialize UBSCore with WAL");
+    println!("✅ UBSCore WAL at {:?}", wal_path);
 
     // Seed test accounts (development only)
     // TODO: Replace with proper balance sync from Settlement

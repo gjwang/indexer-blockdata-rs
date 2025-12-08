@@ -11,6 +11,8 @@ pub enum RejectReason {
     InvalidSymbol,
     OrderCostOverflow,
     SystemBusy,
+    /// Internal error (WAL, serialization, etc.)
+    InternalError,
 }
 
 #[cfg(test)]

@@ -333,7 +333,7 @@ async fn create_order(
     // 2. Validate order via UBSCore (synchronous - no Kafka!)
     let validation_result = {
         let mut ubs_core = state.ubs_core.write().await;
-        ubs_core.process_order(internal_order.clone())
+        ubs_core.process_order_durable(internal_order.clone())
     };
 
     match validation_result {
