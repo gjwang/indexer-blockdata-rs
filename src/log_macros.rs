@@ -1,48 +1,28 @@
-//! Simple targeted logging
+//! Simple logging macros
 //!
-//! Usage:
+//! Usage in any service - just 2 lines:
 //! ```rust,ignore
-//! use fetcher::log_macros::Logger;
+//! const TARGET: &str = "UBSC";
+//! fetcher::define_log_macros!(TARGET);
 //!
-//! static L: Logger = Logger::new("UBSC");
-//!
-//! // Simple messages - clean!
-//! L.info("Starting service");
-//! L.error("Connection failed");
-//!
-//! // With variables - use &format!()
-//! L.info(&format!("Port: {}", 8080));
-//! L.error(&format!("Error: {}", err));
+//! // Then use:
+//! info!("Starting service");
+//! error!("Failed: {}", err);
 //! ```
 
-/// A simple logger with a fixed target.
-#[derive(Debug, Clone, Copy)]
-pub struct Logger {
-    pub target: &'static str,
-}
-
-impl Logger {
-    pub const fn new(target: &'static str) -> Self {
-        Self { target }
-    }
-
-    #[inline]
-    pub fn info(&self, msg: &str) {
-        log::info!(target: self.target, "{}", msg);
-    }
-
-    #[inline]
-    pub fn warn(&self, msg: &str) {
-        log::warn!(target: self.target, "{}", msg);
-    }
-
-    #[inline]
-    pub fn error(&self, msg: &str) {
-        log::error!(target: self.target, "{}", msg);
-    }
-
-    #[inline]
-    pub fn debug(&self, msg: &str) {
-        log::debug!(target: self.target, "{}", msg);
-    }
+/// Define logging macros (info!, warn!, error!, debug!) with a fixed target.
+///
+/// Usage:
+/// ```rust,ignore
+/// const TARGET: &str = "MyService";
+/// fetcher::define_log_macros!(TARGET);
+/// ```
+#[macro_export]
+macro_rules! define_log_macros {
+    ($target:expr) => {
+        macro_rules! info  { ($($arg:tt)*) => { log::info!(target: $target, $($arg)*) } }
+        macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: $target, $($arg)*) } }
+        macro_rules! error { ($($arg:tt)*) => { log::error!(target: $target, $($arg)*) } }
+        macro_rules! debug { ($($arg:tt)*) => { log::debug!(target: $target, $($arg)*) } }
+    };
 }

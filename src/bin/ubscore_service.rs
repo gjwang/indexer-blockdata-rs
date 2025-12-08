@@ -31,7 +31,7 @@ use fetcher::ubs_core::{
     OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType,
 };
 
-// Simple logging macros with target "UBSC"
+// Logging macros with target "UBSC"
 const TARGET: &str = "UBSC";
 macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
 macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
