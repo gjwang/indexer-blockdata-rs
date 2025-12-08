@@ -260,7 +260,21 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let t_convert = start.elapsed();
         let order_id = order.order_id;
 
-        // Log to WAL
+        // 1. VALIDATE FIRST (cheap, no I/O)
+        if let Err(reason) = self.ubs_core.process_order(order.clone()) {
+            let reason_code = match reason {
+                RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
+                RejectReason::DuplicateOrderId => reason_codes::DUPLICATE_ORDER_ID,
+                RejectReason::AccountNotFound => reason_codes::ACCOUNT_NOT_FOUND,
+                _ => reason_codes::INTERNAL_ERROR,
+            };
+            self.send_response(order.order_id, false, reason_code);
+            *self.orders_rejected += 1;
+            return;
+        }
+        let t_validate = start.elapsed();
+
+        // 2. WAL APPEND (only for valid orders)
         if let Ok(payload) = bincode::serialize(&order) {
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
             if let Err(e) = self.wal.append(&entry) {
@@ -272,59 +286,42 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         }
         let t_wal_append = start.elapsed();
 
-        // Process order
-        match self.ubs_core.process_order(order.clone()) {
-            Ok(()) => {
-                let t_process = start.elapsed();
+        // 3. WAL FLUSH (durability guarantee)
+        if let Err(e) = self.wal.flush() {
+            error!("WAL flush failed: {:?}", e);
+        }
+        let t_wal_flush = start.elapsed();
 
-                // Flush WAL
-                if let Err(e) = self.wal.flush() {
-                    error!("WAL flush failed: {:?}", e);
-                }
-                let t_wal_flush = start.elapsed();
+        // 4. Send accept response
+        self.send_response(order.order_id, true, 0);
+        let t_response = start.elapsed();
+        *self.orders_accepted += 1;
 
-                // Send accept response
-                self.send_response(order.order_id, true, 0);
-                let t_response = start.elapsed();
-                *self.orders_accepted += 1;
+        // 5. Forward to Kafka (async, best-effort)
+        if let Some(producer) = self.kafka_producer {
+            let payload = bincode::serialize(&order).unwrap_or_default();
+            let key = order.order_id.to_string();
+            let record = FutureRecord::to("validated_orders")
+                .payload(&payload)
+                .key(&key);
+            let _ = producer.send(record, Duration::from_secs(0));
+        }
+        let t_kafka = start.elapsed();
 
-                // Forward to Kafka (async, best-effort)
-                if let Some(producer) = self.kafka_producer {
-                    let payload = bincode::serialize(&order).unwrap_or_default();
-                    let key = order.order_id.to_string();
-                    let record = FutureRecord::to("validated_orders")
-                        .payload(&payload)
-                        .key(&key);
-                    let _ = producer.send(record, Duration::from_secs(0));
-                }
-                let t_kafka = start.elapsed();
-
-                // Log profiling every 100th order
-                if order_id % 100 == 0 {
-                    log::info!(
-                        "[PROFILE] order_id={} parse={}µs convert={}µs wal_append={}µs process={}µs wal_flush={}µs response={}µs kafka={}µs TOTAL={}µs",
-                        order_id,
-                        t_parse.as_micros(),
-                        (t_convert - t_parse).as_micros(),
-                        (t_wal_append - t_convert).as_micros(),
-                        (t_process - t_wal_append).as_micros(),
-                        (t_wal_flush - t_process).as_micros(),
-                        (t_response - t_wal_flush).as_micros(),
-                        (t_kafka - t_response).as_micros(),
-                        t_kafka.as_micros()
-                    );
-                }
-            }
-            Err(reason) => {
-                let reason_code = match reason {
-                    RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
-                    RejectReason::DuplicateOrderId => reason_codes::DUPLICATE_ORDER_ID,
-                    RejectReason::AccountNotFound => reason_codes::ACCOUNT_NOT_FOUND,
-                    _ => reason_codes::INTERNAL_ERROR,
-                };
-                self.send_response(order.order_id, false, reason_code);
-                *self.orders_rejected += 1;
-            }
+        // Log profiling every 100th order
+        if order_id % 100 == 0 {
+            log::info!(
+                "[PROFILE] order_id={} parse={}µs convert={}µs validate={}µs wal_append={}µs wal_flush={}µs response={}µs kafka={}µs TOTAL={}µs",
+                order_id,
+                t_parse.as_micros(),
+                (t_convert - t_parse).as_micros(),
+                (t_validate - t_convert).as_micros(),
+                (t_wal_append - t_validate).as_micros(),
+                (t_wal_flush - t_wal_append).as_micros(),
+                (t_response - t_wal_flush).as_micros(),
+                (t_kafka - t_response).as_micros(),
+                t_kafka.as_micros()
+            );
         }
 
         // Track latency
