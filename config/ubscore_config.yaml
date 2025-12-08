@@ -1,22 +1,37 @@
 # UBSCore Service Configuration
+#
+# User Balance Service Core - validates orders between Gateway and ME
 
-# Kafka settings
-kafka_brokers: "localhost:9092"
+# === LOGGING ===
+log_level: "info"
+log_to_file: true
+log_file: "logs/ubscore.log"
 
-# Topic for incoming orders from Gateway
-orders_topic: "orders"
+# === DATA DIRECTORY ===
+data_dir: "~/ubscore_data"
 
-# Topic for validated orders to Matching Engine
-validated_orders_topic: "validated_orders"
+# === KAFKA ===
+kafka:
+  brokers: "localhost:9092"
+  orders_topic: "orders"
+  validated_orders_topic: "validated_orders"
+  fills_topic: "fills"
+  consumer_group: "ubscore"
 
-# Topic for trade fills from Matching Engine
-fills_topic: "fills"
+# === UBSCORE SETTINGS ===
+ubscore:
+  # Deduplication cache settings
+  dedup_cache_size: 100000
+  order_ttl_seconds: 300
 
-# Consumer group ID
-consumer_group: "ubscore"
+  # Backpressure thresholds
+  high_water_mark: 10000
 
-# Deduplication cache size
-dedup_cache_size: 100000
+  # Health check settings
+  heartbeat_timeout_secs: 30
+  max_pending_queue: 10000
 
-# Order TTL in seconds (orders older than this are rejected)
-order_ttl_seconds: 300
+# === METRICS ===
+metrics:
+  stats_interval_secs: 10
+  prometheus_port: 9090
