@@ -187,44 +187,58 @@ fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
     if self.is_replay_mode {
         return Ok(()); // WAL is pre-validated
     }
-    self.dedup_guard.check_and_record(order_id)
+    self.dedup_guard.check_and_record(order_id, now)
 }
 ```
 
-**Why Skip Checks During Replay?**
+**Why Can't Use Wall Clock During Replay?**
 
 ```
 Normal Mode:
-  now = wall_clock_time()
-  if now - order_ts > 5 sec → REJECT
+  now = wall_clock_time()        // 2024-12-08 15:00:00
+  if now - order_ts > 3 sec → REJECT
 
 Replay Mode Problem:
   WAL entry from yesterday: order_ts = 2024-12-07 14:00:00
-  Current time:             now      = 2024-12-08 15:00:00
+  Current time (wall):      now      = 2024-12-08 15:00:00
   Difference: 25 hours! → Would be REJECTED (WRONG!)
 ```
 
-**Replay Rules**:
-1. **Cannot use `now()` as reference** - replayed orders have old timestamps
-2. **WAL is pre-validated** - orders in WAL already passed checks when first received
-3. **Trust the WAL** - if it's in the log, it was valid
-4. **No dedup needed** - WAL entries are already unique (written only once)
-
-**Alternative: Simulated Time During Replay**
-
-For testing/debugging, you can use the order's own timestamp as "now":
+**Solution: Use Order's Timestamp as "now" During Replay**
 
 ```rust
 fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
+    // CRITICAL: Use simulated time during replay
     let now = if self.is_replay_mode {
-        order_id.timestamp_ms()  // Use order's timestamp as "now"
+        order_id.timestamp_ms()  // Use order's own timestamp!
     } else {
         current_time_ms()        // Use wall clock
     };
 
-    // Rest of checks use this "now"...
+    self.dedup_guard.check_and_record(order_id, now)
+}
+
+impl DeduplicationGuard {
+    fn check_and_record(&mut self, order_id: HalfUlid, now: u64) -> Result<(), RejectReason> {
+        let order_ts = order_id.timestamp_ms();
+
+        // Time check still works because now = order_ts during replay
+        // So (now - order_ts) = 0, which is < MAX_TIME_DRIFT ✓
+        if now - order_ts > MAX_TIME_DRIFT_MS {
+            return Err(RejectReason::OrderTooOld);
+        }
+
+        // Rest of checks...
+    }
 }
 ```
+
+**Why This is Better Than Skipping Checks**:
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| Skip all checks | Simple | Breaks if WAL has duplicates |
+| **Simulated time** | Same logic path | ✅ Validates WAL integrity |
 
 **Summary**:
 - ✅ Simple: Two constants (MAX_TIME_DRIFT, EXPIRE_TOLERANCE)
