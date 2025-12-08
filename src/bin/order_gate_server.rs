@@ -80,6 +80,10 @@ async fn main() {
         .expect("Failed to initialize UBSCore with WAL");
     println!("✅ UBSCore WAL at {:?}", wal_path);
 
+    // --- Create ring buffer for async Kafka publishing ---
+    let order_rx = ubs_core.create_order_queue();
+    println!("✅ Order ring buffer created (capacity: 10,000)");
+
     // Seed test accounts (development only)
     // TODO: Replace with proper balance sync from Settlement
     for user_id in 1001..=1010 {
@@ -95,6 +99,42 @@ async fn main() {
 
     // Use validated_orders topic for approved orders → ME
     let validated_orders_topic = "validated_orders".to_string();
+
+    // --- Spawn dedicated Kafka publisher task ---
+    // Drains ring buffer in strict FIFO order, never blocks order processing
+    let producer_for_task: Arc<dyn fetcher::gateway::OrderPublisher> = Arc::new(KafkaPublisher(producer.clone()));
+    let topic_for_task = validated_orders_topic.clone();
+    tokio::spawn(async move {
+        log::info!("[KAFKA_PUBLISHER] Started - draining order queue");
+        loop {
+            match order_rx.recv() {
+                Ok(msg) => {
+                    let kafka_start = std::time::Instant::now();
+                    let key = msg.order_id.to_string();
+                    if let Err(e) = producer_for_task.publish(
+                        topic_for_task.clone(),
+                        key.clone(),
+                        msg.payload,
+                    ).await {
+                        log::error!(
+                            "[KAFKA_ERROR] order_id={} failed: {} (safe in WAL)",
+                            key, e
+                        );
+                    } else {
+                        log::debug!(
+                            "[KAFKA_OK] order_id={} sent in {}µs",
+                            key,
+                            kafka_start.elapsed().as_micros()
+                        );
+                    }
+                }
+                Err(_) => {
+                    log::warn!("[KAFKA_PUBLISHER] Channel closed, shutting down");
+                    break;
+                }
+            }
+        }
+    });
 
     let symbol_manager = Arc::new(symbol_manager);
     let balance_manager = balance_manager::BalanceManager::new(symbol_manager.clone());

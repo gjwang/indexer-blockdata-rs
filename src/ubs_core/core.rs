@@ -17,6 +17,13 @@ use super::risk::RiskModel;
 use super::wal::{GroupCommitConfig, GroupCommitWal, WalEntry, WalEntryType};
 
 const HIGH_WATER_MARK: usize = 10_000; // Backpressure threshold
+const ORDER_QUEUE_SIZE: usize = 10_000; // Ring buffer size for Kafka publisher
+
+/// Message for the Kafka publisher task
+pub struct OrderMessage {
+    pub order_id: u64,
+    pub payload: Vec<u8>,
+}
 
 /// Main UBSCore struct
 pub struct UBSCore<R: RiskModel> {
@@ -38,6 +45,9 @@ pub struct UBSCore<R: RiskModel> {
 
     // WAL for durability (optional - None for tests/embedded without persistence)
     wal: Option<Mutex<GroupCommitWal>>,
+
+    // Ring buffer for async Kafka publishing (strict order, never blocks)
+    order_tx: Option<std::sync::mpsc::SyncSender<OrderMessage>>,
 }
 
 impl<R: RiskModel> UBSCore<R> {
@@ -52,6 +62,7 @@ impl<R: RiskModel> UBSCore<R> {
             risk_model,
             is_replay_mode: false,
             wal: None,
+            order_tx: None,
         }
     }
 
@@ -71,7 +82,16 @@ impl<R: RiskModel> UBSCore<R> {
             risk_model,
             is_replay_mode: false,
             wal: Some(Mutex::new(wal)),
+            order_tx: None,
         })
+    }
+
+    /// Create ring buffer for async Kafka publishing
+    /// Returns receiver that should be given to the publisher task
+    pub fn create_order_queue(&mut self) -> std::sync::mpsc::Receiver<OrderMessage> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(ORDER_QUEUE_SIZE);
+        self.order_tx = Some(tx);
+        rx
     }
 
     /// Set replay mode (use order timestamp instead of wall clock)
@@ -168,6 +188,19 @@ impl<R: RiskModel> UBSCore<R> {
             "[ACCEPT] order_id={} user={} symbol={} side={:?} price={} qty={}",
             order_id, user_id, order.symbol_id, order.side, order.price, order.qty
         );
+
+        // 4. Push to ring buffer for async Kafka publishing (strict order, never blocks)
+        if let Some(tx) = &self.order_tx {
+            let payload = bincode::serialize(&order).unwrap_or_default();
+            // try_send: if queue is full, log error but don't block
+            // Order is safe in WAL, Kafka publisher can catch up
+            if let Err(e) = tx.try_send(OrderMessage { order_id, payload }) {
+                log::error!(
+                    "[QUEUE_FULL] order_id={} failed to queue for Kafka: {} (safe in WAL)",
+                    order_id, e
+                );
+            }
+        }
 
         Ok(())
     }

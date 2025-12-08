@@ -23,7 +23,7 @@ mod bench;
 // Re-exports
 #[cfg(feature = "aeron")]
 pub use comm::{AeronConfig, FillReceiver, OrderReceiver, OrderSender};
-pub use core::UBSCore;
+pub use core::{OrderMessage, UBSCore};
 pub use debt::{DebtLedger, DebtReason, DebtRecord};
 pub use dedup::DeduplicationGuard;
 pub use error::RejectReason;

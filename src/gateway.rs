@@ -354,28 +354,8 @@ async fn create_order(
                 total_time.as_micros()
             );
 
-            // Spawn background task for Kafka publish
-            let producer = state.producer.clone();
-            let topic = state.kafka_topic.clone();
-            let payload = bincode::serialize(&internal_order).unwrap();
-            let key = order_id.to_string();
-
-            tokio::spawn(async move {
-                let kafka_start = std::time::Instant::now();
-                if let Err(e) = producer.publish(topic, key.clone(), payload).await {
-                    // Log error but don't fail - order is already in WAL
-                    log::error!(
-                        "[KAFKA_ERROR] order_id={} failed to forward to ME: {} (order is safe in WAL)",
-                        key, e
-                    );
-                } else {
-                    log::debug!(
-                        "[KAFKA_OK] order_id={} forwarded to ME in {}µs",
-                        key,
-                        kafka_start.elapsed().as_micros()
-                    );
-                }
-            });
+            // Order is already queued in UBSCore ring buffer for Kafka publishing
+            // No need to spawn task here - dedicated publisher task handles it
 
             Ok(Json(ApiResponse::success(OrderResponseData {
                 order_id: order_id.to_string(),
