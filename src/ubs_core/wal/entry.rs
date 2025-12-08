@@ -1,16 +1,12 @@
 //! WAL entry format
 //!
-//! Format: [Length: u32][CRC32: u32][Type: u8][Payload: bytes]
+//! Format: [Len(4)][CRC(4)][Type(1)][Payload]
 //!
-//! - Length: total bytes including header (4 + 4 + 1 + payload)
-//! - CRC32: checksum of Type + Payload
-//! - Type: entry type discriminator
-//! - Payload: serialized data
+//! - Common layer (wal_record_*) handles [Len(4)][CRC(4)][Data]
+//! - Data = [Type(1)][Payload]
+//! - Version is at WAL file/snapshot level, not per-entry
 
-use crc32fast::Hasher;
-
-/// Header size: length(4) + crc32(4) + type(1) = 9 bytes
-pub const HEADER_SIZE: usize = 9;
+use crate::common_utils::{wal_record_deserialize, wal_record_serialize, WalRecordError};
 
 /// Entry types for WAL
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,66 +58,34 @@ impl WalEntry {
         Self { entry_type, payload }
     }
 
-    /// Serialize entry to bytes (including header)
+    /// Serialize entry to bytes
+    /// Format: [Len(4)][CRC(4)][Type(1)][Payload]
     pub fn serialize(&self) -> Vec<u8> {
-        let total_len = HEADER_SIZE + self.payload.len();
-        let mut buf = Vec::with_capacity(total_len);
+        // Data = Type(1) + Payload
+        let mut data = Vec::with_capacity(1 + self.payload.len());
+        data.push(self.entry_type as u8);
+        data.extend_from_slice(&self.payload);
 
-        // Calculate CRC32 of type + payload
-        let mut hasher = Hasher::new();
-        hasher.update(&[self.entry_type as u8]);
-        hasher.update(&self.payload);
-        let crc = hasher.finalize();
-
-        // Write header
-        buf.extend_from_slice(&(total_len as u32).to_le_bytes()); // Length
-        buf.extend_from_slice(&crc.to_le_bytes()); // CRC32
-        buf.push(self.entry_type as u8); // Type
-
-        // Write payload
-        buf.extend_from_slice(&self.payload);
-
-        buf
+        // Common layer wraps as: [Len(4)][CRC(4)][Data]
+        wal_record_serialize(&data)
     }
 
     /// Deserialize entry from bytes
-    /// Returns (entry, bytes_consumed) or error
-    pub fn deserialize(data: &[u8]) -> Result<(Self, usize), WalError> {
-        if data.len() < HEADER_SIZE {
+    pub fn deserialize(buf: &[u8]) -> Result<(Self, usize), WalError> {
+        // Common layer handles [Len(4)][CRC(4)][Data]
+        let (data, consumed) = wal_record_deserialize(buf)?;
+
+        if data.is_empty() {
             return Err(WalError::TooShort);
         }
 
-        // Read header
-        let len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
-        let stored_crc = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-        let type_byte = data[8];
-
-        // Validate length
-        if len < HEADER_SIZE {
-            return Err(WalError::InvalidLength(len));
-        }
-        if data.len() < len {
-            return Err(WalError::TooShort);
-        }
-
-        // Parse type
+        // Data = Type(1) + Payload
+        let type_byte = data[0];
         let entry_type =
             WalEntryType::try_from(type_byte).map_err(|_| WalError::InvalidType(type_byte))?;
+        let payload = data[1..].to_vec();
 
-        // Extract payload
-        let payload = data[HEADER_SIZE..len].to_vec();
-
-        // Verify CRC
-        let mut hasher = Hasher::new();
-        hasher.update(&[type_byte]);
-        hasher.update(&payload);
-        let computed_crc = hasher.finalize();
-
-        if computed_crc != stored_crc {
-            return Err(WalError::CrcMismatch { stored: stored_crc, computed: computed_crc });
-        }
-
-        Ok((Self { entry_type, payload }, len))
+        Ok((Self { entry_type, payload }, consumed))
     }
 }
 
@@ -133,6 +97,20 @@ pub enum WalError {
     InvalidType(u8),
     CrcMismatch { stored: u32, computed: u32 },
     IoError(String),
+}
+
+impl From<WalRecordError> for WalError {
+    fn from(err: WalRecordError) -> Self {
+        match err {
+            WalRecordError::TooShort => WalError::TooShort,
+            WalRecordError::ZeroLength => WalError::InvalidLength(0),
+            WalRecordError::LengthOverflow(len) => WalError::InvalidLength(len),
+            WalRecordError::CrcMismatch { stored, computed } => {
+                WalError::CrcMismatch { stored, computed }
+            }
+            WalRecordError::UnsupportedVersion(v) => WalError::InvalidType(v),
+        }
+    }
 }
 
 impl std::fmt::Display for WalError {

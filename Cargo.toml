@@ -70,6 +70,7 @@ zmq = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 csv = "1.4.0"
 lz4_flex = "0.11"
+rkyv = { version = "0.8", features = ["bytecheck"] }
 indexmap = "2.12.1"
 rusteron-client = { version = "0.1", features = ["static"], optional = true }
 rusteron-media-driver = { version = "0.1", features = ["static"], optional = true }

@@ -6,7 +6,8 @@ use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::Path;
 
-use super::entry::{WalEntry, WalError, HEADER_SIZE};
+use super::entry::{WalEntry, WalError};
+use crate::common_utils::WAL_RECORD_HEADER_SIZE;
 
 /// WAL replay iterator
 pub struct WalReplay {
@@ -57,7 +58,7 @@ impl WalReplay {
         while offset < read_buffer.len() {
             let remaining = &read_buffer[offset..];
 
-            if remaining.len() < HEADER_SIZE {
+            if remaining.len() < WAL_RECORD_HEADER_SIZE {
                 // Partial entry at end - might be corruption or incomplete write
                 if remaining.iter().all(|&b| b == 0) {
                     // Zero padding - normal
