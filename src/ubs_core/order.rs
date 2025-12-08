@@ -2,16 +2,17 @@
 
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::user_account::UserId;
+use serde::{Deserialize, Serialize};
 
 /// Order side
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Side {
     Buy,
     Sell,
 }
 
 /// Order type
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum OrderType {
     Limit,
     Market,
@@ -23,7 +24,7 @@ pub enum OrderType {
 ///   - 44 bits: timestamp (ms)
 ///   - 7 bits: machine ID (128 machines)
 ///   - 13 bits: sequence (8192 IDs/ms)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InternalOrder {
     pub order_id: u64, // SnowflakeGenRng format
     pub user_id: UserId,

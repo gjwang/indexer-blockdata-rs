@@ -1,0 +1,22 @@
+# UBSCore Service Configuration
+
+# Kafka settings
+kafka_brokers: "localhost:9092"
+
+# Topic for incoming orders from Gateway
+orders_topic: "orders"
+
+# Topic for validated orders to Matching Engine
+validated_orders_topic: "validated_orders"
+
+# Topic for trade fills from Matching Engine
+fills_topic: "fills"
+
+# Consumer group ID
+consumer_group: "ubscore"
+
+# Deduplication cache size
+dedup_cache_size: 100000
+
+# Order TTL in seconds (orders older than this are rejected)
+order_ttl_seconds: 300
