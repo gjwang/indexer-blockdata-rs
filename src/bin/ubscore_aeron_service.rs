@@ -37,25 +37,11 @@ const TARGET: &str = "UBSC";
 macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
 macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
 macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
-use fetcher::logger::setup_logger;
 
 fn main() {
-    // Load config and setup logging
-    let app_config = configure::load_service_config("ubscore_config").ok();
-
-    if let Some(ref config) = app_config {
-        if let Err(e) = setup_logger(config) {
-            eprintln!("Logger init failed: {}, falling back to env_logger", e);
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-                .format_timestamp_millis()
-                .init();
-        }
-    } else {
-        // Fallback to env_logger if config not available
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-            .format_timestamp_millis()
-            .init();
-    }
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
 
     #[cfg(not(feature = "aeron"))]
     {
@@ -162,12 +148,14 @@ fn run_aeron_service() {
     info!("🎯 UBSCore Service ready - listening for orders");
 
     // --- Main processing loop ---
-    let mut orders_received = 0u64;
-    let mut orders_accepted = 0u64;
-    let mut orders_rejected = 0u64;
-    let mut latency_sum_us = 0u64;
-    let mut latency_min_us = u64::MAX;
-    let mut latency_max_us = 0u64;
+    let mut stats = Stats {
+        received: 0,
+        accepted: 0,
+        rejected: 0,
+        latency_sum_us: 0,
+        latency_min_us: u64::MAX,
+        latency_max_us: 0,
+    };
     let mut last_stats = Instant::now();
     let mut last_received = 0u64;
 
@@ -178,12 +166,7 @@ fn run_aeron_service() {
             wal: &mut wal,
             publication: &publication,
             kafka_producer: &kafka_producer,
-            orders_received: &mut orders_received,
-            orders_accepted: &mut orders_accepted,
-            orders_rejected: &mut orders_rejected,
-            latency_sum_us: &mut latency_sum_us,
-            latency_min_us: &mut latency_min_us,
-            latency_max_us: &mut latency_max_us,
+            stats: &mut stats,
         };
 
         let handler_wrapped = Handler::leak(handler);
@@ -192,23 +175,23 @@ fn run_aeron_service() {
         // Print stats every 10 seconds
         if last_stats.elapsed() > Duration::from_secs(10) {
             let elapsed_secs = last_stats.elapsed().as_secs_f64();
-            let orders_in_period = orders_received - last_received;
+            let orders_in_period = stats.received - last_received;
             let qps = orders_in_period as f64 / elapsed_secs;
 
-            if orders_received > 0 && latency_min_us < u64::MAX {
-                let avg_us = latency_sum_us / orders_received;
+            if stats.received > 0 && stats.latency_min_us < u64::MAX {
+                let avg_us = stats.latency_sum_us / stats.received;
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1} latency(µs): min={} avg={} max={}",
-                    orders_received, orders_accepted, orders_rejected, qps, latency_min_us, avg_us, latency_max_us
+                    stats.received, stats.accepted, stats.rejected, qps, stats.latency_min_us, avg_us, stats.latency_max_us
                 );
             } else {
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1}",
-                    orders_received, orders_accepted, orders_rejected, qps
+                    stats.received, stats.accepted, stats.rejected, qps
                 );
             }
             last_stats = Instant::now();
-            last_received = orders_received;
+            last_received = stats.received;
         }
 
         // Small sleep to avoid busy-spin
@@ -217,25 +200,29 @@ fn run_aeron_service() {
 }
 
 #[cfg(feature = "aeron")]
+struct Stats {
+    received: u64,
+    accepted: u64,
+    rejected: u64,
+    latency_sum_us: u64,
+    latency_min_us: u64,
+    latency_max_us: u64,
+}
+
+#[cfg(feature = "aeron")]
 struct OrderHandler<'a> {
     ubs_core: &'a mut UBSCore<SpotRiskModel>,
     wal: &'a mut GroupCommitWal,
     publication: &'a AeronPublication,
     kafka_producer: &'a Option<FutureProducer>,
-    orders_received: &'a mut u64,
-    orders_accepted: &'a mut u64,
-    orders_rejected: &'a mut u64,
-    // Latency tracking
-    latency_sum_us: &'a mut u64,
-    latency_min_us: &'a mut u64,
-    latency_max_us: &'a mut u64,
+    stats: &'a mut Stats,
 }
 
 #[cfg(feature = "aeron")]
 impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         let start = Instant::now();
-        *self.orders_received += 1;
+        self.stats.received += 1;
 
         // Parse order message
         let order_msg = match OrderMessage::from_bytes(buffer) {
@@ -252,7 +239,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             Err(e) => {
                 warn!("Order conversion failed: {:?}", e);
                 self.send_response(order_msg.order_id, false, reason_codes::INVALID_SYMBOL);
-                *self.orders_rejected += 1;
+                self.stats.rejected += 1;
                 return;
             }
         };
@@ -266,7 +253,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 _ => reason_codes::INTERNAL_ERROR,
             };
             self.send_response(order.order_id, false, reason_code);
-            *self.orders_rejected += 1;
+            self.stats.rejected += 1;
             return;
         }
 
@@ -276,7 +263,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             if let Err(e) = self.wal.append(&entry) {
                 error!("WAL append failed: {:?}", e);
                 self.send_response(order.order_id, false, reason_codes::INTERNAL_ERROR);
-                *self.orders_rejected += 1;
+                self.stats.rejected += 1;
                 return;
             }
         }
@@ -288,7 +275,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
 
         // 4. Send accept response
         self.send_response(order.order_id, true, 0);
-        *self.orders_accepted += 1;
+        self.stats.accepted += 1;
 
         // 5. Forward to Kafka (async, best-effort)
         if let Some(producer) = self.kafka_producer {
@@ -302,12 +289,12 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
 
         // Track latency
         let elapsed_us = start.elapsed().as_micros() as u64;
-        *self.latency_sum_us += elapsed_us;
-        if elapsed_us < *self.latency_min_us {
-            *self.latency_min_us = elapsed_us;
+        self.stats.latency_sum_us += elapsed_us;
+        if elapsed_us < self.stats.latency_min_us {
+            self.stats.latency_min_us = elapsed_us;
         }
-        if elapsed_us > *self.latency_max_us {
-            *self.latency_max_us = elapsed_us;
+        if elapsed_us > self.stats.latency_max_us {
+            self.stats.latency_max_us = elapsed_us;
         }
     }
 }
