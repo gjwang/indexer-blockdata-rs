@@ -55,7 +55,7 @@ Separating UBSCore_Spot and UBSCore_Futures is **essential**:
 - Each market can scale independently
 - Inter-Island Ferry via Redpanda is safe and auditable
 
-### 5. ✅ Aeron Over TCP
+### 5. ✅ Aeron (UDP/IPC) Over TCP Alternatives
 
 The choice of Aeron for internal messaging is correct:
 - No TCP head-of-line blocking
