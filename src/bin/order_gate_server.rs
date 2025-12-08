@@ -3,9 +3,8 @@
 //! HTTP API → Aeron (UBSCore) → Kafka (ME)
 //!
 //! Architecture:
-//! - Gateway HTTP handlers send orders via channel to UBS handler thread
-//! - UBS handler thread uses Aeron to communicate with UBSCore service
-//! - UBSCore service validates and responds
+//! - HTTP handlers send orders directly to UBSCore via async Aeron client
+//! - UBSCore validates and responds
 //! - Gateway returns accept/reject to client
 
 use std::future::Future;
@@ -20,10 +19,6 @@ use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::models::{balance_manager, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 
-#[cfg(feature = "aeron")]
-use fetcher::gateway::{create_app, AppState, UbsOrderRequest, UbsOrderResponse};
-
-#[cfg(not(feature = "aeron"))]
 use fetcher::gateway::{create_app, AppState};
 
 use fetcher::gateway::OrderPublisher;
@@ -85,49 +80,21 @@ async fn main() {
         None
     };
 
-    // --- Setup UBS communication channel ---
+    // --- Setup UBS async client ---
     #[cfg(feature = "aeron")]
-    let ubs_order_tx = {
+    let ubs_client = {
         use fetcher::ubs_core::comm::{AeronConfig, UbsGatewayClient};
 
-        // Create bounded channel for order requests
-        let (tx, rx) = std::sync::mpsc::sync_channel::<UbsOrderRequest>(1000);
+        let mut client = UbsGatewayClient::new(AeronConfig::default());
 
-        // Spawn UBS handler thread (dedicated thread for Aeron)
-        std::thread::spawn(move || {
-            let mut client = UbsGatewayClient::new(AeronConfig::default());
+        // Connect to Aeron
+        if let Err(e) = client.connect() {
+            eprintln!("❌ Failed to connect to UBSCore via Aeron: {:?}", e);
+            std::process::exit(1);
+        }
+        println!("✅ Connected to UBSCore via Aeron UDP");
 
-            // Connect to Aeron
-            if let Err(e) = client.connect() {
-                eprintln!("❌ Failed to connect to UBSCore via Aeron: {:?}", e);
-                return;
-            }
-            println!("✅ Connected to UBSCore via Aeron UDP");
-
-            // Process orders from channel
-            while let Ok(request) = rx.recv() {
-                let response = match client.send_order_and_wait(&request.order, 100) {
-                    Ok(resp) => UbsOrderResponse {
-                        accepted: resp.is_accepted(),
-                        reason_code: resp.reason_code,
-                    },
-                    Err(e) => {
-                        log::error!("[UBS_HANDLER] Aeron error: {:?}", e);
-                        UbsOrderResponse {
-                            accepted: false,
-                            reason_code: 99, // Internal error
-                        }
-                    }
-                };
-
-                // Send response back (ignore errors if receiver dropped)
-                let _ = request.response_tx.send(response);
-            }
-
-            println!("UBS handler thread exiting");
-        });
-
-        tx
+        Arc::new(client)
     };
 
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
@@ -151,7 +118,7 @@ async fn main() {
         db: db.map(|d| (*d).clone()),
         funding_account,
         #[cfg(feature = "aeron")]
-        ubs_order_tx,
+        ubs_client,
     });
 
     let app = create_app(state);

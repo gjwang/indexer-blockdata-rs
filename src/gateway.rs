@@ -116,23 +116,9 @@ pub struct AppState {
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
-    /// Channel to send orders to UBSCore handler thread
+    /// UBS Gateway client for async order validation
     #[cfg(feature = "aeron")]
-    pub ubs_order_tx: std::sync::mpsc::SyncSender<UbsOrderRequest>,
-}
-
-/// Request to UBS handler thread
-#[cfg(feature = "aeron")]
-pub struct UbsOrderRequest {
-    pub order: crate::ubs_core::order::InternalOrder,
-    pub response_tx: tokio::sync::oneshot::Sender<UbsOrderResponse>,
-}
-
-/// Response from UBS handler thread
-#[cfg(feature = "aeron")]
-pub struct UbsOrderResponse {
-    pub accepted: bool,
-    pub reason_code: u8,
+    pub ubs_client: Arc<crate::ubs_core::comm::UbsGatewayClient>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -347,34 +333,20 @@ async fn create_order(
     )?;
     let convert_time = start.elapsed();
 
-    // 2. Validate order via UBSCore service (Aeron UDP)
+    // 2. Validate order via UBSCore service (Aeron - async)
     #[cfg(feature = "aeron")]
     let validation_result = {
         let validate_start = std::time::Instant::now();
 
-        // Create oneshot channel for response
-        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        log::info!("[CREATE_ORDER] Sending to UBSCore via Aeron, order_id={}", order_id);
 
-        // Send order to UBS handler thread
-        let request = UbsOrderRequest {
-            order: internal_order.clone(),
-            response_tx,
-        };
-
-        log::info!("[CREATE_ORDER] Sending to UBS handler, order_id={}", order_id);
-
-        state.ubs_order_tx.send(request)
-            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "UBS handler not available".to_string()))?;
-
-        log::info!("[CREATE_ORDER] Sent to UBS handler, waiting for response");
-
-        // Wait for response
-        let response = response_rx.await
-            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "UBS response channel closed".to_string()))?;
+        // Send order directly via async client
+        let response = state.ubs_client.send_order_async(&internal_order, 100).await
+            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("UBSCore error: {:?}", e)))?;
 
         let validate_time = validate_start.elapsed();
 
-        if response.accepted {
+        if response.is_accepted() {
             let total_time = start.elapsed();
             log::info!(
                 "[LATENCY] order_id={} convert={}µs aeron={}µs total={}µs",
