@@ -48,124 +48,70 @@ src/ubs_core/
 
 ---
 
-### Task 9.2: Implement Account with Checked Arithmetic
+### Task 9.2: ✅ EXISTING - Balance with Checked Arithmetic
 
-**File**: `src/ubs_core/account.rs`
+**Already Implemented**: `src/user_account.rs`
+
+The existing `Balance` struct already has checked arithmetic:
 
 ```rust
-use std::collections::HashSet;
+// EXISTING CODE (src/user_account.rs)
+pub type UserId = u64;
+pub type AssetId = u32;
 
-/// User account with safe balance operations
-#[derive(Debug, Clone)]
-pub struct Account {
-    user_id: u64,
-
-    // Balances (fixed-point: divide by 10^8 for actual value)
-    available: u64,      // Can be used for new orders
-    frozen: u64,         // Reserved for pending orders
-    speculative: u64,    // Hot path credits (dirty, reconciled later)
-
-    // Metadata
-    version: u64,        // For optimistic concurrency
-    last_updated_ts: u64,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+pub struct Balance {
+    pub avail: u64,    // NOT "available" - use concise names
+    pub frozen: u64,
+    pub version: u64,
 }
 
-impl Account {
-    /// Create new account with initial balance
-    pub fn new(user_id: u64, initial_balance: u64) -> Self {
-        Self {
-            user_id,
-            available: initial_balance,
-            frozen: 0,
-            speculative: 0,
-            version: 0,
-            last_updated_ts: 0,
-        }
-    }
-
-    /// Lock funds for order (CHECKED arithmetic)
-    pub fn lock_funds(&mut self, amount: u64) -> Result<(), BalanceError> {
-        self.available = self.available
-            .checked_sub(amount)
-            .ok_or(BalanceError::InsufficientBalance)?;
-
-        self.frozen = self.frozen
-            .checked_add(amount)
-            .ok_or(BalanceError::Overflow)?;
-
-        self.version += 1;
+impl Balance {
+    pub fn deposit(&mut self, amount: u64) -> Result<(), &'static str> {
+        self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 
-    /// Unlock funds (order cancelled)
-    pub fn unlock_funds(&mut self, amount: u64) -> Result<(), BalanceError> {
-        self.frozen = self.frozen
-            .checked_sub(amount)
-            .ok_or(BalanceError::InsufficientFrozen)?;
-
-        self.available = self.available
-            .checked_add(amount)
-            .ok_or(BalanceError::Overflow)?;
-
-        self.version += 1;
+    pub fn frozen(&mut self, amount: u64) -> Result<(), &'static str> {
+        // Checked arithmetic already!
+        self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
+        self.frozen = self.frozen.checked_add(amount).ok_or("Frozen balance overflow")?;
+        self.version = self.version.wrapping_add(1);
         Ok(())
     }
 
-    /// Consume frozen funds (order filled)
-    pub fn consume_frozen(&mut self, amount: u64) -> Result<(), BalanceError> {
-        self.frozen = self.frozen
-            .checked_sub(amount)
-            .ok_or(BalanceError::InsufficientFrozen)?;
-
-        self.version += 1;
-        Ok(())
-    }
-
-    /// Apply speculative credit (hot path)
-    pub fn apply_speculative_credit(&mut self, amount: u64) -> Result<(), BalanceError> {
-        self.speculative = self.speculative
-            .checked_add(amount)
-            .ok_or(BalanceError::Overflow)?;
-
-        Ok(())
-    }
-
-    /// Confirm speculative credit (cold path reconciliation)
-    pub fn confirm_speculative(&mut self, amount: u64) -> Result<(), BalanceError> {
-        self.speculative = self.speculative
-            .checked_sub(amount)
-            .ok_or(BalanceError::InsufficientSpeculative)?;
-
-        self.available = self.available
-            .checked_add(amount)
-            .ok_or(BalanceError::Overflow)?;
-
-        self.version += 1;
-        Ok(())
-    }
-
-    /// Getters
-    pub fn available(&self) -> u64 { self.available }
-    pub fn frozen(&self) -> u64 { self.frozen }
-    pub fn speculative(&self) -> u64 { self.speculative }
-    pub fn total(&self) -> u64 { self.available + self.frozen + self.speculative }
+    pub fn unfrozen(&mut self, amount: u64) -> Result<(), &'static str> { ... }
+    pub fn spend_frozen(&mut self, amount: u64) -> Result<(), &'static str> { ... }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum BalanceError {
-    InsufficientBalance,
-    InsufficientFrozen,
-    InsufficientSpeculative,
-    Overflow,
+pub struct UserAccount {
+    pub user_id: UserId,
+    pub assets: Vec<(AssetId, Balance)>,  // Per-asset balances
 }
 ```
 
-**Acceptance Criteria**:
-- [ ] All methods use checked arithmetic
-- [ ] Unit tests for overflow/underflow scenarios
-- [ ] Unit tests for normal operations
+**Status**: ✅ ALREADY EXISTS
 
-**Status**: 📋 NOT STARTED
+**Note**: UBSCore should **reuse** this existing code, not duplicate it.
+
+---
+
+### Task 9.2b: Add `speculative` field to Balance (OPTIONAL)
+
+If hot path speculative credits are needed, extend the existing `Balance`:
+
+```rust
+// Extension to existing Balance struct
+pub struct Balance {
+    pub avail: u64,
+    pub frozen: u64,
+    pub speculative: u64,  // NEW: Hot path credits
+    pub version: u64,
+}
+```
+
+**Status**: 📋 NOT STARTED (optional for MVP)
 
 ---
 
