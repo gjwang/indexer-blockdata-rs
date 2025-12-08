@@ -243,6 +243,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         };
+        let t_parse = start.elapsed();
 
         // 1. VALIDATE FIRST (cheap, no I/O)
         if let Err(reason) = self.ubs_core.validate_order(&order) {
@@ -256,8 +257,10 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             self.stats.rejected += 1;
             return;
         }
+        let t_validate = start.elapsed();
 
         // 2. WAL APPEND (only for valid orders)
+        let t_wal_append_start = Instant::now();
         if let Ok(payload) = bincode::serialize(&order) {
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
             if let Err(e) = self.wal.append(&entry) {
@@ -267,11 +270,14 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         }
+        let wal_append_us = t_wal_append_start.elapsed().as_micros();
 
         // 3. WAL FLUSH (durability guarantee)
+        let t_wal_flush_start = Instant::now();
         if let Err(e) = self.wal.flush() {
             error!("WAL flush failed: {:?}", e);
         }
+        let wal_flush_us = t_wal_flush_start.elapsed().as_micros();
 
         // 4. Send accept response
         self.send_response(order.order_id, true, 0);
@@ -287,14 +293,27 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             let _ = producer.send(record, Duration::from_secs(0));
         }
 
-        // Track latency
-        let elapsed_us = start.elapsed().as_micros() as u64;
-        self.stats.latency_sum_us += elapsed_us;
-        if elapsed_us < self.stats.latency_min_us {
-            self.stats.latency_min_us = elapsed_us;
+        let total_us = start.elapsed().as_micros();
+
+        // Log profile every 100th order
+        if self.stats.received % 100 == 0 {
+            log::info!(
+                "[PROFILE] parse={}µs validate={}µs wal_append={}µs wal_flush={}µs total={}µs",
+                t_parse.as_micros(),
+                (t_validate - t_parse).as_micros(),
+                wal_append_us,
+                wal_flush_us,
+                total_us
+            );
         }
-        if elapsed_us > self.stats.latency_max_us {
-            self.stats.latency_max_us = elapsed_us;
+
+        // Track latency
+        self.stats.latency_sum_us += total_us as u64;
+        if (total_us as u64) < self.stats.latency_min_us {
+            self.stats.latency_min_us = total_us as u64;
+        }
+        if (total_us as u64) > self.stats.latency_max_us {
+            self.stats.latency_max_us = total_us as u64;
         }
     }
 }
