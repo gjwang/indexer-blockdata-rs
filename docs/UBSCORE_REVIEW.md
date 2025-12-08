@@ -249,28 +249,19 @@ impl DeduplicationGuard {
 
 
 
-### 2. ✅ Graceful Degradation (Gateway Handles Rate Limiting)
+### 2. ✅ Graceful Degradation (Split Responsibility)
 
-**Design Decision**: Rate limiting belongs at the **Gateway**, not UBSCore.
+**Design Decision**:
+- **Rate limiting** → Gateway (per-user, per-IP)
+- **Pending queue check** → UBSCore (backpressure)
 
-**Why Gateway**:
-- First line of defense
-- Can reject before serialization overhead
-- Has client connection context (IP, session)
-- Can apply per-user, per-IP, global limits
-
-**Gateway Responsibility**:
+**Gateway Responsibility (Rate Limiting)**:
 ```rust
 impl Gateway {
     fn on_order_request(&mut self, client: &Client, order: Order) -> Result<(), RejectReason> {
-        // 1. Per-user rate limit
+        // Per-user rate limit (Gateway has client context)
         if self.rate_limiter.is_exceeded(client.user_id) {
             return Err(RejectReason::RateLimited);
-        }
-
-        // 2. Global backpressure (optional)
-        if self.upstream_queue_depth > HIGH_WATER_MARK {
-            return Err(RejectReason::SystemBusy);
         }
 
         // Forward to UBSCore...
@@ -278,7 +269,27 @@ impl Gateway {
 }
 ```
 
-**UBSCore Responsibility**: Just process orders - Gateway already filtered.
+**UBSCore Responsibility (Pending Queue Check)**:
+```rust
+impl UBSCore {
+    fn accept_order(&mut self, order: Order) -> Result<(), RejectReason> {
+        // Backpressure: Check pending queue depth
+        if self.pending_queue.len() > HIGH_WATER_MARK {
+            self.metrics.increment("order.rejected.backpressure");
+            return Err(RejectReason::SystemBusy);
+        }
+
+        // Continue with balance check, dedup, etc...
+    }
+}
+```
+
+**Why This Split**:
+
+| Check | Where | Reason |
+|-------|-------|--------|
+| Rate limit | Gateway | Has user/IP context |
+| Queue depth | UBSCore | Knows its own capacity |
 
 
 ### 3. ⚠️ Missing: Explicit Consistency Model
