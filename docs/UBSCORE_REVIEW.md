@@ -249,34 +249,37 @@ impl DeduplicationGuard {
 
 
 
-### 2. ⚠️ Missing: Graceful Degradation Under Load
+### 2. ✅ Graceful Degradation (Gateway Handles Rate Limiting)
 
-**Current Design**: No explicit backpressure or load shedding.
+**Design Decision**: Rate limiting belongs at the **Gateway**, not UBSCore.
 
-**Problem**: Under extreme load, what happens?
-- Gateway queues grow unbounded?
-- UBSCore rejects orders silently?
-- System crashes?
+**Why Gateway**:
+- First line of defense
+- Can reject before serialization overhead
+- Has client connection context (IP, session)
+- Can apply per-user, per-IP, global limits
 
-**Recommended Fix**:
+**Gateway Responsibility**:
 ```rust
-impl UBSCore {
-    fn accept_order(&mut self, order: Order) -> Result<(), RejectReason> {
-        // 1. Check queue depth
-        if self.pending_queue.len() > HIGH_WATER_MARK {
-            self.metrics.increment("order.rejected.backpressure");
-            return Err(RejectReason::SystemBusy);
-        }
-
-        // 2. Apply per-user rate limiting
-        if self.rate_limiter.is_exceeded(order.user_id) {
+impl Gateway {
+    fn on_order_request(&mut self, client: &Client, order: Order) -> Result<(), RejectReason> {
+        // 1. Per-user rate limit
+        if self.rate_limiter.is_exceeded(client.user_id) {
             return Err(RejectReason::RateLimited);
         }
 
-        // Continue normal processing...
+        // 2. Global backpressure (optional)
+        if self.upstream_queue_depth > HIGH_WATER_MARK {
+            return Err(RejectReason::SystemBusy);
+        }
+
+        // Forward to UBSCore...
     }
 }
 ```
+
+**UBSCore Responsibility**: Just process orders - Gateway already filtered.
+
 
 ### 3. ⚠️ Missing: Explicit Consistency Model
 
