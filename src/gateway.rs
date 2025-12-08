@@ -319,6 +319,7 @@ async fn create_order(
     Query(params): Query<CreateOrderParams>,
     Json(client_order): Json<ClientOrder>,
 ) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
+    let start = std::time::Instant::now();
     let user_id = params.user_id;
 
     // 1. Convert ClientOrder → InternalOrder
@@ -329,16 +330,20 @@ async fn create_order(
         &state.snowflake_gen,
         user_id,
     )?;
+    let convert_time = start.elapsed();
 
     // 2. Validate order via UBSCore (synchronous - no Kafka!)
+    let validate_start = std::time::Instant::now();
     let validation_result = {
         let mut ubs_core = state.ubs_core.write().await;
         ubs_core.process_order_durable(internal_order.clone())
     };
+    let validate_time = validate_start.elapsed();
 
     match validation_result {
         Ok(()) => {
             // 3. Order APPROVED - Forward to ME via Kafka
+            let kafka_start = std::time::Instant::now();
             let payload = bincode::serialize(&internal_order).unwrap();
             let key = order_id.to_string();
 
@@ -351,10 +356,15 @@ async fn create_order(
                 // TODO: Handle this case (retry, rollback lock, etc.)
                 return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Forward failed: {}", e)));
             }
+            let kafka_time = kafka_start.elapsed();
 
-            println!(
-                "✅ Order {} ACCEPTED (user={}) → forwarded to ME",
-                order_id, user_id
+            log::info!(
+                "[LATENCY] order_id={} convert={}µs validate+wal={}µs kafka={}µs total={}µs",
+                order_id,
+                convert_time.as_micros(),
+                validate_time.as_micros(),
+                kafka_time.as_micros(),
+                start.elapsed().as_micros()
             );
 
             Ok(Json(ApiResponse::success(OrderResponseData {
@@ -365,9 +375,12 @@ async fn create_order(
         }
         Err(reason) => {
             // 4. Order REJECTED - Return immediately, no Kafka
-            println!(
-                "❌ Order {} REJECTED (user={}) reason={:?}",
-                order_id, user_id, reason
+            log::warn!(
+                "[LATENCY] order_id={} REJECTED convert={}µs validate={}µs reason={:?}",
+                order_id,
+                convert_time.as_micros(),
+                validate_time.as_micros(),
+                reason
             );
 
             // Return rejection with reason
