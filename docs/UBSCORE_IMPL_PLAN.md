@@ -120,58 +120,56 @@ pub struct Balance {
 **File**: `src/ubs_core/order.rs`
 
 ```rust
-/// Order cost is calculated internally, NOT from Gateway
+/// Order for internal processing
+/// Gateway converts decimals → raw u64 BEFORE sending to UBSCore
 #[derive(Debug, Clone)]
 pub struct Order {
     pub order_id: HalfUlid,
-    pub user_id: u64,
+    pub user_id: UserId,
     pub symbol_id: u32,
     pub side: Side,
-    pub price: u64,      // Fixed-point (10^8)
-    pub quantity: u64,   // Fixed-point (10^8)
+    pub price: u64,      // Raw u64 (Gateway already scaled)
+    pub qty: u64,        // Raw u64 (Gateway already scaled)
     pub order_type: OrderType,
 }
 
 impl Order {
-    /// Calculate order cost internally (SECURITY: never trust Gateway)
+    /// Calculate order cost internally (SECURITY: never trust Gateway's cost field)
+    ///
+    /// UBSCore uses raw u64 - Gateway handles decimal scaling
+    /// This is fast, simple, robust - pure state machine
     pub fn calculate_cost(&self) -> u64 {
         match self.side {
             Side::Buy => {
-                // Buy: pay quote asset (price × quantity)
-                // Using checked_mul to prevent overflow
+                // Buy: pay quote asset (price × qty)
                 self.price
-                    .checked_mul(self.quantity)
-                    .map(|v| v / PRICE_DECIMALS)
+                    .checked_mul(self.qty)
                     .unwrap_or(u64::MAX) // Overflow = reject
             }
             Side::Sell => {
-                // Sell: pay base asset (quantity)
-                self.quantity
+                // Sell: pay base asset (qty)
+                self.qty
             }
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Side {
-    Buy,
-    Sell,
-}
+pub enum Side { Buy, Sell }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum OrderType {
-    Limit,
-    Market,
-    // Future: StopLimit, etc.
-}
-
-const PRICE_DECIMALS: u64 = 100_000_000; // 10^8
+pub enum OrderType { Limit, Market }
 ```
 
+**Key Design**:
+- **No decimals in UBSCore** - Gateway handles scaling
+- **Raw u64 everywhere** - simple, fast, robust
+- **Pure state machine** - no floating point, no conversion
+
 **Acceptance Criteria**:
-- [ ] Cost calculated from price × quantity
-- [ ] Overflow handling (return MAX to cause rejection)
-- [ ] Unit tests for various scenarios
+- [x] Cost = price × qty (raw u64)
+- [x] Overflow → u64::MAX → reject
+- [ ] Unit tests
 
 **Status**: 📋 NOT STARTED
 
