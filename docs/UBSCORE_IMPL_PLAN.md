@@ -470,11 +470,30 @@ fn test_vip_level_capped() {
 | **Gateway** | Scale conversion, validate per-asset limits |
 | **UBSCore** | Only check: value ≤ i64::MAX |
 
-**Why i64::MAX?**
-- ScyllaDB BIGINT is signed i64
-- Values > i64::MAX would appear negative when read back
-- i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
-- More than enough for any asset at any decimal precision
+**🚨 CRITICAL: Maximum Decimals Constraint**
+
+```
+i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
+
+| Decimals | Scale      | Max Balance   | Enough?     |
+|----------|------------|---------------|-------------|
+| 18       | 10^18      | 9.2 units     | ❌ NO!      |
+| 12       | 10^12      | 9.2 million   | ⚠️ Maybe    |
+| 8        | 10^8       | 92 billion    | ✅ Yes      |
+| 6        | 10^6       | 9.2 trillion  | ✅ Yes      |
+
+⚠️ ETH with 18 decimals: can only hold 9.2 ETH max!
+✅ ETH with 8 decimals: can hold 92 billion ETH max
+```
+
+**Gateway MUST**:
+- Configure max decimals per asset (recommend ≤ 8)
+- For ETH: use 8 decimals, NOT 18
+- Blockchain uses 18 decimals (wei), but CEX uses 8
+
+**Why max 8-12 decimals?**
+- Sub-cent precision: 8 decimals = 0.00000001 (enough)
+- Large balances: 92 billion units fits in i64
 
 ```rust
 use thiserror::Error;
