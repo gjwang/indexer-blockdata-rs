@@ -68,7 +68,7 @@ fn main() {
 fn run_aeron_service() {
     info!("🚀 UBSCore Service starting (Aeron mode)");
 
-    // --- Initialize WAL (mmap-based for low latency) ---
+    // --- Initialize WAL (mmap-based with sync flush for durability) ---
     let home = std::env::var("HOME").expect("HOME not set");
     let data_dir = PathBuf::from(home).join("ubscore_data");
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
