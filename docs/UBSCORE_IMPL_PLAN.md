@@ -145,10 +145,15 @@ fn test_order_clone() {
 
 **File**: `src/ubs_core/order.rs` (extend)
 
+**🚨 Internal calculations must NOT overflow u64**
+- Use `checked_mul` to detect overflow
+- Return `u64::MAX` on overflow → order rejected later
+
 ```rust
 impl InternalOrder {
     pub fn calculate_cost(&self) -> u64 {
         match self.side {
+            // checked_mul: returns None if overflow, then reject
             Side::Buy => self.price.checked_mul(self.qty).unwrap_or(u64::MAX),
             Side::Sell => self.qty,
         }
