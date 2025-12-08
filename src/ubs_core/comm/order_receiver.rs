@@ -1,10 +1,14 @@
 //! Order receiver from Gateway via Aeron IPC
 //!
 //! Subscribes to order requests and delivers them to UBSCore.
+//!
+//! NOTE: This module requires the 'aeron' feature.
+//! The rusteron API requires implementing specific traits for handlers.
 
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use rusteron_client::*;
 
@@ -52,7 +56,7 @@ impl OrderMessage {
         let side = match self.side {
             0 => Side::Buy,
             1 => Side::Sell,
-            _ => return Err(RejectReason::InvalidSymbol), // Reuse for invalid side
+            _ => return Err(RejectReason::InvalidSymbol),
         };
 
         let order_type = match self.order_type {
@@ -90,73 +94,36 @@ impl OrderReceiver {
         self.running.clone()
     }
 
-    /// Start receiving orders (blocking)
-    /// Calls the handler for each order received
-    pub fn start<F>(&self, mut handler: F) -> Result<(), String>
-    where
-        F: FnMut(InternalOrder) -> Result<(), RejectReason>,
-    {
-        self.running.store(true, Ordering::SeqCst);
-
-        // Create Aeron context and client
-        let ctx = AeronContext::new().map_err(|e| format!("Aeron context error: {:?}", e))?;
-
-        let aeron = Aeron::new(&ctx).map_err(|e| format!("Aeron client error: {:?}", e))?;
-
-        aeron.start().map_err(|e| format!("Aeron start error: {:?}", e))?;
-
-        // Subscribe to orders channel
-        let channel = CString::new(self.config.channel.as_str()).unwrap();
-        let subscription = aeron
-            .add_subscription(
-                &channel,
-                self.config.orders_in_stream,
-                Handlers::no_available_image_handler(),
-                Handlers::no_unavailable_image_handler(),
-            )
-            .map_err(|e| format!("Subscription error: {:?}", e))?;
-
-        log::info!(
-            "OrderReceiver: subscribed to {} stream {}",
-            self.config.channel,
-            self.config.orders_in_stream
-        );
-
-        // Fragment handler
-        let fragment_handler = move |buffer: &[u8], _header: AeronHeader| {
-            if let Some(msg) = OrderMessage::from_bytes(buffer) {
-                match msg.to_internal_order() {
-                    Ok(order) => {
-                        if let Err(reason) = handler(order) {
-                            log::warn!("Order rejected: {:?}", reason);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("Invalid order message: {:?}", e);
-                    }
-                }
-            }
-        };
-
-        let (mut closure, _holder) =
-            Handler::leak_with_fragment_assembler(fragment_handler).unwrap();
-
-        // Poll loop
-        while self.running.load(Ordering::Relaxed) {
-            let _ = subscription.poll(Some(&mut closure), 10);
-
-            if !self.config.busy_spin {
-                std::thread::yield_now();
-            }
-        }
-
-        log::info!("OrderReceiver: stopped");
-        Ok(())
+    /// Get config
+    pub fn config(&self) -> &AeronConfig {
+        &self.config
     }
 
     /// Stop the receiver
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
+    }
+}
+
+/// No-op handler for available image events
+pub struct AeronNoAvailableImageHandler;
+impl AeronAvailableImageCallback for AeronNoAvailableImageHandler {
+    fn handle_aeron_on_available_image(
+        &mut self,
+        _subscription: AeronSubscription,
+        _image: AeronImage,
+    ) {
+    }
+}
+
+/// No-op handler for unavailable image events
+pub struct AeronNoUnavailableImageHandler;
+impl AeronUnavailableImageCallback for AeronNoUnavailableImageHandler {
+    fn handle_aeron_on_unavailable_image(
+        &mut self,
+        _subscription: AeronSubscription,
+        _image: AeronImage,
+    ) {
     }
 }
 
@@ -190,7 +157,7 @@ mod tests {
             order_id: 12345,
             user_id: 1001,
             symbol_id: 1,
-            side: 0, // Buy
+            side: 0,
             order_type: 0,
             price: 50000,
             qty: 100,

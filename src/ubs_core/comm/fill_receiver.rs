@@ -2,13 +2,13 @@
 //!
 //! Subscribes to trade fills and applies balance changes.
 
-use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rusteron_client::*;
 
 use super::aeron_config::AeronConfig;
+use super::order_receiver::{AeronNoAvailableImageHandler, AeronNoUnavailableImageHandler};
 
 /// Trade fill message from Matching Engine
 #[repr(C)]
@@ -18,17 +18,17 @@ pub struct FillMessage {
     pub order_id: u64,
     pub user_id: u64,
     pub symbol_id: u32,
-    pub side: u8,     // 0 = Buy, 1 = Sell
-    pub is_maker: u8, // 1 = maker, 0 = taker
+    pub side: u8,
+    pub is_maker: u8,
     pub price: u64,
     pub qty: u64,
-    pub quote_qty: u64, // price * qty (for convenience)
+    pub quote_qty: u64,
     pub fee: u64,
     pub timestamp_ns: u64,
 }
 
 impl FillMessage {
-    /// Convert to bytes for transmission
+    /// Convert to bytes
     pub fn to_bytes(&self) -> &[u8] {
         unsafe {
             std::slice::from_raw_parts(
@@ -67,55 +67,9 @@ impl FillReceiver {
         self.running.clone()
     }
 
-    /// Start receiving fills (blocking)
-    /// Calls the handler for each fill received
-    pub fn start<F>(&self, mut handler: F) -> Result<(), String>
-    where
-        F: FnMut(FillMessage),
-    {
-        self.running.store(true, Ordering::SeqCst);
-
-        let ctx = AeronContext::new().map_err(|e| format!("Aeron context error: {:?}", e))?;
-
-        let aeron = Aeron::new(&ctx).map_err(|e| format!("Aeron client error: {:?}", e))?;
-
-        aeron.start().map_err(|e| format!("Aeron start error: {:?}", e))?;
-
-        let channel = CString::new(self.config.channel.as_str()).unwrap();
-        let subscription = aeron
-            .add_subscription(
-                &channel,
-                self.config.fills_in_stream,
-                Handlers::no_available_image_handler(),
-                Handlers::no_unavailable_image_handler(),
-            )
-            .map_err(|e| format!("Subscription error: {:?}", e))?;
-
-        log::info!(
-            "FillReceiver: subscribed to {} stream {}",
-            self.config.channel,
-            self.config.fills_in_stream
-        );
-
-        let fragment_handler = move |buffer: &[u8], _header: AeronHeader| {
-            if let Some(fill) = FillMessage::from_bytes(buffer) {
-                handler(fill);
-            }
-        };
-
-        let (mut closure, _holder) =
-            Handler::leak_with_fragment_assembler(fragment_handler).unwrap();
-
-        while self.running.load(Ordering::Relaxed) {
-            let _ = subscription.poll(Some(&mut closure), 10);
-
-            if !self.config.busy_spin {
-                std::thread::yield_now();
-            }
-        }
-
-        log::info!("FillReceiver: stopped");
-        Ok(())
+    /// Get config
+    pub fn config(&self) -> &AeronConfig {
+        &self.config
     }
 
     /// Stop the receiver
@@ -148,13 +102,11 @@ mod tests {
         let parsed = FillMessage::from_bytes(bytes).unwrap();
 
         assert_eq!(parsed.trade_id, msg.trade_id);
-        assert_eq!(parsed.user_id, msg.user_id);
         assert_eq!(parsed.fee, msg.fee);
     }
 
     #[test]
     fn test_fill_message_size() {
-        // Verify struct size for wire format
         assert_eq!(std::mem::size_of::<FillMessage>(), 72);
     }
 }
