@@ -117,7 +117,8 @@ pub struct AppState {
     pub db: Option<SettlementDb>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
     /// UBSCore for synchronous order validation (embedded, no RPC)
-    pub ubs_core: Arc<tokio::sync::RwLock<crate::ubs_core::UBSCore<crate::ubs_core::SpotRiskModel>>>,
+    /// MUST be Mutex (not RwLock) - UBSCore is single-threaded, one request at a time!
+    pub ubs_core: Arc<tokio::sync::Mutex<crate::ubs_core::UBSCore<crate::ubs_core::SpotRiskModel>>>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -335,7 +336,7 @@ async fn create_order(
     // 2. Validate order via UBSCore (synchronous - no Kafka!)
     let validate_start = std::time::Instant::now();
     let validation_result = {
-        let mut ubs_core = state.ubs_core.write().await;
+        let mut ubs_core = state.ubs_core.lock().await;
         ubs_core.process_order_durable(internal_order.clone())
     };
     let validate_time = validate_start.elapsed();

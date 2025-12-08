@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use tokio::sync::RwLock;
+use tokio::sync::Mutex as TokioMutex;
 
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::gateway::{create_app, AppState, OrderPublisher};
@@ -149,7 +149,7 @@ async fn main() {
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
         funding_account,
-        ubs_core: Arc::new(RwLock::new(ubs_core)),
+        ubs_core: Arc::new(TokioMutex::new(ubs_core)),
     });
 
     let app = create_app(state);
