@@ -107,8 +107,8 @@ mod tests {
     }
 
     #[test]
-    fn bench_ubscore_process_order_rejection() {
-        // Benchmark order processing (rejection path - no account)
+    fn bench_ubscore_validate_order_rejection() {
+        // Benchmark order validation (rejection path - no account)
         let mut core = UBSCore::new(SpotRiskModel);
         let now =
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
@@ -131,7 +131,7 @@ mod tests {
                 qty: 100,
                 order_type: OrderType::Limit,
             };
-            let result = core.process_order(order);
+            let result = core.validate_order(&order);
             // Should fail on AccountNotFound (after dedup)
             assert!(result.is_err());
         }
@@ -139,10 +139,10 @@ mod tests {
 
         let avg_ns = elapsed / BENCH_ITERATIONS as u64;
         let avg_us = avg_ns / 1000;
-        println!("UBSCore process_order (rejection): {} ns ({} µs) per order", avg_ns, avg_us);
+        println!("UBSCore validate_order (rejection): {} ns ({} µs) per order", avg_ns, avg_us);
 
         // Target: < 50µs
-        assert!(avg_us < 50, "Order processing too slow: {} µs", avg_us);
+        assert!(avg_us < 50, "Order validation too slow: {} µs", avg_us);
     }
 
     #[test]
@@ -158,7 +158,7 @@ mod tests {
         // Process as many orders as possible in 100ms
         loop {
             let order = make_order(now, (processed % 8192) as u16, processed);
-            let _ = core.process_order(order);
+            let _ = core.validate_order(&order);
             processed += 1;
 
             if timer.elapsed_us() > 100_000 {

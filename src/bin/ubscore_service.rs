@@ -146,14 +146,14 @@ impl UBSCoreService {
         Ok(())
     }
 
-    /// Process an incoming order
-    async fn process_order(&self, order: InternalOrder) -> Result<(), RejectReason> {
+    /// Validate an incoming order
+    async fn validate_order(&self, order: &InternalOrder) -> Result<(), RejectReason> {
         let timer = LatencyTimer::start();
 
         self.metrics.record_received();
 
         let mut core = self.core.write().await;
-        let result = core.process_order(order);
+        let result = core.validate_order(order);
 
         let latency_ns = timer.elapsed_ns();
 
@@ -413,11 +413,11 @@ async fn run_processing_loop(
                             let wal_latency_us = wal_timer.elapsed_us();
                             pending_wal_flush += 1;
 
-                            // --- Process Order ---
+                            // --- Validate Order ---
                             let process_timer = LatencyTimer::start();
                             let order_id = order.order_id;
 
-                            match service.process_order(order.clone()).await {
+                            match service.validate_order(&order).await {
                                 Ok(()) => {
                                     let process_latency_us = process_timer.elapsed_us();
                                     total_accepted += 1;

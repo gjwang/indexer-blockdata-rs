@@ -261,7 +261,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let order_id = order.order_id;
 
         // 1. VALIDATE FIRST (cheap, no I/O)
-        if let Err(reason) = self.ubs_core.process_order(order.clone()) {
+        if let Err(reason) = self.ubs_core.validate_order(&order) {
             let reason_code = match reason {
                 RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
                 RejectReason::DuplicateOrderId => reason_codes::DUPLICATE_ORDER_ID,
