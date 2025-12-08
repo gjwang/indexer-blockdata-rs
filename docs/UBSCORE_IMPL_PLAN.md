@@ -303,6 +303,7 @@ pub enum RejectReason {
     AccountNotFound,
     InvalidSymbol,
     OrderCostOverflow,
+    SystemBusy,  // Backpressure: pending queue exceeded
 }
 ```
 
@@ -368,11 +369,15 @@ impl RiskModel for SpotRiskModel {
 
 ```rust
 use std::collections::HashMap;
+use std::collections::VecDeque;
+
+const HIGH_WATER_MARK: usize = 10_000;  // Backpressure threshold
 
 pub struct UBSCore<R: RiskModel> {
     // State
     accounts: HashMap<u64, Account>,
     dedup_guard: DeduplicationGuard,
+    pending_queue: VecDeque<Order>,  // For backpressure check
 
     // Logic
     risk_model: R,
@@ -386,6 +391,7 @@ impl<R: RiskModel> UBSCore<R> {
         Self {
             accounts: HashMap::new(),
             dedup_guard: DeduplicationGuard::new(),
+            pending_queue: VecDeque::new(),
             risk_model,
             is_replay_mode: false,
         }
@@ -393,6 +399,11 @@ impl<R: RiskModel> UBSCore<R> {
 
     /// Process incoming order
     pub fn process_order(&mut self, order: Order) -> Result<(), RejectReason> {
+        // 0. BACKPRESSURE CHECK (pending queue depth)
+        if self.pending_queue.len() > HIGH_WATER_MARK {
+            return Err(RejectReason::SystemBusy);
+        }
+
         // 1. Deduplication check
         let now = if self.is_replay_mode {
             order.order_id.timestamp_ms()
