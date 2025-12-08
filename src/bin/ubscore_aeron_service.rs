@@ -165,7 +165,11 @@ fn run_aeron_service() {
     let mut orders_received = 0u64;
     let mut orders_accepted = 0u64;
     let mut orders_rejected = 0u64;
+    let mut latency_sum_us = 0u64;
+    let mut latency_min_us = u64::MAX;
+    let mut latency_max_us = 0u64;
     let mut last_stats = Instant::now();
+    let mut last_received = 0u64;
 
     loop {
         // Poll for incoming orders
@@ -177,6 +181,9 @@ fn run_aeron_service() {
             orders_received: &mut orders_received,
             orders_accepted: &mut orders_accepted,
             orders_rejected: &mut orders_rejected,
+            latency_sum_us: &mut latency_sum_us,
+            latency_min_us: &mut latency_min_us,
+            latency_max_us: &mut latency_max_us,
         };
 
         let handler_wrapped = Handler::leak(handler);
@@ -184,11 +191,24 @@ fn run_aeron_service() {
 
         // Print stats every 10 seconds
         if last_stats.elapsed() > Duration::from_secs(10) {
-            info!(
-                "[STATS] received={} accepted={} rejected={}",
-                orders_received, orders_accepted, orders_rejected
-            );
+            let elapsed_secs = last_stats.elapsed().as_secs_f64();
+            let orders_in_period = orders_received - last_received;
+            let qps = orders_in_period as f64 / elapsed_secs;
+
+            if orders_received > 0 && latency_min_us < u64::MAX {
+                let avg_us = latency_sum_us / orders_received;
+                info!(
+                    "[STATS] received={} accepted={} rejected={} qps={:.1} latency(µs): min={} avg={} max={}",
+                    orders_received, orders_accepted, orders_rejected, qps, latency_min_us, avg_us, latency_max_us
+                );
+            } else {
+                info!(
+                    "[STATS] received={} accepted={} rejected={} qps={:.1}",
+                    orders_received, orders_accepted, orders_rejected, qps
+                );
+            }
             last_stats = Instant::now();
+            last_received = orders_received;
         }
 
         // Small sleep to avoid busy-spin
@@ -205,11 +225,16 @@ struct OrderHandler<'a> {
     orders_received: &'a mut u64,
     orders_accepted: &'a mut u64,
     orders_rejected: &'a mut u64,
+    // Latency tracking
+    latency_sum_us: &'a mut u64,
+    latency_min_us: &'a mut u64,
+    latency_max_us: &'a mut u64,
 }
 
 #[cfg(feature = "aeron")]
 impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
+        let start = Instant::now();
         *self.orders_received += 1;
 
         // Parse order message
@@ -275,6 +300,16 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 self.send_response(order.order_id, false, reason_code);
                 *self.orders_rejected += 1;
             }
+        }
+
+        // Track latency
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        *self.latency_sum_us += elapsed_us;
+        if elapsed_us < *self.latency_min_us {
+            *self.latency_min_us = elapsed_us;
+        }
+        if elapsed_us > *self.latency_max_us {
+            *self.latency_max_us = elapsed_us;
         }
     }
 }
