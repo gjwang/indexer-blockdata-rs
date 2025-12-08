@@ -21,7 +21,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use fetcher::configure::{self, expand_tilde, AppConfig};
 use fetcher::ubs_core::{
     MmapWal, InternalOrder, OrderType, RejectReason, Side, SpotRiskModel,
-    UBSCore, WalEntry, WalEntryType,
+    UBSCore, WalEntry, WalEntryType, install_sigbus_handler,
 };
 
 #[cfg(feature = "aeron")]
@@ -67,6 +67,10 @@ fn main() {
 #[cfg(feature = "aeron")]
 fn run_aeron_service() {
     info!("🚀 UBSCore Service starting (Aeron mode)");
+
+    // --- Install SIGBUS handler for mmap safety ---
+    // Catches disk full/I/O errors gracefully instead of silent crash
+    install_sigbus_handler();
 
     // --- Initialize WAL (mmap-based - 10x faster on macOS APFS) ---
     // msync bypasses APFS transaction layer → ~500µs vs ~5ms for fdatasync

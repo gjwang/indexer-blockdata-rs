@@ -4,18 +4,72 @@
 //! The OS handles flushing to disk asynchronously.
 //!
 //! Trade-off:
-//! - Very low latency (~10-100µs per write)
+//! - Very low latency (~500µs per durable write with flush())
 //! - Data in page cache survives process crash
-//! - Data NOT guaranteed to survive power loss/kernel crash
+//! - SIGBUS risk on disk full/I/O error (handled with signal handler)
+//!
+//! SIGBUS Handling:
+//! Call `install_sigbus_handler()` at startup to catch I/O errors gracefully.
 
 use memmap2::{MmapMut, MmapOptions};
 use std::fs::{File, OpenOptions};
 use std::io::Result;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::entry::{WalEntry, WalError};
 
 const DEFAULT_FILE_SIZE: usize = 64 * 1024 * 1024; // 64MB
+
+/// Flag to indicate SIGBUS was received
+static SIGBUS_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+/// Install SIGBUS handler to catch mmap I/O errors gracefully
+///
+/// Without this, a disk full or I/O error during mmap write causes
+/// immediate process termination with no error message.
+///
+/// Call this once at application startup.
+#[cfg(unix)]
+pub fn install_sigbus_handler() {
+    use std::io::Write;
+
+    extern "C" fn sigbus_handler(_sig: libc::c_int) {
+        // Mark that we received SIGBUS
+        SIGBUS_RECEIVED.store(true, Ordering::SeqCst);
+
+        // Write error message (signal-safe: use raw write, not println!)
+        let msg = b"\n[FATAL] SIGBUS: mmap I/O error (disk full or hardware failure)\n";
+        unsafe {
+            libc::write(2, msg.as_ptr() as *const libc::c_void, msg.len());
+        }
+
+        // Exit with error code
+        std::process::exit(74); // EX_IOERR
+    }
+
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = sigbus_handler as usize;
+        sa.sa_flags = libc::SA_SIGINFO;
+
+        if libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut()) != 0 {
+            eprintln!("[WARN] Failed to install SIGBUS handler");
+        } else {
+            log::info!("✅ SIGBUS handler installed for mmap safety");
+        }
+    }
+}
+
+/// Check if SIGBUS was received (for recovery logic)
+pub fn sigbus_occurred() -> bool {
+    SIGBUS_RECEIVED.load(Ordering::SeqCst)
+}
+
+#[cfg(not(unix))]
+pub fn install_sigbus_handler() {
+    // No-op on non-Unix platforms
+}
 
 /// Memory-mapped WAL with async flush
 pub struct MmapWal {
