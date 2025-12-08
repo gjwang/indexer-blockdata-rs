@@ -479,27 +479,34 @@ static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 ## Final Recommendations
 
-### Must Fix Before Production
+### ✅ Accepted (Implement Now)
 
 1. **Add checked arithmetic** for all balance operations
-2. **Implement backpressure** with explicit load shedding
-3. **Add comprehensive metrics** for observability
-4. **Document failure modes** and recovery procedures
-5. **Implement bounded deduplication** window
+   - Use `checked_sub()` and `checked_add()` to prevent overflow/underflow
 
-### Should Fix (High Priority)
+2. **Calculate order cost internally**, not from Gateway
+   - UBSCore calculates cost from price × quantity
+   - Prevents malicious Gateway from sending incorrect cost
 
-6. Calculate order cost internally, not from Gateway
-7. Add explicit consistency guarantees documentation
-8. Implement sharded HashMap for scale
-9. Add per-user rate limiting
+### ✅ Already Addressed in This Review
 
-### Nice to Have (Optimization)
+3. **Bounded deduplication** → halfULID + IndexSet with time window
+4. **Replay mode** → Simulated time approach
 
-10. SIMD batch processing
-11. CPU pinning for hot threads
-12. Huge pages for large state
-13. io_uring for async disk I/O
+### 📋 Future Optimization (Backlog)
+
+| Item | Priority | Notes |
+|------|----------|-------|
+| Backpressure + load shedding | High | Graceful degradation |
+| Comprehensive metrics | High | Observability |
+| Failure modes documentation | Medium | Recovery procedures |
+| Consistency guarantees doc | Medium | SLA definition |
+| Sharded HashMap | Medium | Scale to 1M+ users |
+| Per-user rate limiting | Medium | Abuse prevention |
+| SIMD batch processing | Low | Performance optimization |
+| CPU pinning | Low | Latency optimization |
+| Huge pages | Low | Memory optimization |
+| io_uring | Low | Async disk I/O |
 
 ---
 
