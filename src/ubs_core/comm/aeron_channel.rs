@@ -1,16 +1,20 @@
 //! Generic Aeron IPC Channel
 //!
-//! A payload-agnostic communication channel using Aeron IPC.
-//! The channel doesn't know or care about the message format.
-//! Caller provides: bytes in, gets bytes out.
+//! A **fully payload-agnostic** communication channel using Aeron IPC.
 //!
-//! Features:
-//! - Request/Response correlation by ID
-//! - Dedicated background polling thread
-//! - Async response handling via oneshot channels
+//! The channel:
+//! - Generates its own correlation IDs internally
+//! - Wraps outgoing payloads with correlation ID
+//! - Strips correlation ID from responses
+//! - Caller just sees: send(payload) -> response
+//!
+//! Protocol:
+//! - Outgoing: [8-byte correlation_id LE] + [payload]
+//! - Incoming: [8-byte correlation_id LE] + [response]
 
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -21,7 +25,7 @@ use rusteron_client::*;
 use super::driver::AERON_DIR;
 use super::order_sender::SendError;
 
-/// Response callback type - sends raw bytes back
+/// Response callback type - sends raw response bytes (without correlation header)
 type ResponseTx = Sender<Vec<u8>>;
 
 /// Configuration for Aeron channel
@@ -51,33 +55,16 @@ impl Default for AeronChannelConfig {
     }
 }
 
-/// Trait for extracting correlation ID from response bytes
-/// Implement this for your specific message format
-pub trait CorrelationExtractor: Send + Sync + 'static {
-    /// Extract correlation ID from response bytes
-    /// Returns None if response is invalid
-    fn extract_correlation_id(&self, bytes: &[u8]) -> Option<u64>;
-}
-
-/// Default extractor - assumes first 8 bytes are correlation ID (little-endian)
-pub struct DefaultCorrelationExtractor;
-
-impl CorrelationExtractor for DefaultCorrelationExtractor {
-    fn extract_correlation_id(&self, bytes: &[u8]) -> Option<u64> {
-        if bytes.len() < 8 {
-            return None;
-        }
-        let mut arr = [0u8; 8];
-        arr.copy_from_slice(&bytes[0..8]);
-        Some(u64::from_le_bytes(arr))
-    }
-}
-
 /// Generic Aeron IPC channel for request/response communication
+///
+/// Caller-agnostic: just sends bytes, gets bytes back.
+/// Correlation is handled internally using auto-generated IDs.
 pub struct AeronChannel {
     config: AeronChannelConfig,
     publication: Option<AeronPublication>,
-    /// Channel for registering pending responses (correlation_id, oneshot sender)
+    /// Sequence generator for correlation IDs
+    next_correlation_id: Arc<AtomicU64>,
+    /// Channel for registering pending responses
     pending_tx: Option<Sender<(u64, ResponseTx)>>,
     /// Background polling thread
     _poll_thread: Option<thread::JoinHandle<()>>,
@@ -89,6 +76,7 @@ impl AeronChannel {
         Self {
             config,
             publication: None,
+            next_correlation_id: Arc::new(AtomicU64::new(1)),
             pending_tx: None,
             _poll_thread: None,
         }
@@ -105,11 +93,8 @@ impl AeronChannel {
         })
     }
 
-    /// Connect to Aeron with a custom correlation extractor
-    pub fn connect_with_extractor<E: CorrelationExtractor>(
-        &mut self,
-        extractor: E,
-    ) -> Result<(), SendError> {
+    /// Connect to Aeron
+    pub fn connect(&mut self) -> Result<(), SendError> {
         let ctx = AeronContext::new()
             .map_err(|e| SendError::AeronError(format!("Context failed: {:?}", e)))?;
 
@@ -158,7 +143,7 @@ impl AeronChannel {
 
         // Start background polling thread
         let poll_interval = self.config.poll_interval_us;
-        let poll_thread = Self::start_poll_thread(subscription, pending_rx, extractor, poll_interval);
+        let poll_thread = Self::start_poll_thread(subscription, pending_rx, poll_interval);
 
         self.publication = Some(publication);
         self.pending_tx = Some(pending_tx);
@@ -167,31 +152,23 @@ impl AeronChannel {
         Ok(())
     }
 
-    /// Connect with default correlation extractor (first 8 bytes = ID)
-    pub fn connect(&mut self) -> Result<(), SendError> {
-        self.connect_with_extractor(DefaultCorrelationExtractor)
-    }
-
     /// Start background thread for polling responses
-    fn start_poll_thread<E: CorrelationExtractor>(
+    fn start_poll_thread(
         subscription: AeronSubscription,
         pending_rx: Receiver<(u64, ResponseTx)>,
-        extractor: E,
         poll_interval_us: u64,
     ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             let pending: Arc<Mutex<HashMap<u64, ResponseTx>>> =
                 Arc::new(Mutex::new(HashMap::with_capacity(1024)));
-            let extractor = Arc::new(extractor);
 
-            let handler = GenericResponseHandler {
+            let handler = CorrelationHandler {
                 pending: pending.clone(),
-                extractor: extractor.clone(),
             };
             let handler_wrapped = Handler::leak(handler);
 
             loop {
-                // Check for new pending registrations
+                // Check for new pending registrations (non-blocking)
                 while let Ok((id, tx)) = pending_rx.try_recv() {
                     let mut p = pending.lock().unwrap();
                     p.insert(id, tx);
@@ -206,12 +183,18 @@ impl AeronChannel {
         })
     }
 
-    /// Send bytes and wait for response
-    /// correlation_id: ID that will be matched in the response
-    /// payload: raw bytes to send
+    /// Generate next correlation ID
+    fn next_id(&self) -> u64 {
+        self.next_correlation_id.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Send payload bytes and wait for response bytes
+    ///
+    /// Caller doesn't need to know about correlation - it's handled internally.
+    /// Protocol: sends [8-byte correlation_id] + [payload]
+    ///           expects [8-byte correlation_id] + [response]
     pub fn send_and_receive(
         &self,
-        correlation_id: u64,
         payload: &[u8],
         timeout_ms: u64,
     ) -> Result<Vec<u8>, SendError> {
@@ -221,6 +204,9 @@ impl AeronChannel {
         let pending_tx = self.pending_tx.as_ref()
             .ok_or_else(|| SendError::AeronError("Not connected".into()))?;
 
+        // Generate correlation ID
+        let correlation_id = self.next_id();
+
         // Create response channel
         let (resp_tx, resp_rx) = bounded::<Vec<u8>>(1);
 
@@ -228,23 +214,29 @@ impl AeronChannel {
         pending_tx.send((correlation_id, resp_tx))
             .map_err(|_| SendError::AeronError("Pending channel closed".into()))?;
 
-        // Send payload
+        // Build message: [correlation_id (8 bytes LE)] + [payload]
+        let mut message = Vec::with_capacity(8 + payload.len());
+        message.extend_from_slice(&correlation_id.to_le_bytes());
+        message.extend_from_slice(payload);
+
+        // Send
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
-        let position = publication.offer(payload, handler);
+        let position = publication.offer(&message, handler);
 
         if position <= 0 {
             log::warn!("[AERON_CHANNEL] offer failed: position={}", position);
             return Err(SendError::Unknown(position));
         }
 
-        // Wait for response
+        // Wait for response (response already has correlation stripped by handler)
         match resp_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(SendError::AeronError("Timeout".into())),
         }
     }
 
-    /// Send bytes without waiting for response (fire-and-forget)
+    /// Send payload without waiting for response (fire-and-forget)
+    /// No correlation ID added - pure fire-and-forget
     pub fn send(&self, payload: &[u8]) -> Result<i64, SendError> {
         let publication = self.publication.as_ref()
             .ok_or_else(|| SendError::AeronError("Not connected".into()))?;
@@ -265,24 +257,33 @@ impl AeronChannel {
     }
 }
 
-/// Generic response handler - dispatches to waiting channels
-struct GenericResponseHandler<E: CorrelationExtractor> {
+/// Handler that extracts correlation ID from first 8 bytes and dispatches response
+struct CorrelationHandler {
     pending: Arc<Mutex<HashMap<u64, ResponseTx>>>,
-    extractor: Arc<E>,
 }
 
-impl<E: CorrelationExtractor> AeronFragmentHandlerCallback for GenericResponseHandler<E> {
+impl AeronFragmentHandlerCallback for CorrelationHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        // Extract correlation ID using the provided extractor
-        if let Some(id) = self.extractor.extract_correlation_id(buffer) {
-            let mut pending = self.pending.lock().unwrap();
-            if let Some(tx) = pending.remove(&id) {
-                let _ = tx.send(buffer.to_vec());
-            } else {
-                log::debug!("[AERON_CHANNEL] No pending request for id={}", id);
-            }
+        // Message format: [8-byte correlation_id LE] + [response_payload]
+        if buffer.len() < 8 {
+            log::warn!("[AERON_CHANNEL] Response too short: {} bytes", buffer.len());
+            return;
+        }
+
+        // Extract correlation ID
+        let mut id_bytes = [0u8; 8];
+        id_bytes.copy_from_slice(&buffer[0..8]);
+        let correlation_id = u64::from_le_bytes(id_bytes);
+
+        // Extract response payload (skip correlation header)
+        let response_payload = buffer[8..].to_vec();
+
+        // Dispatch to waiting channel
+        let mut pending = self.pending.lock().unwrap();
+        if let Some(tx) = pending.remove(&correlation_id) {
+            let _ = tx.send(response_payload);
         } else {
-            log::warn!("[AERON_CHANNEL] Failed to extract correlation ID from {} bytes", buffer.len());
+            log::debug!("[AERON_CHANNEL] No pending request for correlation_id={}", correlation_id);
         }
     }
 }
@@ -292,20 +293,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_extractor() {
-        let extractor = DefaultCorrelationExtractor;
-
-        // Valid: 8 bytes
-        let bytes = 12345u64.to_le_bytes();
-        assert_eq!(extractor.extract_correlation_id(&bytes), Some(12345));
-
-        // Invalid: too short
-        assert_eq!(extractor.extract_correlation_id(&[1, 2, 3]), None);
-    }
-
-    #[test]
     fn test_channel_creation() {
         let channel = AeronChannel::ipc(1001, 1002);
         assert!(!channel.is_connected());
+    }
+
+    #[test]
+    fn test_correlation_id_generation() {
+        let channel = AeronChannel::ipc(1001, 1002);
+        let id1 = channel.next_id();
+        let id2 = channel.next_id();
+        assert_eq!(id1, 1);
+        assert_eq!(id2, 2);
     }
 }

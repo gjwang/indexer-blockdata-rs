@@ -28,7 +28,7 @@ pub mod order_receiver;
 pub mod order_sender;
 pub mod response;
 
-pub use aeron_channel::{AeronChannel, AeronChannelConfig, CorrelationExtractor};
+pub use aeron_channel::{AeronChannel, AeronChannelConfig};
 pub use aeron_config::AeronConfig;
 pub use driver::{EmbeddedDriver, AERON_DIR};
 pub use fill_receiver::{FillMessage, FillReceiver};

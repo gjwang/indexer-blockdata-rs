@@ -236,8 +236,20 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let start = Instant::now();
         self.stats.received += 1;
 
-        // Parse order message
-        let order_msg = match OrderMessage::from_bytes(buffer) {
+        // Protocol: [8-byte correlation_id LE] + [order_payload]
+        if buffer.len() < 8 {
+            warn!("Message too short: {} bytes", buffer.len());
+            return;
+        }
+
+        // Extract correlation ID (first 8 bytes)
+        let mut id_bytes = [0u8; 8];
+        id_bytes.copy_from_slice(&buffer[0..8]);
+        let correlation_id = u64::from_le_bytes(id_bytes);
+
+        // Parse order message (remaining bytes)
+        let order_payload = &buffer[8..];
+        let order_msg = match OrderMessage::from_bytes(order_payload) {
             Some(msg) => msg,
             None => {
                 warn!("Invalid order message");
@@ -250,7 +262,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             Ok(o) => o,
             Err(e) => {
                 warn!("Order conversion failed: {:?}", e);
-                self.send_response(order_msg.order_id, false, reason_codes::INVALID_SYMBOL);
+                self.send_response(correlation_id, order_msg.order_id, false, reason_codes::INVALID_SYMBOL);
                 self.stats.rejected += 1;
                 return;
             }
@@ -265,7 +277,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 RejectReason::AccountNotFound => reason_codes::ACCOUNT_NOT_FOUND,
                 _ => reason_codes::INTERNAL_ERROR,
             };
-            self.send_response(order.order_id, false, reason_code);
+            self.send_response(correlation_id, order.order_id, false, reason_code);
             self.stats.rejected += 1;
             return;
         }
@@ -277,7 +289,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
             if let Err(e) = self.wal.append(&entry) {
                 error!("WAL append failed: {:?}", e);
-                self.send_response(order.order_id, false, reason_codes::INTERNAL_ERROR);
+                self.send_response(correlation_id, order.order_id, false, reason_codes::INTERNAL_ERROR);
                 self.stats.rejected += 1;
                 return;
             }
@@ -292,7 +304,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let wal_flush_us = t_wal_flush_start.elapsed().as_micros();
 
         // 4. Send accept response
-        self.send_response(order.order_id, true, 0);
+        self.send_response(correlation_id, order.order_id, true, 0);
         self.stats.accepted += 1;
 
         // 5. Forward to Kafka (async, best-effort)
@@ -332,15 +344,23 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
 
 #[cfg(feature = "aeron")]
 impl<'a> OrderHandler<'a> {
-    fn send_response(&self, order_id: u64, accepted: bool, reason_code: u8) {
+    /// Send response with correlation ID prepended
+    /// Protocol: [8-byte correlation_id LE] + [response_payload]
+    fn send_response(&self, correlation_id: u64, order_id: u64, accepted: bool, reason_code: u8) {
         let resp = if accepted {
             ResponseMessage::accept(order_id)
         } else {
             ResponseMessage::reject(order_id, reason_code)
         };
 
-        let bytes = resp.to_bytes();
+        let resp_bytes = resp.to_bytes();
+
+        // Build message: [correlation_id] + [response_payload]
+        let mut message = Vec::with_capacity(8 + resp_bytes.len());
+        message.extend_from_slice(&correlation_id.to_le_bytes());
+        message.extend_from_slice(&resp_bytes);
+
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
-        let _ = self.publication.offer(bytes, handler);
+        let _ = self.publication.offer(&message, handler);
     }
 }

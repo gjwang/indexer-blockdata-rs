@@ -2,25 +2,16 @@
 //!
 //! High-level client for UBSCore communication.
 //! Built on top of the generic AeronChannel.
+//!
+//! The AeronChannel handles all correlation internally -
+//! this client just sends order bytes and gets response bytes.
 
-use std::time::Duration;
-
-use super::aeron_channel::{AeronChannel, AeronChannelConfig, CorrelationExtractor};
+use super::aeron_channel::{AeronChannel, AeronChannelConfig};
 use super::aeron_config::AeronConfig;
 use super::order_receiver::OrderMessage;
 use super::order_sender::SendError;
 use super::response::ResponseMessage;
 use crate::ubs_core::order::InternalOrder;
-
-/// Correlation extractor for ResponseMessage
-/// Extracts order_id from response bytes
-struct ResponseCorrelationExtractor;
-
-impl CorrelationExtractor for ResponseCorrelationExtractor {
-    fn extract_correlation_id(&self, bytes: &[u8]) -> Option<u64> {
-        ResponseMessage::from_bytes(bytes).map(|r| r.order_id)
-    }
-}
 
 /// Gateway client for UBSCore communication
 /// Uses AeronChannel internally for transport
@@ -46,7 +37,7 @@ impl UbsGatewayClient {
 
     /// Connect to Aeron
     pub fn connect(&mut self) -> Result<(), SendError> {
-        self.channel.connect_with_extractor(ResponseCorrelationExtractor)?;
+        self.channel.connect()?;
         log::info!("[UBS_CLIENT] Connected to Aeron");
         Ok(())
     }
@@ -57,15 +48,14 @@ impl UbsGatewayClient {
         order: &InternalOrder,
         timeout_ms: u64,
     ) -> Result<ResponseMessage, SendError> {
-        // Serialize order
+        // Serialize order (just the order payload, no correlation ID)
         let msg = OrderMessage::from_order(order);
-        let bytes = msg.to_bytes();
-        let order_id = order.order_id;
+        let payload = msg.to_bytes();
 
-        log::debug!("[UBS_CLIENT] Sending order_id={}", order_id);
+        log::debug!("[UBS_CLIENT] Sending order_id={}", order.order_id);
 
-        // Send via generic channel
-        let response_bytes = self.channel.send_and_receive(order_id, &bytes, timeout_ms)?;
+        // Send via channel (channel handles correlation internally)
+        let response_bytes = self.channel.send_and_receive(&payload, timeout_ms)?;
 
         // Parse response
         ResponseMessage::from_bytes(&response_bytes)
