@@ -1,3 +1,13 @@
+//! Order Gateway Server
+//!
+//! HTTP API → Aeron (UBSCore) → Kafka (ME)
+//!
+//! Architecture:
+//! - Gateway HTTP handlers send orders via channel to UBS handler thread
+//! - UBS handler thread uses Aeron to communicate with UBSCore service
+//! - UBSCore service validates and responds
+//! - Gateway returns accept/reject to client
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -5,13 +15,18 @@ use std::time::Duration;
 
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use tokio::sync::Mutex as TokioMutex;
 
 use fetcher::fast_ulid::SnowflakeGenRng;
-use fetcher::gateway::{create_app, AppState, OrderPublisher};
 use fetcher::models::{balance_manager, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
-use fetcher::ubs_core::{SpotRiskModel, UBSCore};
+
+#[cfg(feature = "aeron")]
+use fetcher::gateway::{create_app, AppState, UbsOrderRequest, UbsOrderResponse};
+
+#[cfg(not(feature = "aeron"))]
+use fetcher::gateway::{create_app, AppState};
+
+use fetcher::gateway::OrderPublisher;
 
 struct KafkaPublisher(FutureProducer);
 
@@ -43,7 +58,7 @@ async fn main() {
 
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
-    let symbol_manager = SymbolManager::load_from_db();
+    let symbol_manager = Arc::new(SymbolManager::load_from_db());
 
     let producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &config.kafka.broker)
@@ -70,27 +85,50 @@ async fn main() {
         None
     };
 
-    // --- Initialize UBSCore with WAL (embedded in Gateway) ---
-    let home = std::env::var("HOME").expect("HOME not set");
-    let data_dir = std::path::PathBuf::from(home).join("gateway_data");
-    std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
-    let wal_path = data_dir.join("gateway_ubs.wal");
+    // --- Setup UBS communication channel ---
+    #[cfg(feature = "aeron")]
+    let ubs_order_tx = {
+        use fetcher::ubs_core::comm::{AeronConfig, UbsGatewayClient};
 
-    let mut ubs_core = UBSCore::with_wal(SpotRiskModel, &wal_path)
-        .expect("Failed to initialize UBSCore with WAL");
-    println!("✅ UBSCore WAL at {:?}", wal_path);
+        // Create bounded channel for order requests
+        let (tx, rx) = std::sync::mpsc::sync_channel::<UbsOrderRequest>(1000);
 
-    // --- Create ring buffer for async Kafka publishing ---
-    let order_rx = ubs_core.create_order_queue();
-    println!("✅ Order ring buffer created (capacity: 10,000)");
+        // Spawn UBS handler thread (dedicated thread for Aeron)
+        std::thread::spawn(move || {
+            let mut client = UbsGatewayClient::new(AeronConfig::default());
 
-    // Seed test accounts (development only)
-    // TODO: Replace with proper balance sync from Settlement
-    for user_id in 1001..=1010 {
-        ubs_core.on_deposit(user_id, 1, 100_00000000);      // 100 BTC
-        ubs_core.on_deposit(user_id, 2, 10_000_000_00000000); // 10M USDT
-    }
-    println!("✅ UBSCore initialized with test accounts 1001-1010");
+            // Connect to Aeron
+            if let Err(e) = client.connect() {
+                eprintln!("❌ Failed to connect to UBSCore via Aeron: {:?}", e);
+                return;
+            }
+            println!("✅ Connected to UBSCore via Aeron UDP");
+
+            // Process orders from channel
+            while let Ok(request) = rx.recv() {
+                let response = match client.send_order(&request.order, 100) {
+                    Ok(resp) => UbsOrderResponse {
+                        accepted: resp.is_accepted(),
+                        reason_code: resp.reason_code,
+                    },
+                    Err(e) => {
+                        log::error!("[UBS_HANDLER] Aeron error: {:?}", e);
+                        UbsOrderResponse {
+                            accepted: false,
+                            reason_code: 99, // Internal error
+                        }
+                    }
+                };
+
+                // Send response back (ignore errors if receiver dropped)
+                let _ = request.response_tx.send(response);
+            }
+
+            println!("UBS handler thread exiting");
+        });
+
+        tx
+    };
 
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
     let funding_account = Arc::new(Mutex::new(fetcher::gateway::SimulatedFundingAccount::new()));
@@ -100,43 +138,6 @@ async fn main() {
     // Use validated_orders topic for approved orders → ME
     let validated_orders_topic = "validated_orders".to_string();
 
-    // --- Spawn dedicated Kafka publisher task ---
-    // Drains ring buffer in strict FIFO order, never blocks order processing
-    let producer_for_task: Arc<dyn fetcher::gateway::OrderPublisher> = Arc::new(KafkaPublisher(producer.clone()));
-    let topic_for_task = validated_orders_topic.clone();
-    tokio::spawn(async move {
-        log::info!("[KAFKA_PUBLISHER] Started - draining order queue");
-        loop {
-            match order_rx.recv() {
-                Ok(msg) => {
-                    let kafka_start = std::time::Instant::now();
-                    let key = msg.order_id.to_string();
-                    if let Err(e) = producer_for_task.publish(
-                        topic_for_task.clone(),
-                        key.clone(),
-                        msg.payload,
-                    ).await {
-                        log::error!(
-                            "[KAFKA_ERROR] order_id={} failed: {} (safe in WAL)",
-                            key, e
-                        );
-                    } else {
-                        log::debug!(
-                            "[KAFKA_OK] order_id={} sent in {}µs",
-                            key,
-                            kafka_start.elapsed().as_micros()
-                        );
-                    }
-                }
-                Err(_) => {
-                    log::warn!("[KAFKA_PUBLISHER] Channel closed, shutting down");
-                    break;
-                }
-            }
-        }
-    });
-
-    let symbol_manager = Arc::new(symbol_manager);
     let balance_manager = balance_manager::BalanceManager::new(symbol_manager.clone());
 
     let state = Arc::new(AppState {
@@ -144,18 +145,19 @@ async fn main() {
         balance_manager,
         producer: Arc::new(KafkaPublisher(producer)),
         snowflake_gen,
-        kafka_topic: validated_orders_topic,  // Approved orders → ME
+        kafka_topic: validated_orders_topic,
         balance_topic,
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
         funding_account,
-        ubs_core: Arc::new(TokioMutex::new(ubs_core)),
+        #[cfg(feature = "aeron")]
+        ubs_order_tx,
     });
 
     let app = create_app(state);
 
     println!("🚀 Order Gateway API running on http://localhost:3001");
-    println!("   Flow: HTTP → UBSCore (sync) → Kafka(validated_orders) → ME");
+    println!("   Flow: HTTP → Aeron (UBSCore) → Kafka (ME)");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

@@ -116,9 +116,23 @@ pub struct AppState {
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
-    /// UBSCore for synchronous order validation (embedded, no RPC)
-    /// MUST be Mutex (not RwLock) - UBSCore is single-threaded, one request at a time!
-    pub ubs_core: Arc<tokio::sync::Mutex<crate::ubs_core::UBSCore<crate::ubs_core::SpotRiskModel>>>,
+    /// Channel to send orders to UBSCore handler thread
+    #[cfg(feature = "aeron")]
+    pub ubs_order_tx: std::sync::mpsc::SyncSender<UbsOrderRequest>,
+}
+
+/// Request to UBS handler thread
+#[cfg(feature = "aeron")]
+pub struct UbsOrderRequest {
+    pub order: crate::ubs_core::order::InternalOrder,
+    pub response_tx: tokio::sync::oneshot::Sender<UbsOrderResponse>,
+}
+
+/// Response from UBS handler thread
+#[cfg(feature = "aeron")]
+pub struct UbsOrderResponse {
+    pub accepted: bool,
+    pub reason_code: u8,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -333,51 +347,53 @@ async fn create_order(
     )?;
     let convert_time = start.elapsed();
 
-    // 2. Validate order via UBSCore (synchronous - no Kafka!)
-    let validate_start = std::time::Instant::now();
+    // 2. Validate order via UBSCore service (Aeron UDP)
+    #[cfg(feature = "aeron")]
     let validation_result = {
-        let mut ubs_core = state.ubs_core.lock().await;
-        ubs_core.process_order_durable(internal_order.clone())
-    };
-    let validate_time = validate_start.elapsed();
+        let validate_start = std::time::Instant::now();
 
-    match validation_result {
-        Ok(()) => {
-            // 3. Order APPROVED - WAL confirmed, respond immediately
-            // Kafka publish happens in background (don't block client)
+        // Create oneshot channel for response
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+
+        // Send order to UBS handler thread
+        let request = UbsOrderRequest {
+            order: internal_order.clone(),
+            response_tx,
+        };
+
+        state.ubs_order_tx.send(request)
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "UBS handler not available".to_string()))?;
+
+        // Wait for response
+        let response = response_rx.await
+            .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "UBS response channel closed".to_string()))?;
+
+        let validate_time = validate_start.elapsed();
+
+        if response.accepted {
             let total_time = start.elapsed();
-
             log::info!(
-                "[LATENCY] order_id={} convert={}µs validate+wal={}µs total={}µs (kafka=async)",
-                order_id,
-                convert_time.as_micros(),
-                validate_time.as_micros(),
-                total_time.as_micros()
+                "[LATENCY] order_id={} convert={}µs aeron={}µs total={}µs",
+                order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
             );
-
-            // Order is already queued in UBSCore ring buffer for Kafka publishing
-            // No need to spawn task here - dedicated publisher task handles it
-
             Ok(Json(ApiResponse::success(OrderResponseData {
                 order_id: order_id.to_string(),
                 order_status: OrderStatus::Accepted,
                 cid: client_order.cid,
             })))
+        } else {
+            log::warn!("[LATENCY] order_id={} REJECTED reason_code={}", order_id, response.reason_code);
+            Err((StatusCode::BAD_REQUEST, format!("Order rejected: reason_code={}", response.reason_code)))
         }
-        Err(reason) => {
-            // 4. Order REJECTED - Return immediately, no Kafka
-            log::warn!(
-                "[LATENCY] order_id={} REJECTED convert={}µs validate={}µs reason={:?}",
-                order_id,
-                convert_time.as_micros(),
-                validate_time.as_micros(),
-                reason
-            );
+    };
 
-            // Return rejection with reason
-            Err((StatusCode::BAD_REQUEST, format!("Order rejected: {:?}", reason)))
-        }
-    }
+    #[cfg(not(feature = "aeron"))]
+    let validation_result: Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> = {
+        let _ = (convert_time, internal_order); // Suppress warnings
+        Err((StatusCode::SERVICE_UNAVAILABLE, "Aeron feature not enabled".to_string()))
+    };
+
+    validation_result
 }
 
 async fn get_balance(
