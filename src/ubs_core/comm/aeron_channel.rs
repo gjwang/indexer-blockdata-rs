@@ -188,7 +188,7 @@ impl AeronChannel {
         self.next_correlation_id.fetch_add(1, Ordering::SeqCst)
     }
 
-    /// Send payload bytes and wait for response bytes
+    /// Send payload bytes and wait for response bytes (blocking)
     ///
     /// Caller doesn't need to know about correlation - it's handled internally.
     /// Protocol: sends [8-byte correlation_id] + [payload]
@@ -232,6 +232,54 @@ impl AeronChannel {
         match resp_rx.recv_timeout(Duration::from_millis(timeout_ms)) {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(SendError::AeronError("Timeout".into())),
+        }
+    }
+
+    /// Send payload bytes and wait for response bytes (async)
+    ///
+    /// Same as send_and_receive but uses tokio for .await support.
+    pub async fn send_and_receive_async(
+        &self,
+        payload: &[u8],
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, SendError> {
+        let publication = self.publication.as_ref()
+            .ok_or_else(|| SendError::AeronError("Not connected".into()))?;
+
+        let pending_tx = self.pending_tx.as_ref()
+            .ok_or_else(|| SendError::AeronError("Not connected".into()))?;
+
+        // Generate correlation ID
+        let correlation_id = self.next_id();
+
+        // Create response channel (crossbeam for thread-safety with poll thread)
+        let (resp_tx, resp_rx) = bounded::<Vec<u8>>(1);
+
+        // Register pending BEFORE sending
+        pending_tx.send((correlation_id, resp_tx))
+            .map_err(|_| SendError::AeronError("Pending channel closed".into()))?;
+
+        // Build message: [correlation_id (8 bytes LE)] + [payload]
+        let mut message = Vec::with_capacity(8 + payload.len());
+        message.extend_from_slice(&correlation_id.to_le_bytes());
+        message.extend_from_slice(payload);
+
+        // Send
+        let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
+        let position = publication.offer(&message, handler);
+
+        if position <= 0 {
+            log::warn!("[AERON_CHANNEL] offer failed: position={}", position);
+            return Err(SendError::Unknown(position));
+        }
+
+        // Wait for response using tokio timeout
+        let timeout = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(timeout, tokio::task::spawn_blocking(move || {
+            resp_rx.recv()
+        })).await {
+            Ok(Ok(Ok(bytes))) => Ok(bytes),
+            _ => Err(SendError::AeronError("Timeout".into())),
         }
     }
 

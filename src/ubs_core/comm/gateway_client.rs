@@ -42,20 +42,40 @@ impl UbsGatewayClient {
         Ok(())
     }
 
-    /// Send order and wait for response
+    /// Send order and wait for response (blocking)
     pub fn send_order_and_wait(
         &self,
         order: &InternalOrder,
         timeout_ms: u64,
     ) -> Result<ResponseMessage, SendError> {
-        // Serialize order (just the order payload, no correlation ID)
+        // Serialize order
         let msg = OrderMessage::from_order(order);
         let payload = msg.to_bytes();
 
         log::debug!("[UBS_CLIENT] Sending order_id={}", order.order_id);
 
-        // Send via channel (channel handles correlation internally)
+        // Send via channel
         let response_bytes = self.channel.send_and_receive(&payload, timeout_ms)?;
+
+        // Parse response
+        ResponseMessage::from_bytes(&response_bytes)
+            .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
+    }
+
+    /// Send order and wait for response (async)
+    pub async fn send_order_async(
+        &self,
+        order: &InternalOrder,
+        timeout_ms: u64,
+    ) -> Result<ResponseMessage, SendError> {
+        // Serialize order
+        let msg = OrderMessage::from_order(order);
+        let payload = msg.to_bytes();
+
+        log::debug!("[UBS_CLIENT] Sending order_id={} (async)", order.order_id);
+
+        // Send via channel (async)
+        let response_bytes = self.channel.send_and_receive_async(&payload, timeout_ms).await?;
 
         // Parse response
         ResponseMessage::from_bytes(&response_bytes)
