@@ -32,4 +32,4 @@ pub use health::{HealthChecker, HealthStatus};
 pub use metrics::{LatencyTimer, MetricsSnapshot, OrderMetrics};
 pub use order::{InternalOrder, OrderType, Side};
 pub use risk::{RiskModel, SpotRiskModel};
-pub use wal::{GroupCommitConfig, GroupCommitWal, WalEntry, WalEntryType, WalReplay};
+pub use wal::{GroupCommitConfig, GroupCommitWal, MmapWal, WalEntry, WalEntryType, WalReplay};

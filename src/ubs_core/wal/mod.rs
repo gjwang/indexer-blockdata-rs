@@ -9,9 +9,11 @@
 pub mod aligned_buffer;
 pub mod entry;
 pub mod group_commit;
+pub mod mmap_wal;
 pub mod replay;
 
 pub use aligned_buffer::AlignedBuffer;
 pub use entry::{WalEntry, WalEntryType};
 pub use group_commit::{GroupCommitConfig, GroupCommitWal};
+pub use mmap_wal::MmapWal;
 pub use replay::WalReplay;
