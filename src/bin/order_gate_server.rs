@@ -5,11 +5,13 @@ use std::time::Duration;
 
 use rdkafka::config::ClientConfig;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use tokio::sync::RwLock;
 
 use fetcher::fast_ulid::SnowflakeGenRng;
 use fetcher::gateway::{create_app, AppState, OrderPublisher};
 use fetcher::models::{balance_manager, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
+use fetcher::ubs_core::{SpotRiskModel, UBSCore};
 
 struct KafkaPublisher(FutureProducer);
 
@@ -63,10 +65,24 @@ async fn main() {
         None
     };
 
+    // --- Initialize UBSCore (embedded in Gateway) ---
+    let mut ubs_core = UBSCore::new(SpotRiskModel);
+
+    // Seed test accounts (development only)
+    // TODO: Replace with proper balance sync from Settlement
+    for user_id in 1001..=1010 {
+        ubs_core.on_deposit(user_id, 1, 100_00000000);      // 100 BTC
+        ubs_core.on_deposit(user_id, 2, 10_000_000_00000000); // 10M USDT
+    }
+    println!("✅ UBSCore initialized with test accounts 1001-1010");
+
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
     let funding_account = Arc::new(Mutex::new(fetcher::gateway::SimulatedFundingAccount::new()));
     let balance_topic =
         config.kafka.topics.balance_ops.as_ref().unwrap_or(&"balance_ops".to_string()).clone();
+
+    // Use validated_orders topic for approved orders → ME
+    let validated_orders_topic = "validated_orders".to_string();
 
     let symbol_manager = Arc::new(symbol_manager);
     let balance_manager = balance_manager::BalanceManager::new(symbol_manager.clone());
@@ -76,16 +92,18 @@ async fn main() {
         balance_manager,
         producer: Arc::new(KafkaPublisher(producer)),
         snowflake_gen,
-        kafka_topic: config.kafka.topics.orders,
+        kafka_topic: validated_orders_topic,  // Approved orders → ME
         balance_topic,
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
         funding_account,
+        ubs_core: Arc::new(RwLock::new(ubs_core)),
     });
 
     let app = create_app(state);
 
     println!("🚀 Order Gateway API running on http://localhost:3001");
+    println!("   Flow: HTTP → UBSCore (sync) → Kafka(validated_orders) → ME");
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

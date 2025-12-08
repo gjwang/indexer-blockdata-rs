@@ -111,11 +111,13 @@ pub struct AppState {
     pub balance_manager: BalanceManager,
     pub producer: Arc<dyn OrderPublisher>,
     pub snowflake_gen: Mutex<SnowflakeGenRng>,
-    pub kafka_topic: String,
+    pub kafka_topic: String,  // For validated orders to ME
     pub balance_topic: String,
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
+    /// UBSCore for synchronous order validation (embedded, no RPC)
+    pub ubs_core: Arc<tokio::sync::RwLock<crate::ubs_core::UBSCore<crate::ubs_core::SpotRiskModel>>>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -318,6 +320,8 @@ async fn create_order(
     Json(client_order): Json<ClientOrder>,
 ) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
     let user_id = params.user_id;
+
+    // 1. Convert ClientOrder → InternalOrder
     let (order_id, internal_order) = client_order_convert(
         &client_order,
         &state.symbol_manager,
@@ -326,28 +330,50 @@ async fn create_order(
         user_id,
     )?;
 
-    // Send to Kafka (use bincode for internal messages - UBSCore expects bincode)
-    let payload = bincode::serialize(&internal_order).unwrap();
-    let key = order_id.to_string();
-
-    state
-        .producer
-        .publish(state.kafka_topic.clone(), key, payload)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-
-    println!(
-        "Order {} accepted by user_id {}, client_order: {:?}",
-        order_id, user_id, client_order
-    );
-
-    let response_data = OrderResponseData {
-        order_id: order_id.to_string(),
-        order_status: OrderStatus::Accepted,
-        cid: client_order.cid,
+    // 2. Validate order via UBSCore (synchronous - no Kafka!)
+    let validation_result = {
+        let mut ubs_core = state.ubs_core.write().await;
+        ubs_core.process_order(internal_order.clone())
     };
 
-    Ok(Json(ApiResponse::success(response_data)))
+    match validation_result {
+        Ok(()) => {
+            // 3. Order APPROVED - Forward to ME via Kafka
+            let payload = bincode::serialize(&internal_order).unwrap();
+            let key = order_id.to_string();
+
+            if let Err(e) = state
+                .producer
+                .publish(state.kafka_topic.clone(), key, payload)
+                .await
+            {
+                // Kafka publish failed - this is a problem
+                // TODO: Handle this case (retry, rollback lock, etc.)
+                return Err((StatusCode::INTERNAL_SERVER_ERROR, format!("Forward failed: {}", e)));
+            }
+
+            println!(
+                "✅ Order {} ACCEPTED (user={}) → forwarded to ME",
+                order_id, user_id
+            );
+
+            Ok(Json(ApiResponse::success(OrderResponseData {
+                order_id: order_id.to_string(),
+                order_status: OrderStatus::Accepted,
+                cid: client_order.cid,
+            })))
+        }
+        Err(reason) => {
+            // 4. Order REJECTED - Return immediately, no Kafka
+            println!(
+                "❌ Order {} REJECTED (user={}) reason={:?}",
+                order_id, user_id, reason
+            );
+
+            // Return rejection with reason
+            Err((StatusCode::BAD_REQUEST, format!("Order rejected: {:?}", reason)))
+        }
+    }
 }
 
 async fn get_balance(
