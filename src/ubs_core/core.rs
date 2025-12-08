@@ -111,29 +111,49 @@ impl<R: RiskModel> UBSCore<R> {
 
     /// Process incoming order (validation only, no WAL)
     pub fn process_order(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
+        let start = std::time::Instant::now();
+
         // 0. BACKPRESSURE CHECK
         if self.pending_queue.len() > HIGH_WATER_MARK {
             return Err(RejectReason::SystemBusy);
         }
+        let t0 = start.elapsed();
 
         // 1. Deduplication check
         let now = self.current_time(&order);
         self.dedup_guard.check_and_record(order.order_id, now)?;
+        let t1 = start.elapsed();
 
         // 2. Get account
         let _account = self.accounts.get(&order.user_id).ok_or(RejectReason::AccountNotFound)?;
+        let t2 = start.elapsed();
 
         // 3. Calculate cost internally (SECURITY)
         let cost = order.calculate_cost();
         if cost == u64::MAX {
             return Err(RejectReason::OrderCostOverflow);
         }
+        let t3 = start.elapsed();
 
         // 4. Risk check
         // TODO: Full implementation with asset lookup
 
         // 5. Lock funds
         // TODO: Implement after we have symbol config
+
+        let total = start.elapsed();
+
+        // Log profiling every 100th order (to avoid log spam)
+        if order.order_id % 100 == 0 {
+            log::debug!(
+                "[PROFILE] process_order: total={}µs backpressure={}ns dedup={}ns account={}ns cost={}ns",
+                total.as_micros(),
+                t0.as_nanos(),
+                (t1 - t0).as_nanos(),
+                (t2 - t1).as_nanos(),
+                (t3 - t2).as_nanos()
+            );
+        }
 
         Ok(())
     }

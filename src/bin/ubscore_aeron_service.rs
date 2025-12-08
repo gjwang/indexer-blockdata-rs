@@ -245,6 +245,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         };
+        let t_parse = start.elapsed();
 
         // Convert to InternalOrder
         let order = match order_msg.to_internal_order() {
@@ -256,6 +257,8 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         };
+        let t_convert = start.elapsed();
+        let order_id = order.order_id;
 
         // Log to WAL
         if let Ok(payload) = bincode::serialize(&order) {
@@ -267,17 +270,22 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         }
+        let t_wal_append = start.elapsed();
 
         // Process order
         match self.ubs_core.process_order(order.clone()) {
             Ok(()) => {
+                let t_process = start.elapsed();
+
                 // Flush WAL
                 if let Err(e) = self.wal.flush() {
                     error!("WAL flush failed: {:?}", e);
                 }
+                let t_wal_flush = start.elapsed();
 
                 // Send accept response
                 self.send_response(order.order_id, true, 0);
+                let t_response = start.elapsed();
                 *self.orders_accepted += 1;
 
                 // Forward to Kafka (async, best-effort)
@@ -288,6 +296,23 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                         .payload(&payload)
                         .key(&key);
                     let _ = producer.send(record, Duration::from_secs(0));
+                }
+                let t_kafka = start.elapsed();
+
+                // Log profiling every 100th order
+                if order_id % 100 == 0 {
+                    log::info!(
+                        "[PROFILE] order_id={} parse={}µs convert={}µs wal_append={}µs process={}µs wal_flush={}µs response={}µs kafka={}µs TOTAL={}µs",
+                        order_id,
+                        t_parse.as_micros(),
+                        (t_convert - t_parse).as_micros(),
+                        (t_wal_append - t_convert).as_micros(),
+                        (t_process - t_wal_append).as_micros(),
+                        (t_wal_flush - t_process).as_micros(),
+                        (t_response - t_wal_flush).as_micros(),
+                        (t_kafka - t_response).as_micros(),
+                        t_kafka.as_micros()
+                    );
                 }
             }
             Err(reason) => {
