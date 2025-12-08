@@ -113,6 +113,40 @@ impl ClientOrder {
         })
     }
 
+    /// Convert ClientOrder to UBSCore InternalOrder for Kafka serialization
+    pub fn to_ubs_internal(
+        &self,
+        symbol_manager: &SymbolManager,
+        balance_manager: &BalanceManager,
+        order_id: u64,
+        user_id: u64,
+    ) -> Result<crate::ubs_core::InternalOrder, String> {
+        use crate::ubs_core::{InternalOrder, OrderType as UbsOrderType, Side as UbsSide};
+
+        self.validate_with_symbol_manager(symbol_manager)?;
+        let raw_order = self.to_raw_order(symbol_manager, balance_manager, user_id)?;
+
+        let side = match raw_order.side {
+            Side::Buy => UbsSide::Buy,
+            Side::Sell => UbsSide::Sell,
+        };
+
+        let order_type = match raw_order.order_type {
+            OrderType::Limit => UbsOrderType::Limit,
+            OrderType::Market => UbsOrderType::Market,
+        };
+
+        Ok(InternalOrder {
+            order_id,
+            user_id: raw_order.user_id,
+            symbol_id: raw_order.symbol_id as u32,
+            side,
+            price: raw_order.price,
+            qty: raw_order.quantity,
+            order_type,
+        })
+    }
+
     /// Convert internal OrderRequest back to ClientOrder
     pub fn try_from_internal(
         request: &OrderRequest,

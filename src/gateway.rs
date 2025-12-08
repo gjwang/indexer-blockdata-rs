@@ -326,8 +326,8 @@ async fn create_order(
         user_id,
     )?;
 
-    // Send to Kafka
-    let payload = serde_json::to_vec(&internal_order).unwrap();
+    // Send to Kafka (use bincode for internal messages - UBSCore expects bincode)
+    let payload = bincode::serialize(&internal_order).unwrap();
     let key = order_id.to_string();
 
     state
