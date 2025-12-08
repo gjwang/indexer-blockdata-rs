@@ -636,3 +636,174 @@ Overhead: ~0.5 µs (polling, zero context switches)
 | Complexity | Easy | Hard (alignment) | Easy |
 
 **Verdict**: Use O_DIRECT for the WAL write path. The consistency is worth the complexity.
+
+---
+
+## 9. WAL Rotation (Zero-Jitter)
+
+### The Problem
+
+Naive rotation (check size → close file → create new file) causes latency spikes.
+Creating a file on Linux (allocating inodes, updating ext4 metadata) takes **milliseconds**.
+
+### Option A: Aeron Archive (Recommended)
+
+If using Aeron Archive, rotation is automatic via `segmentFileLength`:
+
+```java
+// Aeron Archive handles rotation automatically
+ArchiveContext ctx = new ArchiveContext()
+    .segmentFileLength(128 * 1024 * 1024) // 128 MB segments
+    .archiveDir(new File("/data/aeron-archive"));
+```
+
+Files named by byte position:
+```
+1001-0.rec           (Bytes 0 - 128MB)
+1001-134217728.rec   (Bytes 128MB - 256MB)
+1001-268435456.rec   (Bytes 256MB - 384MB)
+```
+
+**Backup Rule**: "If N+1.rec exists, N.rec is immutable (safe to backup)."
+
+### Option B: Manual Pre-Allocation (The "Next Bullet" Strategy)
+
+For manual O_DIRECT, never create files in the hot path. Pre-allocate like ammunition clips.
+
+```
+wal.current  ← Active file (writing now)
+wal.next     ← Pre-created, pre-allocated, File Descriptor ready
+```
+
+```rust
+use std::fs::{File, OpenOptions};
+use std::sync::mpsc::{channel, Sender, Receiver};
+
+const MAX_FILE_SIZE: u64 = 128 * 1024 * 1024; // 128 MB
+
+pub struct RotatingWal {
+    current_file: File,
+    current_size: u64,
+    file_seq: u64,
+
+    // Pre-opened next file (ready to swap)
+    next_file: Option<File>,
+
+    // Background janitor communication
+    janitor_tx: Sender<u64>,
+    next_file_rx: Receiver<File>,
+}
+
+impl RotatingWal {
+    pub fn write(&mut self, data: &[u8]) -> std::io::Result<()> {
+        // 1. ROTATION CHECK (before write)
+        if self.current_size + data.len() as u64 > MAX_FILE_SIZE {
+            self.rotate()?;
+        }
+
+        // 2. WRITE
+        self.current_file.write_all(data)?;
+        self.current_size += data.len() as u64;
+
+        Ok(())
+    }
+
+    fn rotate(&mut self) -> std::io::Result<()> {
+        // A. Finalize old file (pad to alignment if needed)
+        self.pad_and_finalize()?;
+        self.current_file.sync_data()?;
+
+        // B. Rename current → numbered file
+        let old_name = format!("wal.{:05}", self.file_seq);
+        std::fs::rename("wal.current", &old_name)?;
+
+        // C. THE SWAP (Instant! Just pointer swap)
+        if let Some(fresh_file) = self.next_file.take() {
+            self.current_file = fresh_file;
+        } else {
+            // Emergency: Background was too slow (should never happen)
+            eprintln!("WARN: Blocking to create WAL file!");
+            self.current_file = Self::create_preallocated_file("wal.current")?;
+        }
+
+        // D. Reset counters
+        self.file_seq += 1;
+        self.current_size = 0;
+
+        // E. Signal Janitor to prepare next file
+        let _ = self.janitor_tx.send(self.file_seq);
+
+        // F. Try to grab reserve (non-blocking)
+        if let Ok(f) = self.next_file_rx.try_recv() {
+            self.next_file = Some(f);
+        }
+
+        Ok(())
+    }
+
+    fn pad_and_finalize(&mut self) -> std::io::Result<()> {
+        // Pad remaining space with zeros (or PAD marker)
+        let padding_needed = (4096 - (self.current_size % 4096)) % 4096;
+        if padding_needed > 0 {
+            let zeros = vec![0u8; padding_needed as usize];
+            self.current_file.write_all(&zeros)?;
+        }
+        Ok(())
+    }
+
+    fn create_preallocated_file(path: &str) -> std::io::Result<File> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .custom_flags(libc::O_DIRECT)
+            .open(path)?;
+
+        // Pre-allocate space (prevents fragmentation)
+        file.set_len(MAX_FILE_SIZE)?;
+
+        Ok(file)
+    }
+}
+
+// THE BACKGROUND JANITOR THREAD
+fn janitor_loop(tx: Sender<File>, rx: Receiver<u64>) {
+    loop {
+        // Wait for signal that rotation happened
+        let _seq = rx.recv().unwrap();
+
+        // Create and pre-allocate next file (SLOW - but off hot path)
+        match RotatingWal::create_preallocated_file("wal.next") {
+            Ok(f) => {
+                let _ = tx.send(f);
+            }
+            Err(e) => {
+                eprintln!("Janitor failed to create file: {}", e);
+            }
+        }
+    }
+}
+```
+
+### Backup Logic for Rotated Files
+
+```rust
+fn backup_watcher_loop() {
+    let mut last_backed_up = 0u64;
+
+    loop {
+        let next_file = format!("wal.{:05}", last_backed_up + 1);
+
+        // If next numbered file exists, previous is complete
+        if std::path::Path::new(&next_file).exists() {
+            let file_to_backup = format!("wal.{:05}", last_backed_up);
+
+            println!("Backing up: {}", file_to_backup);
+            upload_to_s3(&file_to_backup);
+
+            last_backed_up += 1;
+        } else {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+    }
+}
+```
