@@ -30,21 +30,546 @@ Phase 13: Production Hardening
 
 **Goal**: Build the in-memory core without persistence or networking.
 
-### Task 9.1: Create UBSCore Crate Structure
+**Principle**: Each step is small, testable, committable.
 
-**Files to Create**:
+---
+
+### Step 9.1.1: Create Module Structure (No Logic)
+
+**Action**: Create empty files only
+
 ```
 src/ubs_core/
-├── mod.rs           # Module exports
-├── account.rs       # Account struct with checked arithmetic
-├── balance.rs       # Balance type with fixed-point arithmetic
-├── order.rs         # Order struct for internal use
-├── dedup.rs         # Deduplication guard (IndexSet)
-├── risk_model.rs    # RiskModel trait + SpotRiskModel
-└── error.rs         # RejectReason enum
+├── mod.rs           # pub mod declarations
+├── types.rs         # Re-export existing types
+├── error.rs         # RejectReason enum
+├── order.rs         # InternalOrder struct
+├── dedup.rs         # DeduplicationGuard
+├── debt.rs          # DebtLedger
+├── fee.rs           # VipFeeTable
+├── risk.rs          # RiskModel trait
+└── core.rs          # UBSCore struct
 ```
 
-**Status**: 📋 NOT STARTED
+**Test**: `cargo check` passes
+
+**Commit**: `feat(ubs_core): create module structure`
+
+---
+
+### Step 9.1.2: Define RejectReason Enum
+
+**File**: `src/ubs_core/error.rs`
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum RejectReason {
+    OrderTooOld,
+    FutureTimestamp,
+    DuplicateOrderId,
+    InsufficientBalance,
+    AccountNotFound,
+    InvalidSymbol,
+    OrderCostOverflow,
+    SystemBusy,
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_reject_reason_debug() {
+    let reason = RejectReason::InsufficientBalance;
+    assert_eq!(format!("{:?}", reason), "InsufficientBalance");
+}
+
+#[test]
+fn test_reject_reason_clone() {
+    let reason = RejectReason::SystemBusy;
+    let cloned = reason.clone();
+    assert_eq!(reason, cloned);
+}
+```
+
+**Commit**: `feat(ubs_core): add RejectReason enum`
+
+---
+
+### Step 9.1.3: Define InternalOrder Struct
+
+**File**: `src/ubs_core/order.rs`
+
+```rust
+use crate::user_account::{UserId, AssetId};
+use crate::half_ulid::HalfUlid;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Side { Buy, Sell }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrderType { Limit, Market }
+
+#[derive(Debug, Clone)]
+pub struct InternalOrder {
+    pub order_id: HalfUlid,
+    pub user_id: UserId,
+    pub symbol_id: u32,
+    pub side: Side,
+    pub price: u64,
+    pub qty: u64,
+    pub order_type: OrderType,
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_side_equality() {
+    assert_eq!(Side::Buy, Side::Buy);
+    assert_ne!(Side::Buy, Side::Sell);
+}
+
+#[test]
+fn test_order_clone() {
+    let order = InternalOrder { ... };
+    let cloned = order.clone();
+    assert_eq!(order.user_id, cloned.user_id);
+}
+```
+
+**Commit**: `feat(ubs_core): add InternalOrder struct`
+
+---
+
+### Step 9.1.4: Add Order Cost Calculation
+
+**File**: `src/ubs_core/order.rs` (extend)
+
+```rust
+impl InternalOrder {
+    pub fn calculate_cost(&self) -> u64 {
+        match self.side {
+            Side::Buy => self.price.checked_mul(self.qty).unwrap_or(u64::MAX),
+            Side::Sell => self.qty,
+        }
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_buy_cost_normal() {
+    let order = InternalOrder { side: Side::Buy, price: 100, qty: 5, .. };
+    assert_eq!(order.calculate_cost(), 500);
+}
+
+#[test]
+fn test_buy_cost_overflow() {
+    let order = InternalOrder { side: Side::Buy, price: u64::MAX, qty: 2, .. };
+    assert_eq!(order.calculate_cost(), u64::MAX);
+}
+
+#[test]
+fn test_sell_cost() {
+    let order = InternalOrder { side: Side::Sell, price: 100, qty: 5, .. };
+    assert_eq!(order.calculate_cost(), 5);  // qty only
+}
+```
+
+**Commit**: `feat(ubs_core): add order cost calculation`
+
+---
+
+### Step 9.1.5: Add DebtReason Enum
+
+**File**: `src/ubs_core/debt.rs`
+
+```rust
+#[derive(Debug, Clone, PartialEq)]
+pub enum DebtReason {
+    GhostMoney,
+    Liquidation,
+    FeeUnpaid,
+    StaleSpeculative,
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_debt_reason_debug() {
+    let reason = DebtReason::GhostMoney;
+    assert_eq!(format!("{:?}", reason), "GhostMoney");
+}
+```
+
+**Commit**: `feat(ubs_core): add DebtReason enum`
+
+---
+
+### Step 9.1.6: Add DebtRecord Struct
+
+**File**: `src/ubs_core/debt.rs` (extend)
+
+```rust
+pub struct DebtRecord {
+    pub amount: u64,
+    pub created_at: u64,
+    pub reason: DebtReason,
+    pub sequence: u64,
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_debt_record_creation() {
+    let record = DebtRecord {
+        amount: 1000,
+        created_at: 12345,
+        reason: DebtReason::GhostMoney,
+        sequence: 1,
+    };
+    assert_eq!(record.amount, 1000);
+}
+```
+
+**Commit**: `feat(ubs_core): add DebtRecord struct`
+
+---
+
+### Step 9.1.7: Add DebtLedger with Basic Operations
+
+**File**: `src/ubs_core/debt.rs` (extend)
+
+```rust
+use std::collections::HashMap;
+use crate::user_account::{UserId, AssetId};
+
+pub struct DebtLedger {
+    debts: HashMap<(UserId, AssetId), DebtRecord>,
+}
+
+impl DebtLedger {
+    pub fn new() -> Self {
+        Self { debts: HashMap::new() }
+    }
+
+    pub fn has_debt(&self, user_id: UserId) -> bool {
+        self.debts.keys().any(|(uid, _)| *uid == user_id)
+    }
+
+    pub fn get_debt(&self, user_id: UserId, asset_id: AssetId) -> Option<&DebtRecord> {
+        self.debts.get(&(user_id, asset_id))
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_new_ledger_empty() {
+    let ledger = DebtLedger::new();
+    assert!(!ledger.has_debt(123));
+}
+
+#[test]
+fn test_has_debt_after_add() {
+    let mut ledger = DebtLedger::new();
+    ledger.add_debt(123, 1, DebtRecord { amount: 100, .. });
+    assert!(ledger.has_debt(123));
+}
+```
+
+**Commit**: `feat(ubs_core): add DebtLedger basic struct`
+
+---
+
+### Step 9.1.8: Add DebtLedger Mutation Methods
+
+**File**: `src/ubs_core/debt.rs` (extend)
+
+```rust
+impl DebtLedger {
+    pub fn add_debt(&mut self, user_id: UserId, asset_id: AssetId, record: DebtRecord) {
+        self.debts
+            .entry((user_id, asset_id))
+            .and_modify(|existing| existing.amount += record.amount)
+            .or_insert(record);
+    }
+
+    /// Pay debt, returns remaining amount after paying
+    pub fn pay_debt(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) -> u64 {
+        if let Some(debt) = self.debts.get_mut(&(user_id, asset_id)) {
+            let pay_off = amount.min(debt.amount);
+            debt.amount -= pay_off;
+            if debt.amount == 0 {
+                self.debts.remove(&(user_id, asset_id));
+            }
+            amount - pay_off  // remaining
+        } else {
+            amount  // no debt, all remaining
+        }
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_pay_debt_partial() {
+    let mut ledger = DebtLedger::new();
+    ledger.add_debt(123, 1, DebtRecord { amount: 100, .. });
+    let remaining = ledger.pay_debt(123, 1, 60);
+    assert_eq!(remaining, 0);
+    assert_eq!(ledger.get_debt(123, 1).unwrap().amount, 40);
+}
+
+#[test]
+fn test_pay_debt_full() {
+    let mut ledger = DebtLedger::new();
+    ledger.add_debt(123, 1, DebtRecord { amount: 100, .. });
+    let remaining = ledger.pay_debt(123, 1, 150);
+    assert_eq!(remaining, 50);
+    assert!(ledger.get_debt(123, 1).is_none());
+}
+
+#[test]
+fn test_pay_no_debt() {
+    let mut ledger = DebtLedger::new();
+    let remaining = ledger.pay_debt(123, 1, 100);
+    assert_eq!(remaining, 100);
+}
+```
+
+**Commit**: `feat(ubs_core): add DebtLedger mutation methods`
+
+---
+
+### Step 9.1.9: Add VipFeeTable
+
+**File**: `src/ubs_core/fee.rs`
+
+```rust
+pub struct VipFeeTable {
+    rates: [(u64, u64); 10],  // (maker_rate, taker_rate) per VIP level
+}
+
+impl VipFeeTable {
+    pub fn new(rates: [(u64, u64); 10]) -> Self {
+        Self { rates }
+    }
+
+    pub fn default_rates() -> Self {
+        Self::new([
+            (1000, 1500),  // VIP 0: 0.10%, 0.15%
+            (900, 1400),   // VIP 1
+            (800, 1300),   // VIP 2
+            (700, 1200),   // VIP 3
+            (600, 1100),   // VIP 4
+            (500, 1000),   // VIP 5
+            (400, 900),    // VIP 6
+            (300, 800),    // VIP 7
+            (200, 600),    // VIP 8
+            (100, 400),    // VIP 9: 0.01%, 0.04%
+        ])
+    }
+
+    pub fn get_rate(&self, vip_level: u8, is_maker: bool) -> u64 {
+        let level = (vip_level as usize).min(9);
+        if is_maker { self.rates[level].0 } else { self.rates[level].1 }
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_vip0_taker_rate() {
+    let table = VipFeeTable::default_rates();
+    assert_eq!(table.get_rate(0, false), 1500);
+}
+
+#[test]
+fn test_vip9_maker_rate() {
+    let table = VipFeeTable::default_rates();
+    assert_eq!(table.get_rate(9, true), 100);
+}
+
+#[test]
+fn test_vip_level_capped() {
+    let table = VipFeeTable::default_rates();
+    assert_eq!(table.get_rate(100, true), 100);  // Capped to VIP 9
+}
+```
+
+**Commit**: `feat(ubs_core): add VipFeeTable`
+
+---
+
+### Step 9.1.10: Add DeduplicationGuard (Part 1 - Struct)
+
+**File**: `src/ubs_core/dedup.rs`
+
+```rust
+use indexmap::IndexSet;
+use crate::half_ulid::HalfUlid;
+
+const CACHE_SIZE: usize = 10_000;
+const MAX_TIME_DRIFT_MS: u64 = 3_000;
+
+pub struct DeduplicationGuard {
+    cache: IndexSet<HalfUlid>,
+    min_allowed_ts: u64,
+}
+
+impl DeduplicationGuard {
+    pub fn new() -> Self {
+        Self {
+            cache: IndexSet::with_capacity(CACHE_SIZE),
+            min_allowed_ts: 0,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    pub fn min_allowed_ts(&self) -> u64 {
+        self.min_allowed_ts
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_new_guard_empty() {
+    let guard = DeduplicationGuard::new();
+    assert_eq!(guard.len(), 0);
+    assert_eq!(guard.min_allowed_ts(), 0);
+}
+```
+
+**Commit**: `feat(ubs_core): add DeduplicationGuard struct`
+
+---
+
+### Step 9.1.11: Add DeduplicationGuard (Part 2 - Check Logic)
+
+**File**: `src/ubs_core/dedup.rs` (extend)
+
+```rust
+use crate::ubs_core::error::RejectReason;
+
+impl DeduplicationGuard {
+    pub fn check_and_record(&mut self, order_id: HalfUlid, now: u64) -> Result<(), RejectReason> {
+        let order_ts = order_id.timestamp_ms();
+
+        // 1. TIME CHECK - too old
+        if now.saturating_sub(order_ts) > MAX_TIME_DRIFT_MS {
+            return Err(RejectReason::OrderTooOld);
+        }
+
+        // 2. TIME CHECK - future
+        if order_ts > now.saturating_add(1_000) {
+            return Err(RejectReason::FutureTimestamp);
+        }
+
+        // 3. TIME CHECK - below min allowed
+        if order_ts < self.min_allowed_ts {
+            return Err(RejectReason::OrderTooOld);
+        }
+
+        // 4. DUPLICATE CHECK
+        if self.cache.contains(&order_id) {
+            return Err(RejectReason::DuplicateOrderId);
+        }
+
+        // 5. EVICT IF FULL
+        if self.cache.len() >= CACHE_SIZE {
+            if let Some(evicted) = self.cache.pop() {
+                self.min_allowed_ts = self.min_allowed_ts.max(evicted.timestamp_ms());
+            }
+        }
+
+        // 6. INSERT
+        self.cache.insert(order_id);
+        Ok(())
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_accept_valid_order() {
+    let mut guard = DeduplicationGuard::new();
+    let order_id = HalfUlid::new(1000);  // ts=1000
+    assert!(guard.check_and_record(order_id, 1000).is_ok());
+}
+
+#[test]
+fn test_reject_duplicate() {
+    let mut guard = DeduplicationGuard::new();
+    let order_id = HalfUlid::new(1000);
+    guard.check_and_record(order_id, 1000).unwrap();
+    assert_eq!(
+        guard.check_and_record(order_id, 1000),
+        Err(RejectReason::DuplicateOrderId)
+    );
+}
+
+#[test]
+fn test_reject_too_old() {
+    let mut guard = DeduplicationGuard::new();
+    let order_id = HalfUlid::new(1000);  // ts=1000
+    assert_eq!(
+        guard.check_and_record(order_id, 5000),  // now=5000, diff=4000 > 3000
+        Err(RejectReason::OrderTooOld)
+    );
+}
+
+#[test]
+fn test_reject_future() {
+    let mut guard = DeduplicationGuard::new();
+    let order_id = HalfUlid::new(5000);  // ts=5000
+    assert_eq!(
+        guard.check_and_record(order_id, 1000),  // now=1000, future by 4000 > 1000
+        Err(RejectReason::FutureTimestamp)
+    );
+}
+
+#[test]
+fn test_eviction_updates_min_ts() {
+    let mut guard = DeduplicationGuard::new();
+    // Fill cache to capacity, then add one more
+    // Check min_allowed_ts is updated
+}
+```
+
+**Commit**: `feat(ubs_core): add DeduplicationGuard check logic`
+
+---
+
+### Summary: Small Steps
+
+| Step | Description | Tests |
+|------|-------------|-------|
+| 9.1.1 | Module structure | `cargo check` |
+| 9.1.2 | RejectReason enum | 2 tests |
+| 9.1.3 | InternalOrder struct | 2 tests |
+| 9.1.4 | Order cost calculation | 3 tests |
+| 9.1.5 | DebtReason enum | 1 test |
+| 9.1.6 | DebtRecord struct | 1 test |
+| 9.1.7 | DebtLedger basic | 2 tests |
+| 9.1.8 | DebtLedger mutations | 3 tests |
+| 9.1.9 | VipFeeTable | 3 tests |
+| 9.1.10 | DeduplicationGuard struct | 1 test |
+| 9.1.11 | DeduplicationGuard logic | 5+ tests |
+
+**Total**: 11 small commits, 23+ unit tests
 
 ---
 
