@@ -37,12 +37,25 @@ const TARGET: &str = "UBSC";
 macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
 macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
 macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
+use fetcher::logger::setup_logger;
 
 fn main() {
-    // Setup logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
+    // Load config and setup logging
+    let app_config = configure::load_service_config("ubscore_config").ok();
+
+    if let Some(ref config) = app_config {
+        if let Err(e) = setup_logger(config) {
+            eprintln!("Logger init failed: {}, falling back to env_logger", e);
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .format_timestamp_millis()
+                .init();
+        }
+    } else {
+        // Fallback to env_logger if config not available
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .format_timestamp_millis()
+            .init();
+    }
 
     #[cfg(not(feature = "aeron"))]
     {
