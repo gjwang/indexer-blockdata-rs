@@ -91,10 +91,17 @@ fn run_aeron_service() {
     // Give driver time to initialize
     std::thread::sleep(Duration::from_millis(500));
 
-    // --- Initialize Aeron ---
+    // --- Initialize Aeron Client ---
     let config = AeronConfig::default();
 
     let ctx = AeronContext::new().expect("Failed to create Aeron context");
+
+    // Set the same directory as the embedded driver
+    use fetcher::ubs_core::comm::AERON_DIR;
+    let dir_cstr = CString::new(AERON_DIR).unwrap();
+    ctx.set_dir(&dir_cstr).expect("Failed to set aeron dir");
+    info!("✅ Aeron client using dir: {}", AERON_DIR);
+
     let aeron = Aeron::new(&ctx).expect("Failed to create Aeron");
     aeron.start().expect("Failed to start Aeron");
     info!("✅ Aeron client started");

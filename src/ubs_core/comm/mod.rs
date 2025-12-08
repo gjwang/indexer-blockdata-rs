@@ -28,7 +28,7 @@ pub mod order_sender;
 pub mod response;
 
 pub use aeron_config::AeronConfig;
-pub use driver::EmbeddedDriver;
+pub use driver::{EmbeddedDriver, AERON_DIR};
 pub use fill_receiver::{FillMessage, FillReceiver};
 pub use gateway_client::UbsGatewayClient;
 pub use order_receiver::{OrderMessage, OrderReceiver};

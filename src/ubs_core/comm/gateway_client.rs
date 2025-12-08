@@ -41,8 +41,18 @@ impl UbsGatewayClient {
 
     /// Connect to Aeron - creates publication (orders) and subscription (responses)
     pub fn connect(&mut self) -> Result<(), SendError> {
+        use super::driver::AERON_DIR;
+
         let ctx = AeronContext::new()
             .map_err(|e| SendError::AeronError(format!("Context failed: {:?}", e)))?;
+
+        // Set the same directory as the embedded driver
+        let dir_cstr = CString::new(AERON_DIR)
+            .map_err(|_| SendError::AeronError("Invalid dir".into()))?;
+        ctx.set_dir(&dir_cstr)
+            .map_err(|e| SendError::AeronError(format!("Set dir failed: {:?}", e)))?;
+
+        log::info!("[UBS_CLIENT] Using Aeron dir: {}", AERON_DIR);
 
         let aeron = Aeron::new(&ctx)
             .map_err(|e| SendError::AeronError(format!("Aeron failed: {:?}", e)))?;
@@ -138,9 +148,13 @@ struct ResponseHandler {
 
 impl AeronFragmentHandlerCallback for ResponseHandler {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
+        log::debug!("[UBS_CLIENT] Received {} bytes", buffer.len());
         if let Some(resp) = ResponseMessage::from_bytes(buffer) {
+            log::info!("[UBS_CLIENT] Response: order_id={}, accepted={}", resp.order_id, resp.is_accepted());
             let mut pending = self.pending.lock().unwrap();
             pending.insert(resp.order_id, resp);
+        } else {
+            log::warn!("[UBS_CLIENT] Failed to parse response from {} bytes", buffer.len());
         }
     }
 }
