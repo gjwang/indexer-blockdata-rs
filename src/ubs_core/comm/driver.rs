@@ -44,8 +44,8 @@ impl EmbeddedDriver {
         let dir_cstr = CString::new(dir).map_err(|_| "Invalid directory path")?;
         context.set_dir(&dir_cstr).map_err(|e| format!("Failed to set dir: {:?}", e))?;
 
-        // Don't delete on start - we want persistence for IPC
-        context.set_dir_delete_on_start(false)
+        // Delete stale data on start to avoid conflicts with previous runs
+        context.set_dir_delete_on_start(true)
             .map_err(|e| format!("Failed to set delete_on_start: {:?}", e))?;
 
         let (stop, handle) = AeronDriver::launch_embedded(context.clone(), false);
