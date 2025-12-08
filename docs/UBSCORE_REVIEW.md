@@ -74,115 +74,109 @@ The "Next Bullet" strategy for log rotation is a **professional-grade detail** t
 
 ## Areas for Improvement (Critical Gaps)
 
-### 1. ✅ Order ID Deduplication via halfULID + Inline Eviction (Final Design)
+### 1. ✅ Order ID Deduplication via halfULID + IndexSet (Final Design)
 
-**Design Choice**: halfULID embeds timestamp + time-bounded cache with inline eviction.
+**Design Choice**: halfULID embeds timestamp + IndexSet for single-structure O(1) cache.
 
-**Strategy: Time-First, Inline Eviction**
+**Strategy: IndexSet (Single Structure, Ordered + O(1))**
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│   MAX_TIME_DRIFT = 5 sec     ← Accept window (reject older orders) │
-│   EXPIRE_TOLERANCE = 1 sec   ← Buffer before eviction              │
-│   EXPIRE_THRESHOLD = 6 sec   ← Evict from cache after this         │
+│   CACHE_SIZE = 10,000        ← Max entries before force eviction    │
+│   MAX_TIME_DRIFT = 3 sec     ← Accept window                        │
 └────────────────────────────────────────────────────────────────────┘
 
-Timeline:
-──────────────────────────────────────────────────────────────────► NOW
-        ├── EVICT (>6s) ──┼── REJECT (5-6s) ──┼── ACCEPT (0-5s) ──┤
-        │                 │                   │                   │
-   Pop from cache     Time check fails    Check exact duplicate
+IndexSet: Ordered insertion + O(1) lookup in ONE structure
+├── Maintains insertion order (oldest at front)
+├── O(1) contains() check
+├── O(1) pop() from front
+└── No double memory like Ring Buffer + HashSet
 ```
 
-**Implementation (O(1) Amortized)**:
+**Implementation (O(1) Amortized, Single Structure)**:
 
 ```rust
 use indexmap::IndexSet;
 
-const MAX_TIME_DRIFT_MS: u64 = 5_000;      // Accept window
-const EXPIRE_TOLERANCE_MS: u64 = 1_000;    // Buffer before eviction
-const EXPIRE_THRESHOLD_MS: u64 = MAX_TIME_DRIFT_MS + EXPIRE_TOLERANCE_MS;
-const MAX_CACHE_SIZE: usize = 1_000_000;   // Hard limit (safety net)
+const CACHE_SIZE: usize = 10_000;          // Max entries
+const MAX_TIME_DRIFT_MS: u64 = 3_000;      // 3 second window
 
 struct DeduplicationGuard {
+    // Single structure: ordered + O(1) lookup
     cache: IndexSet<HalfUlid>,
 
-    // CRITICAL: Track minimum allowed timestamp
-    // Updated when force-evicting due to hard limit
+    // Eviction boundary (high water mark)
     min_allowed_ts: u64,
 }
 
 impl DeduplicationGuard {
+    fn new() -> Self {
+        Self {
+            cache: IndexSet::with_capacity(CACHE_SIZE),
+            min_allowed_ts: 0,
+        }
+    }
+
     fn check_and_record(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
         let now = current_time_ms();
         let order_ts = order_id.timestamp_ms();
 
-        // 1. TIME CHECK: Normal time window
+        // 1. TIME CHECK
         if now - order_ts > MAX_TIME_DRIFT_MS {
             return Err(RejectReason::OrderTooOld);
         }
         if order_ts > now + 1_000 {
             return Err(RejectReason::FutureTimestamp);
         }
-
-        // 2. EVICTION BOUNDARY CHECK: Reject if STRICTLY older than evicted entries
-        //    Note: halfULID has random bits, so same timestamp ≠ same order ID
-        //    We use < (not <=) to allow new orders with same timestamp
         if order_ts < self.min_allowed_ts {
             return Err(RejectReason::OrderTooOld);
         }
 
-        // 3. INLINE EVICTION: Pop expired entries from front
-        while let Some(oldest) = self.cache.first() {
-            if now - oldest.timestamp_ms() > EXPIRE_THRESHOLD_MS {
-                let evicted = self.cache.pop().unwrap();
-                // Update boundary (but don't move it backwards)
+        // 2. DUPLICATE CHECK (O(1) lookup)
+        if self.cache.contains(&order_id) {
+            return Err(RejectReason::DuplicateOrderId);
+        }
+
+        // 3. EVICT IF FULL (pop oldest from front)
+        if self.cache.len() >= CACHE_SIZE {
+            if let Some(evicted) = self.cache.pop() {
                 self.min_allowed_ts = self.min_allowed_ts.max(evicted.timestamp_ms());
-            } else {
-                break;
             }
         }
 
-        // 4. HARD LIMIT CHECK (safety net)
-        while self.cache.len() >= MAX_CACHE_SIZE {
-            let evicted = self.cache.pop().unwrap();
-            // CRITICAL: Update min_allowed_ts to reject future duplicates!
-            self.min_allowed_ts = self.min_allowed_ts.max(evicted.timestamp_ms());
-            log::warn!("Dedup cache hit hard limit, force evicting. min_ts={}",
-                       self.min_allowed_ts);
-        }
-
-        // 5. EXACT DUPLICATE CHECK
-        if !self.cache.insert(order_id) {
-            return Err(RejectReason::DuplicateOrderId);
-        }
+        // 4. INSERT (append to back)
+        self.cache.insert(order_id);
 
         Ok(())
     }
 }
 ```
 
+**Why IndexSet is Best**:
+
+| Property | IndexSet | Ring Buffer + HashSet |
+|----------|----------|----------------------|
+| **Structures** | 1 | 2 (double memory) |
+| **Memory** | ~200 KB | ~240 KB |
+| **Lookup** | O(1) | O(1) |
+| **Eviction** | O(1) pop() | O(1) overwrite |
+| **Simplicity** | ✅ Simple | Complex |
+
 **Why This Works**:
 
-| Check | Time | Action |
-|-------|------|--------|
-| `> 5 sec ago` | Reject | `OrderTooOld` (no cache lookup) |
-| `> 6 sec ago` | Evict | Pop from cache front |
-| `0-5 sec ago` | Accept | Check exact duplicate in cache |
+| Check | Action |
+|-------|--------|
+| `> 3 sec ago` | Reject `OrderTooOld` |
+| `< min_allowed_ts` | Reject (evicted boundary) |
+| In IndexSet | Reject `DuplicateOrderId` |
+| Cache full | Pop oldest, update boundary |
 
-**Tolerance Buffer Explained**:
-- Order arrives at t=4.9s (accepted, inserted into cache)
-- Processing takes 0.2s (now t=5.1s)
-- Without tolerance: order evicted immediately!
-- With 1s tolerance: stays in cache, prevents race condition
+**Memory Usage**:
 
-**Memory Usage**: Bounded by `throughput × (MAX_TIME_DRIFT + EXPIRE_TOLERANCE)`
-
-| Throughput | Window | Cache Size | Memory |
-|------------|--------|------------|--------|
-| 10K/sec | 6 sec | 60K | 480 KB |
-| 50K/sec | 6 sec | 300K | 2.4 MB |
-| 100K/sec | 6 sec | 600K | 4.8 MB |
+| Setting | Value |
+|---------|-------|
+| IndexSet | 10,000 × ~20 bytes = ~200 KB |
+| **Single structure** | **No double storage!** |
 
 **⚠️ Critical: Replay Mode Exception**
 
