@@ -447,6 +447,174 @@ fn test_vip_level_capped() {
 
 ---
 
+### Step 9.1.9b: Add DB Value Validation (i64 ↔ u64 Safety)
+
+**File**: `src/ubs_core/types.rs`
+
+**🚨 WHY THIS MATTERS**:
+- ScyllaDB uses `BIGINT` (signed i64)
+- Rust uses `u64` (unsigned)
+- Large u64 values (> i64::MAX) will appear negative when read back
+- Must validate on read/write to prevent corruption
+
+**🚨 CRITICAL RULE: NO PANIC IN PRODUCTION**
+- Return `Result<T, Error>` instead of panic
+- Log error and return error
+- Only panic in tests (use `#[cfg(test)]`)
+
+```rust
+use thiserror::Error;
+
+/// Maximum balance value (fits in both u64 and positive i64)
+/// 10^18 = 1 quintillion (more than enough for any currency)
+pub const MAX_BALANCE: u64 = 1_000_000_000_000_000_000;
+
+#[derive(Debug, Error, Clone, PartialEq)]
+pub enum DbValueError {
+    #[error("Negative value in DB: {0}")]
+    NegativeValue(i64),
+
+    #[error("Value exceeds maximum: {0} > {MAX_BALANCE}")]
+    ExceedsMaximum(u64),
+}
+
+/// Convert u64 to i64 for DB storage (write)
+/// Returns Error if value exceeds safe range
+pub fn u64_to_db(value: u64) -> Result<i64, DbValueError> {
+    if value > MAX_BALANCE {
+        log::error!("DB_WRITE_ERROR: value {} exceeds MAX_BALANCE", value);
+        return Err(DbValueError::ExceedsMaximum(value));
+    }
+    Ok(value as i64)
+}
+
+/// Convert i64 from DB to u64 (read)
+/// Returns Error if value is negative (data corruption)
+pub fn db_to_u64(value: i64) -> Result<u64, DbValueError> {
+    if value < 0 {
+        log::error!("DB_READ_ERROR: negative value {} in DB", value);
+        return Err(DbValueError::NegativeValue(value));
+    }
+    Ok(value as u64)
+}
+```
+
+**🧪 Unit Tests (COMPREHENSIVE)**:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // === u64_to_db tests ===
+
+    #[test]
+    fn test_u64_to_db_zero() {
+        assert_eq!(u64_to_db(0), Ok(0));
+    }
+
+    #[test]
+    fn test_u64_to_db_normal_value() {
+        assert_eq!(u64_to_db(1_000_000), Ok(1_000_000));
+    }
+
+    #[test]
+    fn test_u64_to_db_max_balance() {
+        assert_eq!(u64_to_db(MAX_BALANCE), Ok(MAX_BALANCE as i64));
+    }
+
+    #[test]
+    fn test_u64_to_db_exceeds_max() {
+        let too_large = MAX_BALANCE + 1;
+        assert_eq!(u64_to_db(too_large), Err(DbValueError::ExceedsMaximum(too_large)));
+    }
+
+    #[test]
+    fn test_u64_to_db_way_too_large() {
+        let huge = u64::MAX;
+        assert_eq!(u64_to_db(huge), Err(DbValueError::ExceedsMaximum(huge)));
+    }
+
+    // === db_to_u64 tests ===
+
+    #[test]
+    fn test_db_to_u64_zero() {
+        assert_eq!(db_to_u64(0), Ok(0));
+    }
+
+    #[test]
+    fn test_db_to_u64_normal_value() {
+        assert_eq!(db_to_u64(1_000_000), Ok(1_000_000));
+    }
+
+    #[test]
+    fn test_db_to_u64_max_balance() {
+        assert_eq!(db_to_u64(MAX_BALANCE as i64), Ok(MAX_BALANCE));
+    }
+
+    #[test]
+    fn test_db_to_u64_negative_one() {
+        assert_eq!(db_to_u64(-1), Err(DbValueError::NegativeValue(-1)));
+    }
+
+    #[test]
+    fn test_db_to_u64_large_negative() {
+        assert_eq!(db_to_u64(-1_000_000), Err(DbValueError::NegativeValue(-1_000_000)));
+    }
+
+    #[test]
+    fn test_db_to_u64_min_i64() {
+        assert_eq!(db_to_u64(i64::MIN), Err(DbValueError::NegativeValue(i64::MIN)));
+    }
+
+    // === Round-trip tests ===
+
+    #[test]
+    fn test_roundtrip_zero() {
+        let original: u64 = 0;
+        let db_value = u64_to_db(original).unwrap();
+        let restored = db_to_u64(db_value).unwrap();
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_roundtrip_normal() {
+        let original: u64 = 123_456_789;
+        let db_value = u64_to_db(original).unwrap();
+        let restored = db_to_u64(db_value).unwrap();
+        assert_eq!(original, restored);
+    }
+
+    #[test]
+    fn test_roundtrip_max_balance() {
+        let original: u64 = MAX_BALANCE;
+        let db_value = u64_to_db(original).unwrap();
+        let restored = db_to_u64(db_value).unwrap();
+        assert_eq!(original, restored);
+    }
+}
+```
+
+**Error Handling in Production**:
+
+```rust
+// ✅ CORRECT: Return error, log, continue
+fn load_balance(row: &Row) -> Result<Balance, Error> {
+    let avail_i64: i64 = row.get("avail")?;
+    let avail = db_to_u64(avail_i64)?;  // Returns Error if negative
+    // ...
+}
+
+// ❌ WRONG: Don't panic in production
+fn load_balance_bad(row: &Row) -> Balance {
+    let avail_i64: i64 = row.get("avail").unwrap();
+    assert!(avail_i64 >= 0);  // BAD: panics!
+    // ...
+}
+```
+
+**Commit**: `feat(ubs_core): add DB value validation (i64 ↔ u64 safety)`
+
 ### Step 9.1.10: Add DeduplicationGuard (Part 1 - Struct)
 
 **File**: `src/ubs_core/dedup.rs`
@@ -600,15 +768,21 @@ fn test_eviction_updates_min_ts() {
 | 9.1.2 | RejectReason enum | 2 tests |
 | 9.1.3 | InternalOrder struct | 2 tests |
 | 9.1.4 | Order cost calculation | 3 tests |
-| 9.1.5 | DebtReason enum | 1 test |
+| 9.1.5 | DebtReason enum (with EventType derivation) | 3 tests |
 | 9.1.6 | DebtRecord struct | 1 test |
 | 9.1.7 | DebtLedger basic | 2 tests |
 | 9.1.8 | DebtLedger mutations | 3 tests |
 | 9.1.9 | VipFeeTable | 3 tests |
+| 9.1.9b | **DB Value Validation (i64↔u64)** | **14 tests** |
 | 9.1.10 | DeduplicationGuard struct | 1 test |
 | 9.1.11 | DeduplicationGuard logic | 5+ tests |
 
-**Total**: 11 small commits, 23+ unit tests
+**Total**: 12 small commits, 39+ unit tests
+
+**🚨 CRITICAL RULES**:
+- **NO PANIC IN PRODUCTION** - Return `Result<T, Error>` instead
+- All DB read/write uses `db_to_u64()` / `u64_to_db()` helpers
+- Comprehensive unit tests for edge cases
 
 ---
 
