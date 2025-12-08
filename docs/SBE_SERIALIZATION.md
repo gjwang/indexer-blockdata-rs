@@ -377,6 +377,73 @@ fn handle_message(buffer: &[u8]) {
 | JSON | 1-10 µs | Public API, debugging |
 | Protobuf | 500 ns | General internal use |
 | Bincode | 100-300 ns | Rust-to-Rust, persistence |
-| **SBE** | **15 ns** | HFT internal paths |
+| **rkyv** | **~15 ns** | Rust-native zero-copy |
+| **SBE** | **~15 ns** | HFT, cross-language |
 
 **SBE is the only way to achieve consistent single-digit microsecond latency** because it removes "parsing" from the CPU entirely.
+
+---
+
+## Appendix: rkyv - The Rust-Native Alternative
+
+**If you hate SBE's XML**, use `rkyv` (pronounced "archive").
+
+rkyv is the "Rust-Native" answer to SBE:
+- **Zero XML**: You define normal Rust structs
+- **Zero Copy**: Same memory layout performance as SBE
+- **Zero Parsing**: Cast a pointer, done
+
+| Feature | SBE | rkyv | Bincode |
+|---------|-----|------|---------|
+| Schema Definition | Ugly XML | Rust Structs | Rust Structs |
+| Read Speed | Instant (0ns) | Instant (0ns) | Fast (copy) |
+| Developer Experience | Painful | Excellent | Excellent |
+| Cross-Language | Yes (C++, Java) | No (Rust only) | No |
+
+### rkyv Implementation
+
+```toml
+[dependencies]
+rkyv = "0.7"
+```
+
+```rust
+use rkyv::{Archive, Deserialize, Serialize};
+
+// The macro calculates memory layout at compile time
+#[derive(Archive, Deserialize, Serialize, Debug)]
+#[archive(check_bytes)]
+pub struct Order {
+    pub user_id: u64,
+    pub symbol_id: u32,
+    pub price: u64,
+    pub qty: u64,
+    pub side: u8,
+}
+
+// Zero-Copy Read (The Magic)
+fn on_fast_path_message(buffer: &[u8]) {
+    // "Access" the buffer - effectively ZERO cost
+    let archived = unsafe { rkyv::archived_root::<Order>(buffer) };
+
+    // Read values - just memory offset lookup
+    let uid = archived.user_id;
+    let price = archived.price;
+
+    println!("User {} bought at {}", uid, price);
+}
+```
+
+### When to Use What
+
+| Scenario | Choice |
+|----------|--------|
+| MVP/Prototype | Bincode (fastest dev time) |
+| Pure Rust, max speed | rkyv |
+| Cross-language (C++/Java interop) | SBE |
+| Legacy system integration | SBE |
+
+**Recommendation**:
+1. Start with **Bincode** for prototype
+2. If staying 100% Rust, switch to **rkyv**
+3. If C++ interop needed, use **SBE**
