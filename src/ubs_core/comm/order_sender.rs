@@ -1,8 +1,9 @@
-//! Order sender to Matching Engine via Aeron IPC
+//! Order sender to UBSCore via Aeron UDP
 //!
-//! Publishes validated orders to Matching Engine.
+//! Gateway uses this to publish orders to UBSCore.
 
 use std::ffi::CString;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rusteron_client::*;
@@ -14,17 +15,74 @@ use crate::ubs_core::order::InternalOrder;
 /// Order sender using Aeron publication
 pub struct OrderSender {
     config: AeronConfig,
+    aeron: Option<Arc<Aeron>>,
+    publication: Option<AeronPublication>,
 }
 
 impl OrderSender {
-    /// Create a new order sender (stores config for later use)
+    /// Create a new order sender
     pub fn new(config: AeronConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            aeron: None,
+            publication: None,
+        }
+    }
+
+    /// Connect to Aeron and create publication
+    pub fn connect(&mut self) -> Result<(), SendError> {
+        // Create Aeron context
+        let ctx = AeronContext::new()
+            .map_err(|e| SendError::AeronError(format!("Context creation failed: {:?}", e)))?;
+
+        // Connect to Aeron driver
+        let aeron = Aeron::new(&ctx)
+            .map_err(|e| SendError::AeronError(format!("Aeron connection failed: {:?}", e)))?;
+
+        aeron.start()
+            .map_err(|e| SendError::AeronError(format!("Aeron start failed: {:?}", e)))?;
+
+        // Create publication (blocks until connected or timeout)
+        let channel = CString::new(self.config.orders_channel.clone())
+            .map_err(|_| SendError::AeronError("Invalid channel string".into()))?;
+
+        let publication = aeron
+            .add_publication(&channel, self.config.orders_in_stream, Duration::from_secs(5))
+            .map_err(|e| SendError::AeronError(format!("Add publication failed: {:?}", e)))?;
+
+        self.aeron = Some(Arc::new(aeron));
+        self.publication = Some(publication);
+
+        log::info!("[AERON] Connected to {}", self.config.orders_channel);
+        Ok(())
+    }
+
+    /// Send an order to UBSCore
+    pub fn send(&self, order: &InternalOrder) -> Result<i64, SendError> {
+        let publication = self.publication.as_ref().ok_or(SendError::NotConnected)?;
+
+        let msg = OrderMessage::from_order(order);
+        let bytes = msg.to_bytes();
+
+        // offer returns position (i64): positive = success, negative = error code
+        let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
+        let position = publication.offer(bytes, handler);
+
+        if position > 0 {
+            Ok(position)
+        } else {
+            Err(SendError::Unknown(position))
+        }
     }
 
     /// Get config
     pub fn config(&self) -> &AeronConfig {
         &self.config
+    }
+
+    /// Check if connected
+    pub fn is_connected(&self) -> bool {
+        self.publication.as_ref().map_or(false, |p| p.is_connected())
     }
 }
 

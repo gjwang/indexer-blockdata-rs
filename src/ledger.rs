@@ -1007,7 +1007,7 @@ impl GlobalLedger {
 
                 let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset_id);
                 if let Some(idx) = gain_idx {
-                    user.assets[idx].1.deposit(*gain_amount);
+                    let _ = user.assets[idx].1.deposit(*gain_amount);
                 } else {
                     user.assets.push((
                         *gain_asset_id,

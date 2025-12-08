@@ -30,6 +30,25 @@ pub struct OrderMessage {
 }
 
 impl OrderMessage {
+    /// Create from InternalOrder
+    pub fn from_order(order: &InternalOrder) -> Self {
+        Self {
+            order_id: order.order_id,
+            user_id: order.user_id,
+            symbol_id: order.symbol_id,
+            side: match order.side {
+                Side::Buy => 0,
+                Side::Sell => 1,
+            },
+            order_type: match order.order_type {
+                OrderType::Limit => 0,
+                OrderType::Market => 1,
+            },
+            price: order.price,
+            qty: order.qty,
+        }
+    }
+
     /// Convert to bytes for transmission
     pub fn to_bytes(&self) -> &[u8] {
         unsafe {
