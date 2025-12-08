@@ -14,6 +14,7 @@
 //!         ME → [Kafka:fills] ─┘
 //! ```
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -21,13 +22,13 @@ use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer, StreamConsumer};
 use rdkafka::message::Message;
 use rdkafka::producer::{FutureProducer, FutureRecord};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
-use fetcher::configure::{self, AppConfig};
+use fetcher::configure::{self, expand_tilde, AppConfig};
 use fetcher::logger::setup_logger;
 use fetcher::ubs_core::{
-    HealthChecker, HealthStatus, InternalOrder, LatencyTimer, OrderMetrics, RejectReason,
-    SpotRiskModel, UBSCore,
+    GroupCommitConfig, GroupCommitWal, HealthChecker, HealthStatus, InternalOrder, LatencyTimer,
+    OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType,
 };
 
 const LOG_TARGET: &str = "ubscore";
@@ -35,6 +36,9 @@ const LOG_TARGET: &str = "ubscore";
 // === CONFIGURATION ===
 const STATS_INTERVAL_SECS: u64 = 10;
 const HEALTH_HEARTBEAT_MS: u64 = 1000;
+const DEFAULT_DATA_DIR: &str = "~/ubscore_data";
+const WAL_BUFFER_SIZE: usize = 64 * 1024; // 64KB
+const WAL_MAX_BATCH_SIZE: usize = 100;
 
 /// UBSCore Service configuration
 #[derive(Debug, Clone)]
@@ -50,6 +54,9 @@ struct ServiceConfig {
 
     /// Consumer group ID
     consumer_group: String,
+
+    /// Data directory for WAL and snapshots
+    data_dir: String,
 }
 
 impl ServiceConfig {
@@ -59,6 +66,7 @@ impl ServiceConfig {
             orders_topic: config.kafka.topics.orders.clone(),
             validated_orders_topic: "validated_orders".to_string(),
             consumer_group: config.kafka.group_id.clone(),
+            data_dir: expand_tilde(&config.data_dir),
         }
     }
 }
@@ -66,10 +74,11 @@ impl ServiceConfig {
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
-            kafka_brokers: "localhost:9092".to_string(),
+            kafka_brokers: "localhost:9093".to_string(),
             orders_topic: "orders".to_string(),
             validated_orders_topic: "validated_orders".to_string(),
             consumer_group: "ubscore".to_string(),
+            data_dir: expand_tilde(DEFAULT_DATA_DIR),
         }
     }
 }
@@ -77,19 +86,44 @@ impl Default for ServiceConfig {
 /// UBSCore Service state
 struct UBSCoreService {
     core: RwLock<UBSCore<SpotRiskModel>>,
+    wal: Mutex<GroupCommitWal>,
     metrics: Arc<OrderMetrics>,
     health: Arc<HealthChecker>,
+    wal_entries: std::sync::atomic::AtomicU64,
 }
 
 impl UBSCoreService {
-    fn new() -> Self {
+    fn new(wal: GroupCommitWal) -> Self {
         let core = UBSCore::new(SpotRiskModel);
 
         Self {
             core: RwLock::new(core),
+            wal: Mutex::new(wal),
             metrics: Arc::new(OrderMetrics::new()),
             health: Arc::new(HealthChecker::default()),
+            wal_entries: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Log order to WAL before processing
+    async fn log_order(&self, order: &InternalOrder) -> Result<(), String> {
+        let payload = bincode::serialize(order).map_err(|e| format!("Serialize error: {}", e))?;
+
+        let entry = WalEntry::new(WalEntryType::OrderLock, payload);
+
+        let mut wal = self.wal.lock().await;
+        wal.append(&entry).map_err(|e| format!("WAL append error: {:?}", e))?;
+
+        self.wal_entries.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Flush WAL to disk
+    async fn flush_wal(&self) -> Result<(), String> {
+        let mut wal = self.wal.lock().await;
+        wal.flush().map_err(|e| format!("WAL flush error: {:?}", e))?;
+        Ok(())
     }
 
     /// Process an incoming order
@@ -113,6 +147,11 @@ impl UBSCoreService {
         }
 
         result
+    }
+
+    /// Get WAL stats
+    fn wal_entries_count(&self) -> u64 {
+        self.wal_entries.load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 
@@ -150,9 +189,37 @@ async fn main() {
     log::info!(target: LOG_TARGET, "Orders topic: {}", service_config.orders_topic);
     log::info!(target: LOG_TARGET, "Validated orders topic: {}", service_config.validated_orders_topic);
     log::info!(target: LOG_TARGET, "Consumer group: {}", service_config.consumer_group);
+    log::info!(target: LOG_TARGET, "Data directory: {}", service_config.data_dir);
+
+    // --- Create Data Directory ---
+    let data_dir = PathBuf::from(&service_config.data_dir);
+    if let Err(e) = std::fs::create_dir_all(&data_dir) {
+        log::error!(target: LOG_TARGET, "❌ Failed to create data directory: {}", e);
+        std::process::exit(1);
+    }
+    log::info!(target: LOG_TARGET, "✅ Data directory ready: {:?}", data_dir);
+
+    // --- Initialize WAL ---
+    let wal_path = data_dir.join("ubscore.wal");
+    let wal_config = GroupCommitConfig {
+        max_batch_size: WAL_MAX_BATCH_SIZE,
+        buffer_size: WAL_BUFFER_SIZE,
+        use_direct_io: false,
+    };
+
+    let wal = match GroupCommitWal::open(&wal_path, wal_config) {
+        Ok(w) => {
+            log::info!(target: LOG_TARGET, "✅ WAL opened: {:?}", wal_path);
+            w
+        }
+        Err(e) => {
+            log::error!(target: LOG_TARGET, "❌ Failed to open WAL: {:?}", e);
+            std::process::exit(1);
+        }
+    };
 
     // --- Create Service ---
-    let service = Arc::new(UBSCoreService::new());
+    let service = Arc::new(UBSCoreService::new(wal));
     log::info!(target: LOG_TARGET, "✅ UBSCore initialized");
 
     // --- Kafka Producer ---
@@ -204,6 +271,7 @@ async fn main() {
 
     // --- Spawn Stats Reporter ---
     let stats_service = service.clone();
+    let stats_data_dir = data_dir.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(STATS_INTERVAL_SECS));
         let start_time = Instant::now();
@@ -214,10 +282,15 @@ async fn main() {
             let snapshot = stats_service.metrics.snapshot();
             let uptime = start_time.elapsed().as_secs();
             let health = stats_service.health.readiness();
+            let wal_entries = stats_service.wal_entries_count();
+
+            // Get WAL file size
+            let wal_path = stats_data_dir.join("ubscore.wal");
+            let wal_size = std::fs::metadata(&wal_path).map(|m| m.len()).unwrap_or(0);
 
             log::info!(
                 target: LOG_TARGET,
-                "[STATS] uptime={}s | recv={} accept={} reject={} | lat: avg={}µs min={}µs max={}µs | health={:?}",
+                "[STATS] uptime={}s | recv={} accept={} reject={} | lat: avg={}µs min={}µs max={}µs | wal: entries={} size={}KB | health={:?}",
                 uptime,
                 snapshot.orders_received,
                 snapshot.orders_accepted,
@@ -225,6 +298,8 @@ async fn main() {
                 snapshot.avg_latency_us,
                 snapshot.min_latency_us,
                 snapshot.max_latency_us,
+                wal_entries,
+                wal_size / 1024,
                 match health {
                     HealthStatus::Healthy => "✅",
                     HealthStatus::Degraded(_) => "⚠️",
@@ -261,6 +336,7 @@ async fn run_processing_loop(
     let mut total_processed: u64 = 0;
     let mut total_accepted: u64 = 0;
     let mut total_rejected: u64 = 0;
+    let mut pending_wal_flush: u64 = 0;
     let loop_start = Instant::now();
 
     log::info!(target: LOG_TARGET, "📥 Starting order processing loop...");
@@ -295,6 +371,14 @@ async fn run_processing_loop(
                                 parse_latency_us
                             );
 
+                            // --- Log to WAL ---
+                            let wal_timer = LatencyTimer::start();
+                            if let Err(e) = service.log_order(&order).await {
+                                log::error!(target: LOG_TARGET, "[WAL_ERROR] {}", e);
+                            }
+                            let wal_latency_us = wal_timer.elapsed_us();
+                            pending_wal_flush += 1;
+
                             // --- Process Order ---
                             let process_timer = LatencyTimer::start();
                             let order_id = order.order_id;
@@ -304,10 +388,17 @@ async fn run_processing_loop(
                                     let process_latency_us = process_timer.elapsed_us();
                                     total_accepted += 1;
 
+                                    // Flush WAL on accepted orders
+                                    if let Err(e) = service.flush_wal().await {
+                                        log::error!(target: LOG_TARGET, "[WAL_FLUSH_ERROR] {}", e);
+                                    }
+                                    pending_wal_flush = 0;
+
                                     log::info!(
                                         target: LOG_TARGET,
-                                        "[ACCEPT] order_id={} | process={}µs | total: proc={} accept={} reject={}",
+                                        "[ACCEPT] order_id={} | wal={}µs process={}µs | total: proc={} accept={} reject={}",
                                         order_id,
+                                        wal_latency_us,
                                         process_latency_us,
                                         total_processed,
                                         total_accepted,
@@ -367,16 +458,23 @@ async fn run_processing_loop(
 
                                     log::warn!(
                                         target: LOG_TARGET,
-                                        "[REJECT] order_id={} reason={:?} | process={}µs | total: proc={} accept={} reject={}",
+                                        "[REJECT] order_id={} reason={:?} | wal={}µs process={}µs | total: proc={} accept={} reject={}",
                                         order_id,
                                         reason,
+                                        wal_latency_us,
                                         process_latency_us,
                                         total_processed,
                                         total_accepted,
                                         total_rejected
                                     );
 
-                                    // TODO: Send rejection response to Gateway
+                                    // Flush WAL periodically even for rejections
+                                    if pending_wal_flush >= 100 {
+                                        if let Err(e) = service.flush_wal().await {
+                                            log::error!(target: LOG_TARGET, "[WAL_FLUSH_ERROR] {}", e);
+                                        }
+                                        pending_wal_flush = 0;
+                                    }
                                 }
                             }
                         }
