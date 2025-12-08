@@ -74,28 +74,55 @@ The "Next Bullet" strategy for log rotation is a **professional-grade detail** t
 
 ## Areas for Improvement (Critical Gaps)
 
-### 1. ⚠️ Missing: Order ID Deduplication at Scale
+### 1. ✅ Order ID Deduplication via halfULID (Already Addressed)
 
-**Current Design**: Uses `HashSet<u64>` for processed deposit IDs.
+**Design Choice**: Using halfULID as order_id which embeds timestamp.
 
-**Problem**: This doesn't scale. After 1M deposits, memory usage becomes significant. After 1B, it's untenable.
+**Elegant Solution**:
+- halfULID contains timestamp in high bits
+- Reject any order with timestamp older than X minutes (e.g., 10 min)
+- No HashSet or Bloom filter needed - just compare timestamps!
 
-**Recommended Fix**:
 ```rust
-// Use a sliding window with Bloom filter
-struct DeduplicationWindow {
-    // Primary: Exact check for recent events (last 10 minutes)
-    recent: LruCache<u64, ()>,
+const MAX_ORDER_AGE_MS: u64 = 10 * 60 * 1000; // 10 minutes
 
-    // Secondary: Bloom filter for older events
-    bloom: BloomFilter,
+fn validate_order_id(&self, order_id: HalfUlid) -> Result<(), RejectReason> {
+    let order_ts = order_id.timestamp_ms();
+    let now = current_time_ms();
 
-    // Watermark: Reject anything with ID below this
-    min_accepted_id: u64,
+    if now - order_ts > MAX_ORDER_AGE_MS {
+        return Err(RejectReason::OrderTooOld);
+    }
+
+    // Also reject future timestamps (clock skew protection)
+    if order_ts > now + 1000 {
+        return Err(RejectReason::FutureTimestamp);
+    }
+
+    Ok(())
 }
 ```
 
-**Or**: Use Kafka offset as the natural deduplication key (if event_id = Kafka offset, duplicates are impossible).
+**⚠️ Critical: Replay Mode Exception**
+
+During WAL replay (recovery), old timestamps must be accepted:
+
+```rust
+fn validate_order_id(&self, order_id: HalfUlid) -> Result<(), RejectReason> {
+    // Skip timestamp check during replay
+    if self.is_replay_mode {
+        return Ok(()); // Trust the WAL
+    }
+
+    // Normal validation...
+}
+```
+
+**Why this works**:
+- During normal operation: Rejects stale/duplicate orders naturally
+- During replay: All orders from WAL are trusted (already validated when first received)
+- Memory usage: O(1) - no storage of seen IDs needed
+
 
 ### 2. ⚠️ Missing: Graceful Degradation Under Load
 
