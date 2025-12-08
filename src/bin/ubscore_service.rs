@@ -41,7 +41,6 @@ macro_rules! debug { ($($arg:tt)*) => { log::debug!(target: TARGET, $($arg)*) } 
 // === CONFIGURATION ===
 const STATS_INTERVAL_SECS: u64 = 10;
 const HEALTH_HEARTBEAT_MS: u64 = 1000;
-const DEFAULT_DATA_DIR: &str = "~/ubscore_data";
 const WAL_BUFFER_SIZE: usize = 64 * 1024; // 64KB
 const WAL_MAX_BATCH_SIZE: usize = 100;
 
@@ -83,7 +82,7 @@ impl Default for ServiceConfig {
             orders_topic: "orders".to_string(),
             validated_orders_topic: "validated_orders".to_string(),
             consumer_group: "ubscore".to_string(),
-            data_dir: expand_tilde(DEFAULT_DATA_DIR),
+            data_dir: expand_tilde("~/ubscore_data"),
         }
     }
 }
