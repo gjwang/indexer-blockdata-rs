@@ -115,6 +115,68 @@ pub struct Balance {
 
 ---
 
+### Task 9.2c: Implement DebtLedger (Ghost Money Handling)
+
+**File**: `src/ubs_core/debt.rs`
+
+**Critical Design**: Balance stays `u64` (never negative), debt tracked separately.
+
+```rust
+/// Separate ledger for debts (ghost money scenarios)
+pub struct DebtLedger {
+    debts: HashMap<(UserId, AssetId), DebtRecord>,
+}
+
+pub struct DebtRecord {
+    pub amount: u64,          // Debt amount (always positive)
+    pub created_at: u64,      // Timestamp
+    pub reason: DebtReason,   // Why debt occurred
+    pub sequence: u64,        // WAL sequence for audit
+}
+
+pub enum DebtReason {
+    GhostMoney,         // Trade settled without funds
+    Liquidation,        // Forced position close deficit
+    FeeUnpaid,          // Fee charged but no balance
+    StaleSpeculative,   // Speculative credit timed out
+}
+
+impl DebtLedger {
+    pub fn has_debt(&self, user_id: UserId) -> bool;
+    pub fn add_debt(&mut self, user_id: UserId, asset_id: AssetId, record: DebtRecord);
+    pub fn pay_debt(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) -> u64;
+    pub fn total_debt(&self, user_id: UserId) -> u64;
+}
+```
+
+**How It Works**:
+```
+Scenario: User has 0 USDT, must deduct 5000 USDT
+
+balance.avail = 0                 // Stays 0 (saturating_sub)
+debt_ledger.add(user_id, USDT, DebtRecord {
+    amount: 5000,
+    reason: DebtReason::GhostMoney,
+})
+```
+
+**Deposit Auto-Pays Debt**:
+```rust
+pub fn on_deposit(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) {
+    // First: Clear debt for this asset
+    let remaining = self.debt_ledger.pay_debt(user_id, asset_id, amount);
+
+    // Then: Deposit remaining to Balance
+    if remaining > 0 {
+        self.get_balance_mut(user_id, asset_id).deposit(remaining);
+    }
+}
+```
+
+**See**: [GHOST_MONEY_HANDLING.md](./GHOST_MONEY_HANDLING.md) for complete design.
+
+**Status**: 📋 NOT STARTED
+
 ### Task 9.3: Implement Order Cost Calculation
 
 **File**: `src/ubs_core/order.rs`

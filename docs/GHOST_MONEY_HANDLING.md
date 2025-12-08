@@ -33,25 +33,133 @@ Cascading rollback = Market chaos
 
 **Once a trade is in the Log, it's FINAL.**
 
-## Solution 1: The Debt Model
+## Solution 1: The Debt Ledger (Separate from Balance)
 
-When the system reconciles, it forces the balance update:
+### 🚨 Critical Design Decision
+
+**Balance uses `u64` (never negative) + Separate `DebtLedger` for ghost money.**
+
+**Why NOT i64 for Balance?**
+- Balance stays simple, fast, robust
+- u64 is enforced by compiler (can't accidentally go negative)
+- Debt is rare - separate handling is cleaner
+- Full audit trail for debts
+
+### Implementation
+
+```rust
+/// Balance stays pure u64 - NEVER negative
+pub struct Balance {
+    pub avail: u64,
+    pub frozen: u64,
+    pub version: u64,
+}
+
+/// Separate ledger for debts (ghost money scenarios)
+pub struct DebtLedger {
+    debts: HashMap<(UserId, AssetId), DebtRecord>,
+}
+
+pub struct DebtRecord {
+    pub amount: u64,          // Debt amount (always positive)
+    pub created_at: u64,      // Timestamp
+    pub reason: DebtReason,   // Why debt occurred
+    pub sequence: u64,        // WAL sequence for audit
+}
+
+pub enum DebtReason {
+    GhostMoney,         // Trade settled without funds
+    Liquidation,        // Forced position close deficit
+    FeeUnpaid,          // Fee charged but no balance
+    StaleSpeculative,   // Speculative credit timed out
+}
+```
+
+### How It Works
 
 ```
-Log Event 1 (MISSING): BTC Sale never hit Redpanda
-Log Event 2 (PRESENT): ETH Buy hit Redpanda
+Scenario: User has 0 USDT, must deduct 5000 USDT
 
-Replay Logic:
-- "User A bought 0.1 ETH for 5000 USDT"
-- Check balance: 0 USDT
-- FORCE the debit anyway
+Old approach (i64):
+  balance.avail = 0 - 5000 = -5000  // Negative in Balance
 
-User A Balance:
-  USDT: 0 - 5000 = -5000 USDT (DEBT)
-  ETH:  0 + 0.1  = 0.1 ETH
+New approach (u64 + DebtLedger):
+  balance.avail = 0                 // Stays 0 (saturating_sub)
+  debt_ledger.add(user_id, USDT, DebtRecord {
+      amount: 5000,
+      reason: DebtReason::GhostMoney,
+  })
 ```
 
-**User A now has NEGATIVE balance = Exchange loaned them the money.**
+### Withdrawal Firewall with Debt
+
+```rust
+impl UBSCore {
+    pub fn can_withdraw(&self, user_id: UserId, asset_id: AssetId, amount: u64) -> bool {
+        // CANNOT withdraw if user has ANY debt
+        if self.debt_ledger.has_debt(user_id) {
+            return false;
+        }
+
+        let balance = self.get_balance(user_id, asset_id);
+        balance.avail >= amount
+    }
+
+    pub fn on_deposit(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) {
+        // First: Clear debt for this asset
+        let mut remaining = amount;
+
+        if let Some(debt) = self.debt_ledger.get_mut(user_id, asset_id) {
+            let pay_off = remaining.min(debt.amount);
+            debt.amount -= pay_off;
+            remaining -= pay_off;
+
+            if debt.amount == 0 {
+                self.debt_ledger.remove(user_id, asset_id);
+            }
+        }
+
+        // Then: Deposit remaining to Balance
+        if remaining > 0 {
+            let balance = self.get_balance_mut(user_id, asset_id);
+            balance.deposit(remaining);
+        }
+    }
+}
+```
+
+### Debt Audit Trail
+
+```rust
+impl DebtLedger {
+    pub fn add_debt(&mut self, user_id: UserId, asset_id: AssetId, record: DebtRecord) {
+        // Log for audit
+        log::error!(
+            "DEBT_CREATED: user={} asset={} amount={} reason={:?} seq={}",
+            user_id, asset_id, record.amount, record.reason, record.sequence
+        );
+
+        // Insert or update
+        self.debts
+            .entry((user_id, asset_id))
+            .and_modify(|existing| existing.amount += record.amount)
+            .or_insert(record);
+    }
+
+    pub fn total_debt(&self, user_id: UserId) -> u64 {
+        self.debts.iter()
+            .filter(|((uid, _), _)| *uid == user_id)
+            .map(|(_, r)| r.amount)
+            .sum()
+    }
+}
+```
+
+**Benefits of DebtLedger**:
+- Balance stays simple `u64` - fast, robust, no edge cases
+- Debt is explicit and auditable
+- Full history of why debt occurred
+- Deposits auto-pay debt first
 
 ## Solution 2: Auto-Liquidation Protocol
 
