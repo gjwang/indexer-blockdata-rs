@@ -79,18 +79,44 @@ if [ "$SERVICES_OK" = false ]; then
 fi
 
 echo ""
-echo "Step 2: Sending test order via Gateway API..."
+echo "Step 2: Seeding account with Transfer In..."
+echo ""
+
+USER_ID=1001
+
+# Transfer In USDT for testing
+TRANSFER_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"request_id\": \"seed_$(date +%s)\",
+        \"user_id\": $USER_ID,
+        \"asset\": \"USDT\",
+        \"amount\": \"100000.00\"
+    }" 2>&1)
+
+echo "Transfer In Response:"
+echo "$TRANSFER_RESPONSE" | jq . 2>/dev/null || echo "$TRANSFER_RESPONSE"
+echo ""
+
+if echo "$TRANSFER_RESPONSE" | grep -q "success.*true"; then
+    echo -e "${GREEN}✓${NC} Transfer In successful"
+else
+    echo -e "${YELLOW}⚠${NC} Transfer In may have failed (check log)"
+fi
+
+echo ""
+echo "Step 3: Sending test order via Gateway API..."
 echo ""
 
 # Send a test order
-ORDER_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/order/place" \
+ORDER_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/orders?user_id=$USER_ID" \
     -H "Content-Type: application/json" \
     -d '{
         "symbol": "BTC_USDT",
-        "side": "buy",
+        "side": "Buy",
         "price": "50000.00",
-        "qty": "1.5",
-        "order_type": "limit"
+        "quantity": "1.5",
+        "order_type": "Limit"
     }' 2>&1)
 
 echo "Gateway Response:"
@@ -98,7 +124,7 @@ echo "$ORDER_RESPONSE" | jq . 2>/dev/null || echo "$ORDER_RESPONSE"
 echo ""
 
 # Check if order was accepted
-if echo "$ORDER_RESPONSE" | grep -q "order_id\|cid\|accepted"; then
+if echo "$ORDER_RESPONSE" | grep -q "order_id\|status.*0"; then
     echo -e "${GREEN}✓${NC} Order submitted to Gateway"
 else
     echo -e "${RED}✗${NC} Order submission failed"
@@ -106,7 +132,7 @@ else
 fi
 
 echo ""
-echo "Step 3: Checking Kafka topics..."
+echo "Step 4: Checking Kafka topics..."
 echo ""
 
 # Check orders topic (requires rpk or kafka-console-consumer)
@@ -122,7 +148,7 @@ else
 fi
 
 echo ""
-echo "Step 4: Checking UBSCore logs..."
+echo "Step 5: Checking UBSCore logs..."
 echo ""
 
 if [ -f "logs/ubscore.log" ]; then

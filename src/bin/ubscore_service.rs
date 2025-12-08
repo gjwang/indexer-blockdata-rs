@@ -109,6 +109,22 @@ impl UBSCoreService {
         }
     }
 
+    /// Seed test accounts with initial balances
+    /// This is for development/testing only
+    async fn seed_test_accounts(&self) {
+        let mut core = self.core.write().await;
+
+        // Seed accounts 1001-1010 with BTC(asset 1) and USDT(asset 2)
+        for user_id in 1001..=1010 {
+            // 100 BTC (8 decimals)
+            core.on_deposit(user_id, 1, 100_00000000);
+            // 10,000,000 USDT (8 decimals)
+            core.on_deposit(user_id, 2, 10_000_000_00000000);
+        }
+
+        info!("✅ Seeded test accounts 1001-1010 with BTC and USDT");
+    }
+
     /// Log order to WAL before processing
     async fn log_order(&self, order: &InternalOrder) -> Result<(), String> {
         let payload = bincode::serialize(order).map_err(|e| format!("Serialize error: {}", e))?;
@@ -225,6 +241,11 @@ async fn main() {
     // --- Create Service ---
     let service = Arc::new(UBSCoreService::new(wal));
     info!("✅ UBSCore initialized");
+
+    // --- Seed test accounts (development only) ---
+    // TODO: Remove this once balance sync from Gateway is implemented
+    service.seed_test_accounts().await;
+
 
     // --- Kafka Producer ---
     let producer: FutureProducer = match ClientConfig::new()
