@@ -6,7 +6,6 @@ use crate::user_account::{AssetId, UserAccount, UserId};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::Mutex;
 
 use super::debt::{DebtLedger, DebtReason, DebtRecord, EventType};
 use super::dedup::DeduplicationGuard;
@@ -44,7 +43,8 @@ pub struct UBSCore<R: RiskModel> {
     is_replay_mode: bool,
 
     // WAL for durability (optional - None for tests/embedded without persistence)
-    wal: Option<Mutex<GroupCommitWal>>,
+    // NO MUTEX! UBSCore is single-threaded by design
+    wal: Option<GroupCommitWal>,
 
     // Ring buffer for async Kafka publishing (strict order, never blocks)
     order_tx: Option<std::sync::mpsc::SyncSender<OrderMessage>>,
@@ -81,7 +81,7 @@ impl<R: RiskModel> UBSCore<R> {
             vip_table: VipFeeTable::default(),
             risk_model,
             is_replay_mode: false,
-            wal: Some(Mutex::new(wal)),
+            wal: Some(wal),
             order_tx: None,
         })
     }
@@ -141,10 +141,12 @@ impl<R: RiskModel> UBSCore<R> {
     /// Process order with WAL persistence
     /// "Once accepted, never lost" - order is persisted BEFORE returning Ok
     pub fn process_order_durable(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
+        let start = std::time::Instant::now();
         let order_id = order.order_id;
         let user_id = order.user_id;
 
         // 1. Validate first (cheap, no I/O)
+        let validate_start = std::time::Instant::now();
         if let Err(reason) = self.process_order(order.clone()) {
             // Log rejected order for traceability
             log::warn!(
@@ -153,47 +155,45 @@ impl<R: RiskModel> UBSCore<R> {
             );
             return Err(reason);
         }
+        let validate_time = validate_start.elapsed();
 
         // 2. If valid, persist to WAL (fsync before returning)
-        if let Some(wal_mutex) = &self.wal {
+        let mut serialize_time = std::time::Duration::ZERO;
+        let mut append_time = std::time::Duration::ZERO;
+        let mut flush_time = std::time::Duration::ZERO;
+
+        if let Some(wal) = &mut self.wal {
+            let serialize_start = std::time::Instant::now();
             let payload = bincode::serialize(&order)
                 .map_err(|e| {
                     log::error!("[WAL_ERROR] order_id={} serialize failed: {}", order_id, e);
                     RejectReason::InternalError
                 })?;
+            serialize_time = serialize_start.elapsed();
 
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
 
-            let mut wal = wal_mutex.lock()
-                .map_err(|_| {
-                    log::error!("[WAL_ERROR] order_id={} lock failed", order_id);
-                    RejectReason::InternalError
-                })?;
-
+            let append_start = std::time::Instant::now();
             wal.append(&entry)
                 .map_err(|e| {
                     log::error!("[WAL_ERROR] order_id={} append failed: {:?}", order_id, e);
                     RejectReason::InternalError
                 })?;
+            append_time = append_start.elapsed();
 
+            let flush_start = std::time::Instant::now();
             wal.flush()
                 .map_err(|e| {
                     log::error!("[WAL_ERROR] order_id={} flush failed: {:?}", order_id, e);
                     RejectReason::InternalError
                 })?;
+            flush_time = flush_start.elapsed();
         }
 
-        // 3. Log accepted order for traceability
-        log::info!(
-            "[ACCEPT] order_id={} user={} symbol={} side={:?} price={} qty={}",
-            order_id, user_id, order.symbol_id, order.side, order.price, order.qty
-        );
-
-        // 4. Push to ring buffer for async Kafka publishing (strict order, never blocks)
+        // 3. Push to ring buffer for async Kafka publishing
+        let queue_start = std::time::Instant::now();
         if let Some(tx) = &self.order_tx {
             let payload = bincode::serialize(&order).unwrap_or_default();
-            // try_send: if queue is full, log error but don't block
-            // Order is safe in WAL, Kafka publisher can catch up
             if let Err(e) = tx.try_send(OrderMessage { order_id, payload }) {
                 log::error!(
                     "[QUEUE_FULL] order_id={} failed to queue for Kafka: {} (safe in WAL)",
@@ -201,6 +201,21 @@ impl<R: RiskModel> UBSCore<R> {
                 );
             }
         }
+        let queue_time = queue_start.elapsed();
+
+        let total_time = start.elapsed();
+
+        // 4. Log with detailed latency breakdown
+        log::info!(
+            "[UBS_LATENCY] order_id={} validate={}µs serialize={}µs append={}µs flush={}µs queue={}µs total={}µs",
+            order_id,
+            validate_time.as_micros(),
+            serialize_time.as_micros(),
+            append_time.as_micros(),
+            flush_time.as_micros(),
+            queue_time.as_micros(),
+            total_time.as_micros()
+        );
 
         Ok(())
     }
