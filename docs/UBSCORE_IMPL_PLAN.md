@@ -499,9 +499,8 @@ i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
 ```rust
 use thiserror::Error;
 
-/// UBSCore only needs to check this limit (for DB compatibility)
-/// Decimal handling is Gateway's responsibility
-pub const MAX_SAFE_VALUE: u64 = i64::MAX as u64;
+// No artificial limit constant - use full u64 internally
+// Only check at DB write boundary
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum DbValueError {
@@ -509,14 +508,16 @@ pub enum DbValueError {
     NegativeValue(i64),
 
     #[error("Value exceeds i64::MAX: {0}")]
-    ExceedsMax(u64),
+    ExceedsI64Max(u64),
 }
 
 /// Convert u64 to i64 for DB storage (write)
+/// Internal operations use full u64 range
+/// Only rejects at DB boundary if value > i64::MAX
 pub fn u64_to_db(value: u64) -> Result<i64, DbValueError> {
-    if value > MAX_SAFE_VALUE {
-        log::error!("DB_WRITE_ERROR: value {} exceeds i64::MAX", value);
-        return Err(DbValueError::ExceedsMax(value));
+    if value > i64::MAX as u64 {
+        log::error!("DB_WRITE: value {} > i64::MAX", value);
+        return Err(DbValueError::ExceedsI64Max(value));
     }
     Ok(value as i64)
 }
@@ -531,7 +532,7 @@ pub fn db_to_u64(value: i64) -> Result<u64, DbValueError> {
 }
 ```
 
-**🧪 Unit Tests (COMPREHENSIVE)**:
+**🧪 Unit Tests**:
 
 ```rust
 #[cfg(test)]
@@ -552,18 +553,20 @@ mod tests {
 
     #[test]
     fn test_u64_to_db_i64_max() {
-        assert_eq!(u64_to_db(MAX_SAFE_VALUE), Ok(i64::MAX));
+        // i64::MAX should succeed
+        assert_eq!(u64_to_db(i64::MAX as u64), Ok(i64::MAX));
     }
 
     #[test]
-    fn test_u64_to_db_exceeds_max() {
-        let too_large = MAX_SAFE_VALUE + 1;
-        assert_eq!(u64_to_db(too_large), Err(DbValueError::ExceedsMax(too_large)));
+    fn test_u64_to_db_exceeds_i64_max() {
+        // i64::MAX + 1 should fail
+        let too_large = i64::MAX as u64 + 1;
+        assert_eq!(u64_to_db(too_large), Err(DbValueError::ExceedsI64Max(too_large)));
     }
 
     #[test]
     fn test_u64_to_db_u64_max() {
-        assert_eq!(u64_to_db(u64::MAX), Err(DbValueError::ExceedsMax(u64::MAX)));
+        assert_eq!(u64_to_db(u64::MAX), Err(DbValueError::ExceedsI64Max(u64::MAX)));
     }
 
     // === db_to_u64 tests ===
@@ -574,23 +577,13 @@ mod tests {
     }
 
     #[test]
-    fn test_db_to_u64_normal_value() {
-        assert_eq!(db_to_u64(1_000_000), Ok(1_000_000));
-    }
-
-    #[test]
     fn test_db_to_u64_i64_max() {
-        assert_eq!(db_to_u64(i64::MAX), Ok(MAX_SAFE_VALUE));
+        assert_eq!(db_to_u64(i64::MAX), Ok(i64::MAX as u64));
     }
 
     #[test]
-    fn test_db_to_u64_negative_one() {
+    fn test_db_to_u64_negative() {
         assert_eq!(db_to_u64(-1), Err(DbValueError::NegativeValue(-1)));
-    }
-
-    #[test]
-    fn test_db_to_u64_min_i64() {
-        assert_eq!(db_to_u64(i64::MIN), Err(DbValueError::NegativeValue(i64::MIN)));
     }
 
     // === Round-trip tests ===
@@ -604,8 +597,8 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_max() {
-        let original: u64 = MAX_SAFE_VALUE;
+    fn test_roundtrip_i64_max() {
+        let original: u64 = i64::MAX as u64;
         let db_value = u64_to_db(original).unwrap();
         let restored = db_to_u64(db_value).unwrap();
         assert_eq!(original, restored);
