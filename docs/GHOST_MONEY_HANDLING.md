@@ -33,17 +33,17 @@ Cascading rollback = Market chaos
 
 **Once a trade is in the Log, it's FINAL.**
 
-## Solution 1: The Debt Ledger (Separate from Balance)
+## Solution 1: The Debt Ledger (Derived State)
 
 ### 🚨 Critical Design Decision
 
-**Balance uses `u64` (never negative) + Separate `DebtLedger` for ghost money.**
+**Balance uses `u64` (never negative) + `DebtLedger` as DERIVED state.**
 
-**Why NOT i64 for Balance?**
-- Balance stays simple, fast, robust
-- u64 is enforced by compiler (can't accidentally go negative)
+**Key Insights**:
+- Balance stays simple, fast, robust (u64 only)
+- DebtLedger is derived during apply/replay (no WAL change!)
+- DebtReason is derived from EventType (already in WAL)
 - Debt is rare - separate handling is cleaner
-- Full audit trail for debts
 
 ### Implementation
 
@@ -55,7 +55,7 @@ pub struct Balance {
     pub version: u64,
 }
 
-/// Separate ledger for debts (ghost money scenarios)
+/// Separate ledger for debts - DERIVED state (not persisted to WAL)
 pub struct DebtLedger {
     debts: HashMap<(UserId, AssetId), DebtRecord>,
 }
@@ -63,33 +63,97 @@ pub struct DebtLedger {
 pub struct DebtRecord {
     pub amount: u64,          // Debt amount (always positive)
     pub created_at: u64,      // Timestamp
-    pub reason: DebtReason,   // Why debt occurred
-    pub sequence: u64,        // WAL sequence for audit
+    pub reason: DebtReason,   // Derived from EventType
 }
 
 pub enum DebtReason {
-    GhostMoney,         // Trade settled without funds
-    Liquidation,        // Forced position close deficit
-    FeeUnpaid,          // Fee charged but no balance
-    StaleSpeculative,   // Speculative credit timed out
+    GhostMoney,        // TradeSettle with insufficient funds
+    FeeUnpaid,         // OrderFee with insufficient funds
+    Liquidation,       // Forced position close deficit
+    StaleSpeculative,  // Hot path credit expired
+    SystemError,       // Should NEVER happen (defensive)
+}
+
+impl DebtReason {
+    /// Derive debt reason from event type (exhaustive match)
+    pub fn from_event_type(event_type: EventType) -> Self {
+        match event_type {
+            EventType::TradeSettle => DebtReason::GhostMoney,
+            EventType::OrderFee => DebtReason::FeeUnpaid,
+            EventType::Liquidation => DebtReason::Liquidation,
+            EventType::StaleSpeculative => DebtReason::StaleSpeculative,
+
+            // These should NEVER cause debt
+            _ => {
+                log::error!("IMPOSSIBLE: {:?} caused debt!", event_type);
+                DebtReason::SystemError
+            }
+        }
+    }
 }
 ```
 
-### How It Works
+### How It Works (Derived During Apply)
+
+```rust
+impl UBSCore {
+    fn apply_balance_delta(
+        &mut self,
+        user_id: UserId,
+        asset_id: AssetId,
+        delta: i64,
+        event_type: EventType,  // Already in WAL!
+    ) -> u64 {
+        let balance = self.get_balance_mut(user_id, asset_id);
+        let expected = balance.avail as i64 + delta;
+
+        if expected >= 0 {
+            // Normal case: no debt
+            balance.avail = expected as u64;
+            return balance.avail;
+        }
+
+        // Ghost money detected - derive state!
+        balance.avail = 0;
+        let shortfall = (-expected) as u64;
+
+        self.debt_ledger.add_debt(user_id, asset_id, DebtRecord {
+            amount: shortfall,
+            reason: DebtReason::from_event_type(event_type),  // Derived!
+            created_at: now_ms(),
+        });
+
+        0
+    }
+}
+```
+
+### WAL Impact: NONE!
 
 ```
-Scenario: User has 0 USDT, must deduct 5000 USDT
+WAL Entry (unchanged):
+{
+    user_id: 123,
+    asset_id: 1,
+    delta: -5000,
+    balance_after: 0,       // Clamped to 0
+    event_type: TradeSettle // Already here!
+}
 
-Old approach (i64):
-  balance.avail = 0 - 5000 = -5000  // Negative in Balance
+Derived during apply:
+- expected = 1000 + (-5000) = -4000
+- actual = 0 (from balance_after)
+- shortfall = 4000
+- reason = GhostMoney (from TradeSettle)
 
-New approach (u64 + DebtLedger):
-  balance.avail = 0                 // Stays 0 (saturating_sub)
-  debt_ledger.add(user_id, USDT, DebtRecord {
-      amount: 5000,
-      reason: DebtReason::GhostMoney,
-  })
+DebtLedger (in memory): { user=123, asset=1, amount=4000, reason=GhostMoney }
 ```
+
+**Benefits**:
+- ✅ No WAL format change
+- ✅ Same replay logic
+- ✅ Debt reason derived from EventType
+- ✅ Simpler implementation
 
 ### Withdrawal Firewall with Debt
 

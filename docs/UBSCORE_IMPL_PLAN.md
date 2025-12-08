@@ -181,30 +181,69 @@ fn test_sell_cost() {
 
 ---
 
-### Step 9.1.5: Add DebtReason Enum
+### Step 9.1.5: Add DebtReason Enum (Derived from EventType)
 
 **File**: `src/ubs_core/debt.rs`
+
+**Key Design**: DebtReason is DERIVED from EventType (no separate WAL entry needed)
 
 ```rust
 #[derive(Debug, Clone, PartialEq)]
 pub enum DebtReason {
-    GhostMoney,
-    Liquidation,
-    FeeUnpaid,
-    StaleSpeculative,
+    GhostMoney,        // TradeSettle with insufficient funds
+    FeeUnpaid,         // OrderFee with insufficient funds
+    Liquidation,       // Forced position close deficit
+    StaleSpeculative,  // Hot path credit expired
+    SystemError,       // Should NEVER happen (defensive)
+}
+
+impl DebtReason {
+    /// Derive debt reason from event type (exhaustive match)
+    pub fn from_event_type(event_type: EventType) -> Self {
+        match event_type {
+            EventType::TradeSettle => DebtReason::GhostMoney,
+            EventType::OrderFee => DebtReason::FeeUnpaid,
+            EventType::Liquidation => DebtReason::Liquidation,
+            EventType::StaleSpeculative => DebtReason::StaleSpeculative,
+
+            // These should NEVER cause negative balance
+            EventType::Deposit | EventType::OrderUnlock | EventType::Withdraw => {
+                log::error!("IMPOSSIBLE: {:?} caused debt!", event_type);
+                DebtReason::SystemError
+            }
+        }
+    }
 }
 ```
+
+**Why Derived?**
+- WAL already has EventType
+- No need for separate DebtReason in WAL
+- Derived on apply/replay
 
 **Unit Tests**:
 ```rust
 #[test]
-fn test_debt_reason_debug() {
-    let reason = DebtReason::GhostMoney;
-    assert_eq!(format!("{:?}", reason), "GhostMoney");
+fn test_debt_reason_from_trade_settle() {
+    let reason = DebtReason::from_event_type(EventType::TradeSettle);
+    assert_eq!(reason, DebtReason::GhostMoney);
+}
+
+#[test]
+fn test_debt_reason_from_fee() {
+    let reason = DebtReason::from_event_type(EventType::OrderFee);
+    assert_eq!(reason, DebtReason::FeeUnpaid);
+}
+
+#[test]
+fn test_debt_reason_impossible_event() {
+    // Deposit CANNOT cause debt - should return SystemError
+    let reason = DebtReason::from_event_type(EventType::Deposit);
+    assert_eq!(reason, DebtReason::SystemError);
 }
 ```
 
-**Commit**: `feat(ubs_core): add DebtReason enum`
+**Commit**: `feat(ubs_core): add DebtReason enum with EventType derivation`
 
 ---
 
