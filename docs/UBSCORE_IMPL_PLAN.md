@@ -119,25 +119,31 @@ pub struct Balance {
 
 **File**: `src/ubs_core/order.rs`
 
+**Naming Convention (Internal vs Client)**:
+
+| Layer | Struct Name | Values | Purpose |
+|-------|-------------|--------|---------|
+| **Gateway/API** | `ClientOrder` | Decimals | User-facing |
+| **UBSCore** | `InternalOrder` | Raw u64 | State machine |
+
 ```rust
-/// Order for internal processing
-/// Gateway converts decimals → raw u64 BEFORE sending to UBSCore
+/// INTERNAL order - used inside UBSCore only
+/// All values are raw u64 (Gateway converts decimals → u64)
 #[derive(Debug, Clone)]
-pub struct Order {
+pub struct InternalOrder {
     pub order_id: HalfUlid,
     pub user_id: UserId,
     pub symbol_id: u32,
     pub side: Side,
-    pub price: u64,      // Raw u64 (Gateway already scaled)
-    pub qty: u64,        // Raw u64 (Gateway already scaled)
+    pub price: u64,      // Raw u64 (already scaled)
+    pub qty: u64,        // Raw u64 (already scaled)
     pub order_type: OrderType,
 }
 
-impl Order {
-    /// Calculate order cost internally (SECURITY: never trust Gateway's cost field)
+impl InternalOrder {
+    /// Calculate order cost (SECURITY: never trust Gateway's cost field)
     ///
-    /// UBSCore uses raw u64 - Gateway handles decimal scaling
-    /// This is fast, simple, robust - pure state machine
+    /// Raw u64 × u64 = u64 (no decimals, no conversion)
     pub fn calculate_cost(&self) -> u64 {
         match self.side {
             Side::Buy => {
@@ -161,15 +167,34 @@ pub enum Side { Buy, Sell }
 pub enum OrderType { Limit, Market }
 ```
 
-**Key Design**:
-- **No decimals in UBSCore** - Gateway handles scaling
-- **Raw u64 everywhere** - simple, fast, robust
-- **Pure state machine** - no floating point, no conversion
+**Conversion Flow**:
 
-**Acceptance Criteria**:
-- [x] Cost = price × qty (raw u64)
-- [x] Overflow → u64::MAX → reject
-- [ ] Unit tests
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                          CLIENT                                      │
+│   { price: "50000.00", qty: "1.5" }  (decimals)                     │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ Gateway: ClientOrder → InternalOrder
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                          GATEWAY                                     │
+│   ClientOrder { price: "50000.00", qty: "1.5" }                     │
+│   → InternalOrder { price: 5000000000000, qty: 150000000 }          │
+└─────────────────────────────────────────────────────────────────────┘
+                                │
+                                │ InternalOrder (raw u64)
+                                ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                         UBSCore                                      │
+│   Only sees InternalOrder - pure u64 arithmetic                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+**Benefits**:
+- **No confusion**: Clear `Internal` prefix
+- **Type safety**: Compiler prevents mixing
+- **Single conversion point**: Gateway only
 
 **Status**: 📋 NOT STARTED
 
