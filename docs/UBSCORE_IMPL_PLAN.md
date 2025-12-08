@@ -1286,6 +1286,273 @@ impl<R: RiskModel> UBSCore<R> {
 
 ---
 
+### Task 9.7: Add EventType Enum
+
+**File**: `src/ubs_core/types.rs`
+
+**🚨 REQUIRED**: DebtReason.from_event_type() needs this!
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EventType {
+    // Can cause debt (ghost money)
+    TradeSettle,
+    OrderFee,
+    Liquidation,
+    StaleSpeculative,
+
+    // Cannot cause debt (increases balance)
+    Deposit,
+    OrderUnlock,
+    Withdraw,
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_event_type_debug() {
+    assert_eq!(format!("{:?}", EventType::TradeSettle), "TradeSettle");
+}
+```
+
+**Commit**: `feat(ubs_core): add EventType enum`
+
+---
+
+### Task 9.8: Add on_trade() Method
+
+**File**: `src/ubs_core/core.rs` (extend UBSCore)
+
+```rust
+impl<R: RiskModel> UBSCore<R> {
+    /// Apply trade from Matching Engine
+    /// Deducts from seller, credits to buyer
+    pub fn on_trade(&mut self, trade: &InternalTrade) -> Result<(), TradeError> {
+        // 1. Seller: spend frozen
+        let seller = self.accounts.get_mut(&trade.seller_id)
+            .ok_or(TradeError::AccountNotFound)?;
+        let seller_balance = seller.get_balance_mut(trade.base_asset);
+        seller_balance.spend_frozen(trade.base_qty)?;
+
+        // 2. Buyer: apply balance delta (may create debt)
+        self.apply_balance_delta(
+            trade.buyer_id,
+            trade.quote_asset,
+            -(trade.quote_value as i64),  // Debit
+            EventType::TradeSettle,
+        );
+
+        // 3. Buyer: credit base asset
+        self.apply_balance_delta(
+            trade.buyer_id,
+            trade.base_asset,
+            trade.base_qty as i64,  // Credit
+            EventType::TradeSettle,
+        );
+
+        // 4. Seller: credit quote asset
+        self.apply_balance_delta(
+            trade.seller_id,
+            trade.quote_asset,
+            trade.quote_value as i64,  // Credit
+            EventType::TradeSettle,
+        );
+
+        Ok(())
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_on_trade_normal() {
+    // Setup: seller has 1 BTC frozen, buyer has 50000 USDT
+    // Trade: 1 BTC @ 50000 USDT
+    // Assert: seller gets 50000 USDT, buyer gets 1 BTC
+}
+
+#[test]
+fn test_on_trade_ghost_money() {
+    // Setup: buyer has 0 USDT (ghost money scenario)
+    // Trade: 1 BTC @ 50000 USDT
+    // Assert: buyer gets 1 BTC, debt_ledger has 50000 USDT debt
+}
+```
+
+**Commit**: `feat(ubs_core): add on_trade method`
+
+---
+
+### Task 9.9: Add apply_balance_delta() with Debt Detection
+
+**File**: `src/ubs_core/core.rs` (extend UBSCore)
+
+**🚨 CRITICAL**: This is where ghost money is DETECTED and DebtLedger is populated!
+
+```rust
+impl<R: RiskModel> UBSCore<R> {
+    /// Apply balance change with debt detection
+    /// This is where ghost money is detected!
+    fn apply_balance_delta(
+        &mut self,
+        user_id: UserId,
+        asset_id: AssetId,
+        delta: i64,
+        event_type: EventType,
+    ) -> u64 {
+        let account = self.accounts
+            .entry(user_id)
+            .or_insert_with(|| UserAccount::new(user_id));
+        let balance = account.get_balance_mut(asset_id);
+
+        let current = balance.avail as i64;
+        let expected = current + delta;
+
+        if expected >= 0 {
+            // Normal case: no debt
+            balance.avail = expected as u64;
+            return balance.avail;
+        }
+
+        // Ghost money detected!
+        balance.avail = 0;
+        let shortfall = (-expected) as u64;
+
+        // Derive reason from event type (no WAL change needed!)
+        let reason = DebtReason::from_event_type(event_type);
+
+        self.debt_ledger.add_debt(user_id, asset_id, DebtRecord {
+            amount: shortfall,
+            reason,
+            created_at: current_time_ms(),
+        });
+
+        log::warn!(
+            "GHOST_MONEY: user={} asset={} shortfall={} reason={:?}",
+            user_id, asset_id, shortfall, reason
+        );
+
+        0
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_apply_delta_positive() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 1000, EventType::Deposit);
+    assert_eq!(core.get_balance(1, 1).avail, 1000);
+}
+
+#[test]
+fn test_apply_delta_negative_sufficient() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 1000, EventType::Deposit);
+    core.apply_balance_delta(1, 1, -500, EventType::TradeSettle);
+    assert_eq!(core.get_balance(1, 1).avail, 500);
+}
+
+#[test]
+fn test_apply_delta_ghost_money() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 1000, EventType::Deposit);
+    core.apply_balance_delta(1, 1, -5000, EventType::TradeSettle);
+    // Balance clamped to 0
+    assert_eq!(core.get_balance(1, 1).avail, 0);
+    // Debt created
+    assert!(core.debt_ledger.has_debt(1));
+    assert_eq!(core.debt_ledger.get_debt(1, 1).unwrap().amount, 4000);
+}
+```
+
+**Commit**: `feat(ubs_core): add apply_balance_delta with debt detection`
+
+---
+
+### Task 9.10: Add can_withdraw() with Debt Check
+
+**File**: `src/ubs_core/core.rs` (extend UBSCore)
+
+```rust
+impl<R: RiskModel> UBSCore<R> {
+    /// Check if user can withdraw
+    /// BLOCKED if user has ANY debt
+    pub fn can_withdraw(&self, user_id: UserId, asset_id: AssetId, amount: u64) -> bool {
+        // 1. Block if user has ANY debt
+        if self.debt_ledger.has_debt(user_id) {
+            return false;
+        }
+
+        // 2. Check balance
+        if let Some(account) = self.accounts.get(&user_id) {
+            if let Some(balance) = account.get_balance(asset_id) {
+                return balance.avail >= amount;
+            }
+        }
+
+        false
+    }
+}
+```
+
+**Unit Tests**:
+```rust
+#[test]
+fn test_can_withdraw_sufficient() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 1000, EventType::Deposit);
+    assert!(core.can_withdraw(1, 1, 500));
+}
+
+#[test]
+fn test_can_withdraw_insufficient() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 1000, EventType::Deposit);
+    assert!(!core.can_withdraw(1, 1, 2000));
+}
+
+#[test]
+fn test_can_withdraw_blocked_by_debt() {
+    let mut core = UBSCore::new(SpotRiskModel);
+    core.apply_balance_delta(1, 1, 10000, EventType::Deposit);
+    // Create debt in another asset
+    core.apply_balance_delta(1, 2, -5000, EventType::TradeSettle);
+    // Cannot withdraw from asset 1 because user has debt in asset 2!
+    assert!(!core.can_withdraw(1, 1, 100));
+}
+```
+
+**Commit**: `feat(ubs_core): add can_withdraw with debt check`
+
+---
+
+### Updated Summary: All Phase 9 Steps
+
+| Step | Description | Tests |
+|------|-------------|-------|
+| 9.1.1 | Module structure | `cargo check` |
+| 9.1.2 | RejectReason enum | 2 tests |
+| 9.1.3 | InternalOrder struct | 2 tests |
+| 9.1.4 | Order cost calculation | 3 tests |
+| 9.1.5 | DebtReason enum (with EventType derivation) | 3 tests |
+| 9.1.6 | DebtRecord struct | 1 test |
+| 9.1.7 | DebtLedger basic | 2 tests |
+| 9.1.8 | DebtLedger mutations | 3 tests |
+| 9.1.9 | VipFeeTable | 3 tests |
+| 9.1.9b | DB Value Validation | 14 tests |
+| 9.1.10 | DeduplicationGuard struct | 1 test |
+| 9.1.11 | DeduplicationGuard logic | 5 tests |
+| **9.7** | **EventType enum** | **1 test** |
+| **9.8** | **on_trade method** | **2 tests** |
+| **9.9** | **apply_balance_delta** | **3 tests** |
+| **9.10** | **can_withdraw** | **3 tests** |
+
+**Total**: 16 commits, 48+ unit tests
+
 ## Phase 10: Persistence (WAL Module)
 
 **Goal**: Add crash-safe persistence.
