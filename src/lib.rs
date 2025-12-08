@@ -24,4 +24,5 @@ pub mod starrocks_client;
 pub mod symbol_manager;
 pub mod symbol_utils;
 pub mod user_account;
+pub mod ubs_core;
 pub mod zmq_publisher;
