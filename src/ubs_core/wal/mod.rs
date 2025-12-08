@@ -13,5 +13,5 @@ pub mod replay;
 
 pub use aligned_buffer::AlignedBuffer;
 pub use entry::{WalEntry, WalEntryType};
-pub use group_commit::GroupCommitWal;
+pub use group_commit::{GroupCommitConfig, GroupCommitWal};
 pub use replay::WalReplay;

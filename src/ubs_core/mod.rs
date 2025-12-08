@@ -23,6 +23,6 @@ pub use debt::{DebtLedger, DebtReason, DebtRecord};
 pub use dedup::DeduplicationGuard;
 pub use error::RejectReason;
 pub use fee::VipFeeTable;
-pub use order::InternalOrder;
+pub use order::{InternalOrder, OrderType, Side};
 pub use risk::{RiskModel, SpotRiskModel};
 pub use wal::{GroupCommitWal, WalEntry, WalEntryType, WalReplay};
