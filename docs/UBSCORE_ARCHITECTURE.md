@@ -5,7 +5,7 @@
 | Old Name | New Name | Role |
 |----------|----------|------|
 | Risk Engine | **UBSCore** | In-memory balance authority |
-| Settlement Service | **Offshore** | Cold database, blockchain |
+| Settlement Service | **Settlement** | Cold database, blockchain |
 
 **UBSCore** = User Balance Service Core
 - **UBS**: It holds the money
@@ -430,7 +430,7 @@ impl AutoSweeper {
 | Gateway | Gateway | Dumb router, auth, JSON→Binary |
 | Risk Engine | **UBSCore** | In-memory balance authority |
 | Matching Engine | ME | Order book matching |
-| Settlement | **Offshore** | Cold database, blockchain |
+| Settlement | **Settlement** | Cold database, blockchain |
 
 | Cluster | Purpose |
 |---------|---------|
