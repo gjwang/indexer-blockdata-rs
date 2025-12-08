@@ -2,18 +2,18 @@
 //!
 //! Validates orders before they reach the Matching Engine.
 
+use crate::user_account::{AssetId, UserAccount, UserId};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use crate::user_account::{UserId, AssetId, UserAccount};
 
-use super::error::RejectReason;
-use super::order::InternalOrder;
+use super::debt::{DebtLedger, DebtReason, DebtRecord, EventType};
 use super::dedup::DeduplicationGuard;
-use super::debt::{DebtLedger, DebtRecord, DebtReason, EventType};
+use super::error::RejectReason;
 use super::fee::VipFeeTable;
+use super::order::InternalOrder;
 use super::risk::RiskModel;
 
-const HIGH_WATER_MARK: usize = 10_000;  // Backpressure threshold
+const HIGH_WATER_MARK: usize = 10_000; // Backpressure threshold
 
 /// Main UBSCore struct
 pub struct UBSCore<R: RiskModel> {
@@ -24,7 +24,7 @@ pub struct UBSCore<R: RiskModel> {
     pending_queue: VecDeque<InternalOrder>,
 
     // Fee configuration
-    vip_configs: HashMap<UserId, u8>,  // UserId → VIP level
+    vip_configs: HashMap<UserId, u8>, // UserId → VIP level
     vip_table: VipFeeTable,
 
     // Logic
@@ -56,12 +56,10 @@ impl<R: RiskModel> UBSCore<R> {
     /// Get current time (respects replay mode)
     fn current_time(&self, order: &InternalOrder) -> u64 {
         if self.is_replay_mode {
-            order.timestamp_ms()  // Use InternalOrder's method
+            order.timestamp_ms() // Use InternalOrder's method
         } else {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+                as u64
         }
     }
 
@@ -77,9 +75,7 @@ impl<R: RiskModel> UBSCore<R> {
         self.dedup_guard.check_and_record(order.order_id, now)?;
 
         // 2. Get account
-        let _account = self.accounts
-            .get(&order.user_id)
-            .ok_or(RejectReason::AccountNotFound)?;
+        let _account = self.accounts.get(&order.user_id).ok_or(RejectReason::AccountNotFound)?;
 
         // 3. Calculate cost internally (SECURITY)
         let cost = order.calculate_cost();
@@ -123,9 +119,7 @@ impl<R: RiskModel> UBSCore<R> {
         delta: i64,
         event_type: EventType,
     ) -> u64 {
-        let account = self.accounts
-            .entry(user_id)
-            .or_insert_with(|| UserAccount::new(user_id));
+        let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
 
         let balance = account.get_balance_mut(asset_id);
 
@@ -145,20 +139,22 @@ impl<R: RiskModel> UBSCore<R> {
         // Derive reason from event type (no WAL change needed!)
         let reason = DebtReason::from_event_type(event_type);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now =
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+                as u64;
 
-        self.debt_ledger.add_debt(user_id, asset_id, DebtRecord {
-            amount: shortfall,
-            reason,
-            created_at: now,
-        });
+        self.debt_ledger.add_debt(
+            user_id,
+            asset_id,
+            DebtRecord { amount: shortfall, reason, created_at: now },
+        );
 
         log::warn!(
             "GHOST_MONEY: user={} asset={} shortfall={} reason={:?}",
-            user_id, asset_id, shortfall, reason
+            user_id,
+            asset_id,
+            shortfall,
+            reason
         );
 
         0
@@ -171,9 +167,7 @@ impl<R: RiskModel> UBSCore<R> {
 
         // Then: Deposit remaining to Balance
         if remaining > 0 {
-            let account = self.accounts
-                .entry(user_id)
-                .or_insert_with(|| UserAccount::new(user_id));
+            let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
             let balance = account.get_balance_mut(asset_id);
             balance.avail += remaining;
         }
@@ -199,8 +193,8 @@ impl<R: RiskModel> UBSCore<R> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::risk::SpotRiskModel;
+    use super::*;
 
     #[test]
     fn test_deposit_no_debt() {

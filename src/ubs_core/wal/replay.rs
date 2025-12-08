@@ -3,7 +3,7 @@
 //! Reads and validates WAL entries for recovery after crash.
 
 use std::fs::File;
-use std::io::{Read, BufReader};
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use super::entry::{WalEntry, WalError, HEADER_SIZE};
@@ -14,18 +14,17 @@ pub struct WalReplay {
     buffer: Vec<u8>,
     entries_read: u64,
     bytes_read: u64,
-    errors: Vec<(u64, WalError)>,  // (offset, error)
+    errors: Vec<(u64, WalError)>, // (offset, error)
 }
 
 impl WalReplay {
     /// Open WAL file for replay
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, WalError> {
-        let file = File::open(path)
-            .map_err(|e| WalError::IoError(e.to_string()))?;
+        let file = File::open(path).map_err(|e| WalError::IoError(e.to_string()))?;
 
         Ok(Self {
             reader: BufReader::new(file),
-            buffer: vec![0u8; 64 * 1024],  // 64KB read buffer
+            buffer: vec![0u8; 64 * 1024], // 64KB read buffer
             entries_read: 0,
             bytes_read: 0,
             errors: Vec::new(),
@@ -42,11 +41,11 @@ impl WalReplay {
 
         // Read file in chunks
         loop {
-            let bytes_read = self.reader.read(&mut self.buffer)
-                .map_err(|e| WalError::IoError(e.to_string()))?;
+            let bytes_read =
+                self.reader.read(&mut self.buffer).map_err(|e| WalError::IoError(e.to_string()))?;
 
             if bytes_read == 0 {
-                break;  // EOF
+                break; // EOF
             }
 
             read_buffer.extend_from_slice(&self.buffer[..bytes_read]);
@@ -89,12 +88,15 @@ impl WalReplay {
                     self.errors.push((offset as u64, e));
                     // Try to skip to next entry (heuristic: read length field)
                     let len = u32::from_le_bytes([
-                        remaining[0], remaining[1], remaining[2], remaining[3]
+                        remaining[0],
+                        remaining[1],
+                        remaining[2],
+                        remaining[3],
                     ]) as usize;
                     if len > 0 && len < remaining.len() {
                         offset += len;
                     } else {
-                        break;  // Can't recover
+                        break; // Can't recover
                     }
                 }
             }
@@ -123,9 +125,9 @@ pub struct ReplayStats {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::entry::WalEntryType;
-    use super::super::group_commit::{GroupCommitWal, GroupCommitConfig};
+    use super::super::group_commit::{GroupCommitConfig, GroupCommitWal};
+    use super::*;
     use tempfile::tempdir;
 
     #[test]
@@ -141,10 +143,12 @@ mod tests {
         // Replay
         let mut replay = WalReplay::open(&path).unwrap();
         let mut count = 0;
-        let stats = replay.replay(|_entry| {
-            count += 1;
-            Ok(())
-        }).unwrap();
+        let stats = replay
+            .replay(|_entry| {
+                count += 1;
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(count, 0);
         assert_eq!(stats.entries_read, 0);
@@ -169,10 +173,12 @@ mod tests {
         // Replay and verify
         let mut replay = WalReplay::open(&path).unwrap();
         let mut entries = Vec::new();
-        let stats = replay.replay(|entry| {
-            entries.push(entry.clone());
-            Ok(())
-        }).unwrap();
+        let stats = replay
+            .replay(|entry| {
+                entries.push(entry.clone());
+                Ok(())
+            })
+            .unwrap();
 
         assert_eq!(stats.entries_read, 10);
         assert_eq!(entries.len(), 10);
@@ -199,16 +205,21 @@ mod tests {
 
         let mut replay = WalReplay::open(&path).unwrap();
         let mut types = Vec::new();
-        replay.replay(|entry| {
-            types.push(entry.entry_type);
-            Ok(())
-        }).unwrap();
+        replay
+            .replay(|entry| {
+                types.push(entry.entry_type);
+                Ok(())
+            })
+            .unwrap();
 
-        assert_eq!(types, vec![
-            WalEntryType::Deposit,
-            WalEntryType::OrderLock,
-            WalEntryType::Trade,
-            WalEntryType::Fee,
-        ]);
+        assert_eq!(
+            types,
+            vec![
+                WalEntryType::Deposit,
+                WalEntryType::OrderLock,
+                WalEntryType::Trade,
+                WalEntryType::Fee,
+            ]
+        );
     }
 }

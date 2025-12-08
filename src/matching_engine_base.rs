@@ -1139,7 +1139,7 @@ impl MatchingEngine {
             builder.add_trade(TradeOutput {
                 trade_id: trade.trade_id,
                 match_seq: trade.match_seq,
-                symbol_id,  // From order for SOT sharding
+                symbol_id, // From order for SOT sharding
                 buy_order_id: trade.buy_order_id,
                 sell_order_id: trade.sell_order_id,
                 buyer_user_id: trade.buy_user_id,

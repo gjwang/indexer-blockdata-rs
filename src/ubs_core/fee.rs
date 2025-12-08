@@ -18,23 +18,27 @@ impl VipFeeTable {
     /// Default VIP rates (similar to Binance)
     pub fn default_rates() -> Self {
         Self::new([
-            (1000, 1500),  // VIP 0: 0.10%, 0.15%
-            (900, 1400),   // VIP 1
-            (800, 1300),   // VIP 2
-            (700, 1200),   // VIP 3
-            (600, 1100),   // VIP 4
-            (500, 1000),   // VIP 5
-            (400, 900),    // VIP 6
-            (300, 800),    // VIP 7
-            (200, 600),    // VIP 8
-            (100, 400),    // VIP 9: 0.01%, 0.04%
+            (1000, 1500), // VIP 0: 0.10%, 0.15%
+            (900, 1400),  // VIP 1
+            (800, 1300),  // VIP 2
+            (700, 1200),  // VIP 3
+            (600, 1100),  // VIP 4
+            (500, 1000),  // VIP 5
+            (400, 900),   // VIP 6
+            (300, 800),   // VIP 7
+            (200, 600),   // VIP 8
+            (100, 400),   // VIP 9: 0.01%, 0.04%
         ])
     }
 
     /// Get fee rate for VIP level
     pub fn get_rate(&self, vip_level: u8, is_maker: bool) -> u64 {
         let level = (vip_level as usize).min(9);
-        if is_maker { self.rates[level].0 } else { self.rates[level].1 }
+        if is_maker {
+            self.rates[level].0
+        } else {
+            self.rates[level].1
+        }
     }
 }
 
@@ -63,6 +67,6 @@ mod tests {
     #[test]
     fn test_vip_level_capped() {
         let table = VipFeeTable::default_rates();
-        assert_eq!(table.get_rate(100, true), 100);  // Capped to VIP 9
+        assert_eq!(table.get_rate(100, true), 100); // Capped to VIP 9
     }
 }

@@ -23,8 +23,7 @@ impl AlignedBuffer {
         assert!(alignment.is_power_of_two(), "Alignment must be power of 2");
         assert!(capacity > 0, "Capacity must be > 0");
 
-        let layout = Layout::from_size_align(capacity, alignment)
-            .expect("Invalid layout");
+        let layout = Layout::from_size_align(capacity, alignment).expect("Invalid layout");
 
         let ptr = unsafe {
             let ptr = alloc(layout);
@@ -34,12 +33,7 @@ impl AlignedBuffer {
             NonNull::new_unchecked(ptr)
         };
 
-        Self {
-            ptr,
-            capacity,
-            len: 0,
-            alignment,
-        }
+        Self { ptr, capacity, len: 0, alignment }
     }
 
     /// Create with default 4KB alignment
@@ -132,8 +126,8 @@ impl AlignedBuffer {
 
 impl Drop for AlignedBuffer {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(self.capacity, self.alignment)
-            .expect("Invalid layout");
+        let layout =
+            Layout::from_size_align(self.capacity, self.alignment).expect("Invalid layout");
         unsafe {
             dealloc(self.ptr.as_ptr(), layout);
         }
@@ -171,7 +165,7 @@ mod tests {
         let mut buf = AlignedBuffer::with_capacity(10);
         let data = b"This is too long";
         assert!(!buf.write(data));
-        assert_eq!(buf.len(), 0);  // Nothing written
+        assert_eq!(buf.len(), 0); // Nothing written
     }
 
     #[test]
@@ -186,7 +180,7 @@ mod tests {
     #[test]
     fn test_aligned_buffer_pad() {
         let mut buf = AlignedBuffer::new(8192, 512);
-        buf.write(b"Hello");  // 5 bytes
+        buf.write(b"Hello"); // 5 bytes
         buf.pad_to_alignment();
         assert_eq!(buf.len() % 512, 0);
         assert_eq!(buf.len(), 512);
@@ -195,6 +189,6 @@ mod tests {
     #[test]
     fn test_alignment_check() {
         let buf = AlignedBuffer::new(4096, 4096);
-        assert_eq!(buf.as_ptr() as usize % 4096, 0);  // Pointer is aligned
+        assert_eq!(buf.as_ptr() as usize % 4096, 0); // Pointer is aligned
     }
 }

@@ -25,12 +25,12 @@ pub enum OrderType {
 ///   - 13 bits: sequence (8192 IDs/ms)
 #[derive(Debug, Clone)]
 pub struct InternalOrder {
-    pub order_id: u64,       // SnowflakeGenRng format
+    pub order_id: u64, // SnowflakeGenRng format
     pub user_id: UserId,
     pub symbol_id: u32,
     pub side: Side,
-    pub price: u64,          // Raw u64 (already scaled by Gateway)
-    pub qty: u64,            // Raw u64 (already scaled by Gateway)
+    pub price: u64, // Raw u64 (already scaled by Gateway)
+    pub qty: u64,   // Raw u64 (already scaled by Gateway)
     pub order_type: OrderType,
 }
 
@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_sell_cost() {
         let order = make_order(Side::Sell, 100, 5);
-        assert_eq!(order.calculate_cost(), 5);  // qty only
+        assert_eq!(order.calculate_cost(), 5); // qty only
     }
 
     #[test]
@@ -107,4 +107,3 @@ mod tests {
         assert_eq!(order.machine_id(), 1);
     }
 }
-

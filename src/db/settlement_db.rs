@@ -852,35 +852,35 @@ impl SettlementDb {
 
         let t_start = std::time::Instant::now();
 
-    let mut ledger_batch = Batch::new(BatchType::Unlogged);
-    let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        let mut ledger_batch = Batch::new(BatchType::Unlogged);
+        let ledger_stmt = "INSERT INTO balance_ledger (user_id, asset_id, seq, delta_avail, delta_frozen, avail, frozen, event_type, ref_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
-    for _ in events {
-        ledger_batch.append_statement(ledger_stmt);
-    }
+        for _ in events {
+            ledger_batch.append_statement(ledger_stmt);
+        }
 
-    let ledger_values: Vec<_> = events
-        .iter()
-        .map(|e| {
-            (
-                e.user_id as i64,
-                e.asset_id as i32,
-                e.seq as i64,
-                e.delta_avail,
-                e.delta_frozen,
-                e.avail,
-                e.frozen,
-                e.event_type.clone(),
-                e.ref_id as i64,
-                now as i64,
-            )
-        })
-        .collect();
+        let ledger_values: Vec<_> = events
+            .iter()
+            .map(|e| {
+                (
+                    e.user_id as i64,
+                    e.asset_id as i32,
+                    e.seq as i64,
+                    e.delta_avail,
+                    e.delta_frozen,
+                    e.avail,
+                    e.frozen,
+                    e.event_type.clone(),
+                    e.ref_id as i64,
+                    now as i64,
+                )
+            })
+            .collect();
 
-    self.session
-        .batch(&ledger_batch, ledger_values)
-        .await
-        .context("Failed to batch insert balance_ledger")?;
+        self.session
+            .batch(&ledger_batch, ledger_values)
+            .await
+            .context("Failed to batch insert balance_ledger")?;
 
         let total_time = t_start.elapsed();
 
@@ -1652,7 +1652,7 @@ impl SettlementDb {
 
             batch.append_statement(QUERY);
             values.push((
-                output.symbol_id as i32,  // NEW: symbol_id partition key
+                output.symbol_id as i32, // NEW: symbol_id partition key
                 output.output_seq as i64,
                 output.hash as i64,
                 output.prev_hash as i64,

@@ -4,7 +4,7 @@
 //! while maintaining durability guarantees.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Write, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;
 
 use super::aligned_buffer::AlignedBuffer;
@@ -25,8 +25,8 @@ impl Default for GroupCommitConfig {
     fn default() -> Self {
         Self {
             max_batch_size: 100,
-            buffer_size: 64 * 1024,  // 64KB
-            use_direct_io: false,     // Disable by default for compatibility
+            buffer_size: 64 * 1024, // 64KB
+            use_direct_io: false,   // Disable by default for compatibility
         }
     }
 }
@@ -71,8 +71,7 @@ impl GroupCommitWal {
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
         // Seek to end
-        file.seek(SeekFrom::End(0))
-            .map_err(|e| WalError::IoError(e.to_string()))?;
+        file.seek(SeekFrom::End(0)).map_err(|e| WalError::IoError(e.to_string()))?;
 
         Ok(Self {
             file,
@@ -131,9 +130,7 @@ impl GroupCommitWal {
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
         // Sync to disk
-        self.file
-            .sync_all()
-            .map_err(|e| WalError::IoError(e.to_string()))?;
+        self.file.sync_all().map_err(|e| WalError::IoError(e.to_string()))?;
 
         self.bytes_written += self.buffer.len() as u64;
         self.buffer.clear();
@@ -172,8 +169,8 @@ impl Drop for GroupCommitWal {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::entry::WalEntryType;
+    use super::*;
     use tempfile::tempdir;
 
     #[test]
@@ -181,11 +178,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("test.wal");
 
-        let config = GroupCommitConfig {
-            max_batch_size: 10,
-            buffer_size: 4096,
-            use_direct_io: false,
-        };
+        let config =
+            GroupCommitConfig { max_batch_size: 10, buffer_size: 4096, use_direct_io: false };
 
         let mut wal = GroupCommitWal::create(&path, config).unwrap();
 
@@ -207,7 +201,7 @@ mod tests {
         let path = dir.path().join("test2.wal");
 
         let config = GroupCommitConfig {
-            max_batch_size: 5,  // Flush after 5 entries
+            max_batch_size: 5, // Flush after 5 entries
             buffer_size: 4096,
             use_direct_io: false,
         };

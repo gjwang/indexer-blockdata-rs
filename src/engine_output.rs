@@ -112,7 +112,7 @@ pub struct WithdrawInput {
 pub struct TradeOutput {
     pub trade_id: u64,
     pub match_seq: u64,
-    pub symbol_id: u32,  // Symbol for this trade (for SOT sharding)
+    pub symbol_id: u32, // Symbol for this trade (for SOT sharding)
     pub buy_order_id: u64,
     pub sell_order_id: u64,
     pub buyer_user_id: u64,
@@ -187,7 +187,7 @@ impl EngineOutput {
         // Chain header
         data.extend_from_slice(&self.output_seq.to_le_bytes());
         data.extend_from_slice(&self.prev_hash.to_le_bytes());
-        data.extend_from_slice(&self.symbol_id.to_le_bytes());  // Include symbol_id in hash
+        data.extend_from_slice(&self.symbol_id.to_le_bytes()); // Include symbol_id in hash
 
         // Input
         data.extend_from_slice(&self.input.input_seq.to_le_bytes());

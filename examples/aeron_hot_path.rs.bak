@@ -29,7 +29,7 @@ struct FastFillEvent {
     event_id: u64,
     user_id: u64,
     asset_id: u32,
-    amount: i64,      // Positive = credit, Negative = debit
+    amount: i64, // Positive = credit, Negative = debit
     timestamp_ns: u64,
 }
 
@@ -118,10 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Apply speculative credit
                 speculative_balance += event.amount;
 
-                println!(
-                    "[Risk Engine] HOT PATH RECEIVED (latency: ~{}ns)",
-                    latency_ns
-                );
+                println!("[Risk Engine] HOT PATH RECEIVED (latency: ~{}ns)", latency_ns);
                 println!(
                     "              event_id={}, user={}, asset={}, amount={}",
                     event.event_id, event.user_id, event.asset_id, event.amount
@@ -181,7 +178,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let event = FastFillEvent {
                 event_id,
                 user_id: 1001,
-                asset_id: 1, // USDT
+                asset_id: 1,  // USDT
                 amount: 5000, // Credit 5000 USDT
                 timestamp_ns: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -198,14 +195,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap();
 
                 if result > 0 {
-                    println!(
-                        "[Matching Engine] Trade #{}: Sold BTC for 5000 USDT",
-                        event_id
-                    );
-                    println!(
-                        "                  Sent {} bytes to Shared Memory\n",
-                        result
-                    );
+                    println!("[Matching Engine] Trade #{}: Sold BTC for 5000 USDT", event_id);
+                    println!("                  Sent {} bytes to Shared Memory\n", result);
                     break;
                 } else if result == -1 {
                     // Not connected yet

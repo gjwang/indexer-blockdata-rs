@@ -3,8 +3,8 @@
 //! DebtLedger is DERIVED state - not persisted to WAL separately.
 //! DebtReason is derived from EventType (already in WAL).
 
+use crate::user_account::{AssetId, UserId};
 use std::collections::HashMap;
-use crate::user_account::{UserId, AssetId};
 
 /// Event types that can cause balance changes
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -24,11 +24,11 @@ pub enum EventType {
 /// Reason for debt - derived from EventType
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DebtReason {
-    GhostMoney,        // TradeSettle with insufficient funds
-    FeeUnpaid,         // OrderFee with insufficient funds
-    Liquidation,       // Forced position close deficit
-    StaleSpeculative,  // Hot path credit expired
-    SystemError,       // Should NEVER happen (defensive)
+    GhostMoney,       // TradeSettle with insufficient funds
+    FeeUnpaid,        // OrderFee with insufficient funds
+    Liquidation,      // Forced position close deficit
+    StaleSpeculative, // Hot path credit expired
+    SystemError,      // Should NEVER happen (defensive)
 }
 
 impl DebtReason {
@@ -64,9 +64,7 @@ pub struct DebtLedger {
 
 impl DebtLedger {
     pub fn new() -> Self {
-        Self {
-            debts: HashMap::new(),
-        }
+        Self { debts: HashMap::new() }
     }
 
     /// Check if user has ANY debt
@@ -83,7 +81,10 @@ impl DebtLedger {
     pub fn add_debt(&mut self, user_id: UserId, asset_id: AssetId, record: DebtRecord) {
         log::warn!(
             "DEBT_CREATED: user={} asset={} amount={} reason={:?}",
-            user_id, asset_id, record.amount, record.reason
+            user_id,
+            asset_id,
+            record.amount,
+            record.reason
         );
 
         self.debts
@@ -143,11 +144,11 @@ mod tests {
     #[test]
     fn test_add_debt() {
         let mut ledger = DebtLedger::new();
-        ledger.add_debt(1, 1, DebtRecord {
-            amount: 1000,
-            created_at: 12345,
-            reason: DebtReason::GhostMoney,
-        });
+        ledger.add_debt(
+            1,
+            1,
+            DebtRecord { amount: 1000, created_at: 12345, reason: DebtReason::GhostMoney },
+        );
         assert!(ledger.has_debt(1));
         assert_eq!(ledger.get_debt(1, 1).unwrap().amount, 1000);
     }
@@ -155,28 +156,28 @@ mod tests {
     #[test]
     fn test_pay_debt_partial() {
         let mut ledger = DebtLedger::new();
-        ledger.add_debt(1, 1, DebtRecord {
-            amount: 1000,
-            created_at: 12345,
-            reason: DebtReason::GhostMoney,
-        });
+        ledger.add_debt(
+            1,
+            1,
+            DebtRecord { amount: 1000, created_at: 12345, reason: DebtReason::GhostMoney },
+        );
 
         let remaining = ledger.pay_debt(1, 1, 600);
-        assert_eq!(remaining, 0);  // All used to pay debt
+        assert_eq!(remaining, 0); // All used to pay debt
         assert_eq!(ledger.get_debt(1, 1).unwrap().amount, 400);
     }
 
     #[test]
     fn test_pay_debt_full() {
         let mut ledger = DebtLedger::new();
-        ledger.add_debt(1, 1, DebtRecord {
-            amount: 500,
-            created_at: 12345,
-            reason: DebtReason::GhostMoney,
-        });
+        ledger.add_debt(
+            1,
+            1,
+            DebtRecord { amount: 500, created_at: 12345, reason: DebtReason::GhostMoney },
+        );
 
         let remaining = ledger.pay_debt(1, 1, 1000);
-        assert_eq!(remaining, 500);  // 500 left after paying debt
+        assert_eq!(remaining, 500); // 500 left after paying debt
         assert!(!ledger.has_debt(1));
     }
 }

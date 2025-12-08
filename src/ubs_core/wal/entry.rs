@@ -74,9 +74,9 @@ impl WalEntry {
         let crc = hasher.finalize();
 
         // Write header
-        buf.extend_from_slice(&(total_len as u32).to_le_bytes());  // Length
-        buf.extend_from_slice(&crc.to_le_bytes());                  // CRC32
-        buf.push(self.entry_type as u8);                            // Type
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes()); // Length
+        buf.extend_from_slice(&crc.to_le_bytes()); // CRC32
+        buf.push(self.entry_type as u8); // Type
 
         // Write payload
         buf.extend_from_slice(&self.payload);
@@ -105,8 +105,8 @@ impl WalEntry {
         }
 
         // Parse type
-        let entry_type = WalEntryType::try_from(type_byte)
-            .map_err(|_| WalError::InvalidType(type_byte))?;
+        let entry_type =
+            WalEntryType::try_from(type_byte).map_err(|_| WalError::InvalidType(type_byte))?;
 
         // Extract payload
         let payload = data[HEADER_SIZE..len].to_vec();

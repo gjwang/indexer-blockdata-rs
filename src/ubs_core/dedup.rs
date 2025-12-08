@@ -6,9 +6,9 @@
 //!   - 7 bits: machine ID
 //!   - 13 bits: sequence
 
-use indexmap::IndexSet;
-use crate::fast_ulid::SnowflakeGenRng;
 use super::error::RejectReason;
+use crate::fast_ulid::SnowflakeGenRng;
+use indexmap::IndexSet;
 
 const CACHE_SIZE: usize = 10_000;
 const MAX_TIME_DRIFT_MS: u64 = 3_000;
@@ -21,20 +21,13 @@ pub struct DeduplicationGuard {
 
 impl DeduplicationGuard {
     pub fn new() -> Self {
-        Self {
-            cache: IndexSet::with_capacity(CACHE_SIZE),
-            min_allowed_ts: 0,
-        }
+        Self { cache: IndexSet::with_capacity(CACHE_SIZE), min_allowed_ts: 0 }
     }
 
     /// Check and record order ID
     /// order_id is a u64 in SnowflakeGenRng format
     /// Returns Ok if new, Err if duplicate or too old
-    pub fn check_and_record(
-        &mut self,
-        order_id: u64,
-        now: u64
-    ) -> Result<(), RejectReason> {
+    pub fn check_and_record(&mut self, order_id: u64, now: u64) -> Result<(), RejectReason> {
         let order_ts = SnowflakeGenRng::timestamp_ms(order_id);
 
         // 1. TIME CHECK: too old
@@ -60,7 +53,8 @@ impl DeduplicationGuard {
         // 5. EVICT IF FULL
         if self.cache.len() >= CACHE_SIZE {
             if let Some(evicted) = self.cache.pop() {
-                self.min_allowed_ts = self.min_allowed_ts.max(SnowflakeGenRng::timestamp_ms(evicted));
+                self.min_allowed_ts =
+                    self.min_allowed_ts.max(SnowflakeGenRng::timestamp_ms(evicted));
             }
         }
 
@@ -92,10 +86,7 @@ mod tests {
         let mut guard = DeduplicationGuard::new();
         let order_id = SnowflakeGenRng::from_parts(1000, 1, 0);
         guard.check_and_record(order_id, 1000).unwrap();
-        assert_eq!(
-            guard.check_and_record(order_id, 1000),
-            Err(RejectReason::DuplicateOrderId)
-        );
+        assert_eq!(guard.check_and_record(order_id, 1000), Err(RejectReason::DuplicateOrderId));
     }
 
     #[test]
@@ -103,7 +94,7 @@ mod tests {
         let mut guard = DeduplicationGuard::new();
         let order_id = SnowflakeGenRng::from_parts(1000, 1, 0);
         assert_eq!(
-            guard.check_and_record(order_id, 5000),  // 4 seconds later
+            guard.check_and_record(order_id, 5000), // 4 seconds later
             Err(RejectReason::OrderTooOld)
         );
     }
@@ -113,7 +104,7 @@ mod tests {
         let mut guard = DeduplicationGuard::new();
         let order_id = SnowflakeGenRng::from_parts(5000, 1, 0);
         assert_eq!(
-            guard.check_and_record(order_id, 1000),  // 4 seconds in future
+            guard.check_and_record(order_id, 1000), // 4 seconds in future
             Err(RejectReason::FutureTimestamp)
         );
     }

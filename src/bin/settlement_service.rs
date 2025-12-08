@@ -27,7 +27,7 @@ use zmq::{Context, PULL};
 const LOG_TARGET: &str = "settlement";
 
 // === CONFIGURATION ===
-const MAX_BATCH_SIZE: usize = 2000;  // Increased to reduce SOT round trips
+const MAX_BATCH_SIZE: usize = 2000; // Increased to reduce SOT round trips
 const MAX_DRAIN_BATCH: usize = 200; // Max items to drain from channel per write
 const NUM_BALANCE_WRITERS: usize = 4; // Parallel balance writers for higher throughput
 const NUM_SOT_WRITERS: usize = 4; // Parallel SOT writers (sharded by symbol_id)
@@ -208,7 +208,8 @@ fn spawn_derived_writers(
     let mut balance_channels = Vec::with_capacity(NUM_BALANCE_WRITERS);
 
     for shard_id in 0..NUM_BALANCE_WRITERS {
-        let (balance_tx, mut balance_rx) = mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
+        let (balance_tx, mut balance_rx) =
+            mpsc::channel::<Vec<BalanceEvent>>(DERIVED_WRITER_BUFFER);
         balance_channels.push(balance_tx);
 
         let db = settlement_db.clone();
@@ -477,10 +478,7 @@ async fn write_sot_parallel(
     let mut sharded_outputs: HashMap<u32, Vec<EngineOutput>> = HashMap::new();
 
     for output in outputs {
-        sharded_outputs
-            .entry(output.symbol_id)
-            .or_insert_with(Vec::new)
-            .push(output.clone());
+        sharded_outputs.entry(output.symbol_id).or_insert_with(Vec::new).push(output.clone());
     }
 
     // Spawn parallel write tasks for each symbol partition

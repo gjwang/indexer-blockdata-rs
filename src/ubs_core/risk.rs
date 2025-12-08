@@ -2,8 +2,8 @@
 //!
 //! Different market types (Spot, Futures) have different risk rules.
 
-use crate::user_account::UserAccount;
 use super::order::{InternalOrder, Side};
+use crate::user_account::UserAccount;
 
 /// Trait for different market types
 pub trait RiskModel: Send + Sync {
@@ -21,19 +21,19 @@ impl RiskModel for SpotRiskModel {
     fn can_trade(&self, account: &UserAccount, order: &InternalOrder) -> bool {
         let cost = order.calculate_cost();
         if cost == u64::MAX {
-            return false;  // Overflow
+            return false; // Overflow
         }
 
         // For spot: check available balance
         // Note: actual asset lookup depends on symbol config
         // This is a simplified check
-        true  // Actual check done in UBSCore with asset info
+        true // Actual check done in UBSCore with asset info
     }
 
     fn get_debit_asset(&self, order: &InternalOrder, base_asset: u32, quote_asset: u32) -> u32 {
         match order.side {
-            Side::Buy => quote_asset,   // Buy BTC/USDT: debit USDT
-            Side::Sell => base_asset,   // Sell BTC/USDT: debit BTC
+            Side::Buy => quote_asset, // Buy BTC/USDT: debit USDT
+            Side::Sell => base_asset, // Sell BTC/USDT: debit BTC
         }
     }
 }
