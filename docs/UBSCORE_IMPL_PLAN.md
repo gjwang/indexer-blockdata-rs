@@ -401,14 +401,20 @@ impl RiskModel for SpotRiskModel {
 ```rust
 use std::collections::HashMap;
 use std::collections::VecDeque;
+use crate::user_account::{UserId, AssetId, UserAccount, Balance};
 
 const HIGH_WATER_MARK: usize = 10_000;  // Backpressure threshold
 
 pub struct UBSCore<R: RiskModel> {
-    // State
-    accounts: HashMap<u64, Account>,
+    // State (reuse existing types!)
+    accounts: HashMap<UserId, UserAccount>,
     dedup_guard: DeduplicationGuard,
-    pending_queue: VecDeque<Order>,  // For backpressure check
+    debt_ledger: DebtLedger,           // Ghost money handling
+    pending_queue: VecDeque<InternalOrder>,
+
+    // Fee configuration
+    vip_configs: HashMap<UserId, u8>,  // UserId → VIP level
+    vip_table: VipFeeTable,            // VIP level → rates
 
     // Logic
     risk_model: R,
@@ -417,20 +423,36 @@ pub struct UBSCore<R: RiskModel> {
     is_replay_mode: bool,
 }
 
+/// VIP fee rates (simple, stable)
+pub struct VipFeeTable {
+    // (maker_rate, taker_rate) - 10^6 precision (1000 = 0.1%)
+    rates: [(u64, u64); 10],  // VIP 0-9
+}
+
+impl VipFeeTable {
+    pub fn get_rate(&self, vip_level: u8, is_maker: bool) -> u64 {
+        let level = (vip_level as usize).min(9);
+        if is_maker { self.rates[level].0 } else { self.rates[level].1 }
+    }
+}
+
 impl<R: RiskModel> UBSCore<R> {
     pub fn new(risk_model: R) -> Self {
         Self {
             accounts: HashMap::new(),
             dedup_guard: DeduplicationGuard::new(),
+            debt_ledger: DebtLedger::new(),
             pending_queue: VecDeque::new(),
+            vip_configs: HashMap::new(),
+            vip_table: VipFeeTable::default(),
             risk_model,
             is_replay_mode: false,
         }
     }
 
     /// Process incoming order
-    pub fn process_order(&mut self, order: Order) -> Result<(), RejectReason> {
-        // 0. BACKPRESSURE CHECK (pending queue depth)
+    pub fn process_order(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
+        // 0. BACKPRESSURE CHECK
         if self.pending_queue.len() > HIGH_WATER_MARK {
             return Err(RejectReason::SystemBusy);
         }
@@ -459,47 +481,50 @@ impl<R: RiskModel> UBSCore<R> {
             return Err(RejectReason::InsufficientBalance);
         }
 
-        // 5. Lock funds
-        account.lock_funds(cost)?;
-
-        // 6. Return success (caller handles WAL + ME forwarding)
-        Ok(())
-    }
-
-    /// Handle trade execution (from ME)
-    pub fn on_trade(&mut self, trade: Trade) -> Result<(), BalanceError> {
-        // Consume frozen from seller
-        let seller = self.accounts.get_mut(&trade.seller_id)
-            .ok_or(BalanceError::AccountNotFound)?;
-        seller.consume_frozen(trade.base_qty)?;
-
-        // Speculative credit to buyer (hot path)
-        let buyer = self.accounts.get_mut(&trade.buyer_id)
-            .ok_or(BalanceError::AccountNotFound)?;
-        buyer.apply_speculative_credit(trade.base_qty)?;
+        // 5. Lock funds (use existing Balance methods)
+        let asset_id = self.risk_model.get_debit_asset(&order);
+        let balance = account.get_balance_mut(asset_id);
+        balance.frozen(cost).map_err(|_| RejectReason::InsufficientBalance)?;
 
         Ok(())
     }
 
-    /// Deposit funds (from blockchain)
-    pub fn on_deposit(&mut self, user_id: u64, amount: u64) -> Result<(), BalanceError> {
-        let account = self.accounts
-            .entry(user_id)
-            .or_insert_with(|| Account::new(user_id, 0));
+    /// Deposit funds (from blockchain) - pays debt first!
+    pub fn on_deposit(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) {
+        // First: Pay off any debt
+        let remaining = self.debt_ledger.pay_debt(user_id, asset_id, amount);
 
-        account.available = account.available
-            .checked_add(amount)
-            .ok_or(BalanceError::Overflow)?;
+        // Then: Deposit remaining to Balance
+        if remaining > 0 {
+            let account = self.accounts
+                .entry(user_id)
+                .or_insert_with(|| UserAccount::new(user_id));
+            let balance = account.get_balance_mut(asset_id);
+            let _ = balance.deposit(remaining);
+        }
+    }
 
-        Ok(())
+    /// Calculate and apply fee (simple: always quote asset)
+    fn calculate_fee(&self, user_id: UserId, trade_value: u64, is_maker: bool) -> u64 {
+        let vip_level = self.vip_configs.get(&user_id).copied().unwrap_or(0);
+        let rate = self.vip_table.get_rate(vip_level, is_maker);
+        (trade_value * rate) / 1_000_000
     }
 }
 ```
 
+**Key Changes**:
+- Uses existing `UserAccount`, `Balance` from `user_account.rs`
+- Added `DebtLedger` for ghost money
+- Added `VipFeeTable` for simple fee rates
+- `on_deposit` pays debt first
+- Fee calculation: simple rate lookup, no currency conversion
+
 **Acceptance Criteria**:
+- [ ] Uses existing `UserAccount`, `Balance` types
 - [ ] Order processing with all checks
-- [ ] Trade handling (hot path speculative credit)
-- [ ] Deposit handling
+- [ ] Deposit pays debt first
+- [ ] Fee calculation (VIP rate lookup)
 - [ ] Unit tests for main flows
 
 **Status**: 📋 NOT STARTED
@@ -629,11 +654,14 @@ pub struct GroupCommitWal {
 ```
 Phase 9 (Foundation)
 ├── 9.1 Crate Structure
-├── 9.2 Account (checked arithmetic) ← PRIORITY
-├── 9.3 Order Cost Calculation ← PRIORITY
-├── 9.4 Deduplication Guard
+├── 9.2 ✅ Balance (checked arithmetic) - EXISTING
+├── 9.2b Speculative field (optional)
+├── 9.2c DebtLedger (ghost money)
+├── 9.3 InternalOrder + cost calculation
+├── 9.4 DeduplicationGuard
 ├── 9.5 RiskModel Trait
-└── 9.6 UBSCore Struct (depends on 9.2-9.5)
+├── 9.6 VipFeeTable (simple fee rates)
+└── 9.7 UBSCore Struct (depends on all above)
 
 Phase 10 (Persistence)
 ├── 10.1 AlignedBuffer
@@ -676,20 +704,25 @@ Phase 13 (Hardening)
 
 ### 🔴 Critical Path (Must Have)
 
-1. **Task 9.2**: Account with checked arithmetic
-2. **Task 9.3**: Order cost calculation
-3. **Task 9.4**: Deduplication guard
-4. **Task 9.6**: UBSCore struct
-5. **Task 10.3**: Group Commit WAL
+1. **Task 9.1**: Crate structure
+2. **Task 9.2**: ✅ EXISTING - Balance with checked arithmetic
+3. **Task 9.2c**: DebtLedger (ghost money handling)
+4. **Task 9.3**: InternalOrder + cost calculation
+5. **Task 9.4**: DeduplicationGuard
+6. **Task 9.7**: UBSCore struct
+7. **Task 10.3**: Group Commit WAL
 
 ### 🟡 High Priority (Should Have)
 
-6. **Task 10.4**: WAL Replay
-7. **Task 11.1-11.3**: Aeron communication
+8. **Task 9.5**: RiskModel Trait
+9. **Task 9.6**: VipFeeTable
+10. **Task 10.4**: WAL Replay
+11. **Task 11.1-11.3**: Aeron communication
 
 ### 🟢 Future (Nice to Have)
 
-8. Phase 12-13: Integration and hardening
+12. **Task 9.2b**: Speculative field (if hot path needed)
+13. Phase 12-13: Integration and hardening
 
 ---
 
