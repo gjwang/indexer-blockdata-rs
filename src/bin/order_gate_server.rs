@@ -36,6 +36,11 @@ impl OrderPublisher for KafkaPublisher {
 
 #[tokio::main]
 async fn main() {
+    // Initialize logging
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .init();
+
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
     let symbol_manager = SymbolManager::load_from_db();

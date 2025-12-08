@@ -121,25 +121,53 @@ impl<R: RiskModel> UBSCore<R> {
     /// Process order with WAL persistence
     /// "Once accepted, never lost" - order is persisted BEFORE returning Ok
     pub fn process_order_durable(&mut self, order: InternalOrder) -> Result<(), RejectReason> {
+        let order_id = order.order_id;
+        let user_id = order.user_id;
+
         // 1. Validate first (cheap, no I/O)
-        self.process_order(order.clone())?;
+        if let Err(reason) = self.process_order(order.clone()) {
+            // Log rejected order for traceability
+            log::warn!(
+                "[REJECT] order_id={} user={} symbol={} side={:?} price={} qty={} reason={:?}",
+                order_id, user_id, order.symbol_id, order.side, order.price, order.qty, reason
+            );
+            return Err(reason);
+        }
 
         // 2. If valid, persist to WAL (fsync before returning)
         if let Some(wal_mutex) = &self.wal {
             let payload = bincode::serialize(&order)
-                .map_err(|_| RejectReason::InternalError)?;
+                .map_err(|e| {
+                    log::error!("[WAL_ERROR] order_id={} serialize failed: {}", order_id, e);
+                    RejectReason::InternalError
+                })?;
 
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
 
             let mut wal = wal_mutex.lock()
-                .map_err(|_| RejectReason::InternalError)?;
+                .map_err(|_| {
+                    log::error!("[WAL_ERROR] order_id={} lock failed", order_id);
+                    RejectReason::InternalError
+                })?;
 
             wal.append(&entry)
-                .map_err(|_| RejectReason::InternalError)?;
+                .map_err(|e| {
+                    log::error!("[WAL_ERROR] order_id={} append failed: {:?}", order_id, e);
+                    RejectReason::InternalError
+                })?;
 
             wal.flush()
-                .map_err(|_| RejectReason::InternalError)?;
+                .map_err(|e| {
+                    log::error!("[WAL_ERROR] order_id={} flush failed: {:?}", order_id, e);
+                    RejectReason::InternalError
+                })?;
         }
+
+        // 3. Log accepted order for traceability
+        log::info!(
+            "[ACCEPT] order_id={} user={} symbol={} side={:?} price={} qty={}",
+            order_id, user_id, order.symbol_id, order.side, order.price, order.qty
+        );
 
         Ok(())
     }
