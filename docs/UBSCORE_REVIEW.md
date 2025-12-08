@@ -74,60 +74,73 @@ The "Next Bullet" strategy for log rotation is a **professional-grade detail** t
 
 ## Areas for Improvement (Critical Gaps)
 
-### 1. ✅ Order ID Deduplication via halfULID + Cache Queue (Hybrid Approach)
+### 1. ✅ Order ID Deduplication via halfULID + Inline Eviction (Final Design)
 
-**Design Choice**: halfULID embeds timestamp + fixed-size cache queue for exact checks.
+**Design Choice**: halfULID embeds timestamp + time-bounded cache with inline eviction.
 
-**Hybrid Strategy (Two Layers of Protection)**:
+**Strategy: Time-First, Inline Eviction**
 
 ```
-Layer 1: Cache Queue (Exact Duplicate Check)
-├── Fixed size (e.g., 100,000 entries)
-├── O(1) lookup via HashSet
-├── When full, evict oldest entry
-└── Evicted entry's timestamp → becomes min_allowed_ts
+┌────────────────────────────────────────────────────────────────────┐
+│   MAX_TIME_DRIFT = 5 sec     ← Accept window (reject older orders) │
+│   EXPIRE_TOLERANCE = 1 sec   ← Buffer before eviction              │
+│   EXPIRE_THRESHOLD = 6 sec   ← Evict from cache after this         │
+└────────────────────────────────────────────────────────────────────┘
 
-Layer 2: Timestamp Window (Reject Old Orders)
-├── Defined by oldest entry in cache (not hardcoded!)
-├── Any order older than min_allowed_ts → rejected immediately
-└── Adapts dynamically to traffic volume
+Timeline:
+──────────────────────────────────────────────────────────────────► NOW
+        ├── EVICT (>6s) ──┼── REJECT (5-6s) ──┼── ACCEPT (0-5s) ──┤
+        │                 │                   │                   │
+   Pop from cache     Time check fails    Check exact duplicate
 ```
 
-**Implementation**:
+**Implementation (O(1) Amortized)**:
 
 ```rust
-struct DeduplicationGuard {
-    // Fixed-size cache for exact duplicate detection
-    cache: IndexSet<HalfUlid>,  // Ordered set, O(1) lookup
-    max_cache_size: usize,
+use indexmap::IndexSet;
 
-    // Dynamic time window (derived from cache eviction)
-    min_allowed_ts: u64,
+const MAX_TIME_DRIFT_MS: u64 = 5_000;      // Accept window
+const EXPIRE_TOLERANCE_MS: u64 = 1_000;    // Buffer before eviction
+const EXPIRE_THRESHOLD_MS: u64 = MAX_TIME_DRIFT_MS + EXPIRE_TOLERANCE_MS;
+const MAX_CACHE_SIZE: usize = 1_000_000;   // Hard limit (safety net)
+
+struct DeduplicationGuard {
+    // IndexSet maintains insertion order - oldest at front!
+    cache: IndexSet<HalfUlid>,
 }
 
 impl DeduplicationGuard {
     fn check_and_record(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
+        let now = current_time_ms();
         let order_ts = order_id.timestamp_ms();
 
-        // Layer 2: Reject if older than our time window
-        if order_ts < self.min_allowed_ts {
+        // 1. TIME CHECK (CPU only, no memory access)
+        if now - order_ts > MAX_TIME_DRIFT_MS {
             return Err(RejectReason::OrderTooOld);
         }
-
-        // Layer 1: Exact duplicate check in cache
-        if self.cache.contains(&order_id) {
-            return Err(RejectReason::DuplicateOrderId);
+        if order_ts > now + 1_000 {
+            return Err(RejectReason::FutureTimestamp);
         }
 
-        // Record this order
-        self.cache.insert(order_id);
+        // 2. INLINE EVICTION: Pop expired entries from front
+        while let Some(oldest) = self.cache.first() {
+            if now - oldest.timestamp_ms() > EXPIRE_THRESHOLD_MS {
+                self.cache.pop();  // O(1)
+            } else {
+                break;  // Oldest still valid, stop
+            }
+        }
 
-        // Evict oldest if cache is full
-        if self.cache.len() > self.max_cache_size {
-            let evicted = self.cache.pop_front().unwrap();
+        // 3. HARD LIMIT CHECK (safety net for clock issues/attacks)
+        if self.cache.len() >= MAX_CACHE_SIZE {
+            // Force evict oldest even if not expired
+            self.cache.pop();
+            log::warn!("Dedup cache hit hard limit, force evicting");
+        }
 
-            // Update time window based on evicted entry
-            self.min_allowed_ts = evicted.timestamp_ms();
+        // 4. EXACT DUPLICATE CHECK
+        if !self.cache.insert(order_id) {
+            return Err(RejectReason::DuplicateOrderId);
         }
 
         Ok(())
@@ -135,30 +148,47 @@ impl DeduplicationGuard {
 }
 ```
 
-**Why This is Bulletproof**:
+**Why This Works**:
 
-| Scenario | Protection |
-|----------|------------|
-| Duplicate within cache window | Exact match in HashSet → rejected |
-| Duplicate older than cache | timestamp < min_allowed_ts → rejected |
-| Replay attack with old ID | timestamp < min_allowed_ts → rejected |
-| New valid order | Passes both checks → accepted |
+| Check | Time | Action |
+|-------|------|--------|
+| `> 5 sec ago` | Reject | `OrderTooOld` (no cache lookup) |
+| `> 6 sec ago` | Evict | Pop from cache front |
+| `0-5 sec ago` | Accept | Check exact duplicate in cache |
 
-**Memory Usage**: Fixed O(cache_size), e.g., 100K entries × 8 bytes = 800KB
+**Tolerance Buffer Explained**:
+- Order arrives at t=4.9s (accepted, inserted into cache)
+- Processing takes 0.2s (now t=5.1s)
+- Without tolerance: order evicted immediately!
+- With 1s tolerance: stays in cache, prevents race condition
+
+**Memory Usage**: Bounded by `throughput × (MAX_TIME_DRIFT + EXPIRE_TOLERANCE)`
+
+| Throughput | Window | Cache Size | Memory |
+|------------|--------|------------|--------|
+| 10K/sec | 6 sec | 60K | 480 KB |
+| 50K/sec | 6 sec | 300K | 2.4 MB |
+| 100K/sec | 6 sec | 600K | 4.8 MB |
 
 **⚠️ Critical: Replay Mode Exception**
 
-During WAL replay, skip ALL checks (trust the WAL):
+During WAL replay, skip ALL checks:
 
 ```rust
 fn check_order_id(&mut self, order_id: HalfUlid) -> Result<(), RejectReason> {
     if self.is_replay_mode {
         return Ok(()); // WAL is pre-validated
     }
-
     self.dedup_guard.check_and_record(order_id)
 }
 ```
+
+**Summary**:
+- ✅ Simple: Two constants (MAX_TIME_DRIFT, EXPIRE_TOLERANCE)
+- ✅ Fast: Time check first (CPU only), O(1) amortized eviction
+- ✅ Exact: Zero false positives (IndexSet lookup)
+- ✅ Self-cleaning: No background thread, inline eviction
+- ✅ Bounded: Memory = throughput × time_window
 
 
 
