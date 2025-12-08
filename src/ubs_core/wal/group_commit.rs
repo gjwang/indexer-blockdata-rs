@@ -47,18 +47,53 @@ pub struct GroupCommitWal {
 }
 
 impl GroupCommitWal {
-    /// Create a new WAL file
+    /// Create a new WAL file with proper pre-allocation and zero-fill
+    ///
+    /// The zero-fill is critical for fast sync_data on APFS:
+    /// - allocate() marks blocks as "Unwritten" (security feature)
+    /// - Writing to unwritten blocks requires metadata updates
+    /// - Zero-fill converts blocks to "Written" at creation time
+    /// - Runtime writes become pure overwrites - no metadata updates!
     pub fn create<P: AsRef<Path>>(path: P, config: GroupCommitConfig) -> Result<Self, WalError> {
-        let file = OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .write(true)
+            .read(true)
             .truncate(true)
-            .open(path)
+            .open(&path)
             .map_err(|e| WalError::IoError(e.to_string()))?;
 
         // Enable direct I/O if requested
         if config.use_direct_io {
             Self::enable_direct_io(&file)?;
+        }
+
+        // Pre-allocate and zero-fill for fast runtime sync
+        if config.pre_alloc_size > 0 {
+            // STEP 1: Reserve space (fast, but leaves blocks "Unwritten")
+            file.allocate(config.pre_alloc_size)
+                .map_err(|e| WalError::IoError(format!("fallocate failed: {}", e)))?;
+
+            // STEP 2: Zero-fill to convert "Unwritten" -> "Written"
+            // This is slow (~100ms for 64MB) but happens only at creation
+            let zero_buf = vec![0u8; 1024 * 1024]; // 1MB buffer
+            let mut written = 0u64;
+            while written < config.pre_alloc_size {
+                let bytes_to_write = std::cmp::min(
+                    zero_buf.len() as u64,
+                    config.pre_alloc_size - written,
+                );
+                file.write_all(&zero_buf[0..bytes_to_write as usize])
+                    .map_err(|e| WalError::IoError(format!("zero-fill failed: {}", e)))?;
+                written += bytes_to_write;
+            }
+
+            // STEP 3: Sync ONCE to persist the "zero state"
+            file.sync_all().map_err(|e| WalError::IoError(e.to_string()))?;
+
+            // STEP 4: Reset cursor to start for runtime writes
+            file.seek(SeekFrom::Start(0))
+                .map_err(|e| WalError::IoError(e.to_string()))?;
         }
 
         Ok(Self {
@@ -86,13 +121,17 @@ impl GroupCommitWal {
         }
 
         // Pre-allocate file using fallocate (reserves actual disk blocks)
-        // Unlike set_len(), this is NOT a sparse file - blocks are truly reserved
+        // On macOS: fcntl(F_PREALLOCATE)
+        // CRITICAL: Also set_len() so overwrites don't change file size (avoids APFS metadata updates)
         if config.pre_alloc_size > 0 {
             let metadata = file.metadata().map_err(|e| WalError::IoError(e.to_string()))?;
             if metadata.len() < config.pre_alloc_size {
-                // fallocate: reserves physical blocks without writing zeros
+                // Step 1: Reserve physical blocks
                 file.allocate(config.pre_alloc_size)
                     .map_err(|e| WalError::IoError(format!("fallocate failed: {}", e)))?;
+                // Step 2: Set logical size so file doesn't "grow" on writes
+                file.set_len(config.pre_alloc_size)
+                    .map_err(|e| WalError::IoError(format!("set_len failed: {}", e)))?;
             }
         }
 

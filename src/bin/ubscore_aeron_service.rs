@@ -20,7 +20,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use fetcher::configure::{self, expand_tilde, AppConfig};
 use fetcher::ubs_core::{
-    MmapWal, InternalOrder, OrderType, RejectReason, Side, SpotRiskModel,
+    GroupCommitConfig, GroupCommitWal, InternalOrder, OrderType, RejectReason, Side, SpotRiskModel,
     UBSCore, WalEntry, WalEntryType,
 };
 
@@ -68,14 +68,23 @@ fn main() {
 fn run_aeron_service() {
     info!("🚀 UBSCore Service starting (Aeron mode)");
 
-    // --- Initialize WAL (mmap-based with sync flush for durability) ---
+    // --- Initialize WAL (file-based with zero-fill pre-allocation) ---
+    // Uses create() to zero-fill, converting "Unwritten" blocks to "Written"
+    // This makes runtime sync_data fast (pure overwrites, no metadata updates)
     let home = std::env::var("HOME").expect("HOME not set");
     let data_dir = PathBuf::from(home).join("ubscore_data");
     std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
-    let wal_path = data_dir.join("ubscore_mmap.wal");
+    let wal_path = data_dir.join("ubscore_zerofill.wal");
 
-    let mut wal = MmapWal::open(&wal_path).expect("Failed to open WAL");
-    info!("✅ MmapWal opened at {:?}", wal_path);
+    let wal_config = GroupCommitConfig {
+        buffer_size: 64 * 1024,
+        max_batch_size: 100,
+        use_direct_io: false,
+        pre_alloc_size: 64 * 1024 * 1024, // 64MB zero-filled
+    };
+    // Use CREATE (not open) to trigger zero-fill
+    let mut wal = GroupCommitWal::create(&wal_path, wal_config).expect("Failed to create WAL");
+    info!("✅ GroupCommitWal (zero-filled) created at {:?}", wal_path);
 
     // --- Initialize UBSCore ---
     let mut ubs_core = UBSCore::new(SpotRiskModel);
@@ -217,7 +226,7 @@ struct Stats {
 #[cfg(feature = "aeron")]
 struct OrderHandler<'a> {
     ubs_core: &'a mut UBSCore<SpotRiskModel>,
-    wal: &'a mut MmapWal,
+    wal: &'a mut GroupCommitWal,
     publication: &'a AeronPublication,
     kafka_producer: &'a Option<FutureProducer>,
     stats: &'a mut Stats,
