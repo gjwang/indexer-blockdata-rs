@@ -11,6 +11,7 @@ pub mod debt;
 pub mod fee;
 pub mod risk;
 pub mod core;
+pub mod wal;
 
 // Re-exports
 pub use error::RejectReason;
@@ -20,3 +21,5 @@ pub use debt::{DebtLedger, DebtRecord, DebtReason};
 pub use fee::VipFeeTable;
 pub use risk::{RiskModel, SpotRiskModel};
 pub use core::UBSCore;
+pub use wal::{GroupCommitWal, WalEntry, WalEntryType, WalReplay};
+
