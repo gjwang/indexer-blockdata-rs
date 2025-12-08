@@ -487,13 +487,14 @@ i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
 ```
 
 **Gateway MUST**:
-- Configure max decimals per asset (recommend ≤ 8)
-- For ETH: use 8 decimals, NOT 18
-- Blockchain uses 18 decimals (wei), but CEX uses 8
+- Configure max decimals per asset (recommend ≤ 10)
+- For ETH: use 8-10 decimals, NOT 18
+- Blockchain uses 18 decimals (wei), but CEX uses 8-10
 
-**Why max 8-12 decimals?**
-- Sub-cent precision: 8 decimals = 0.00000001 (enough)
-- Large balances: 92 billion units fits in i64
+**Why max 10 decimals?**
+- 10 decimals: max 922 million units (enough for most assets)
+- 8 decimals: max 92 billion units (recommended)
+- Sub-cent precision: 8-10 decimals = 0.00000001 (sufficient)
 
 ```rust
 use thiserror::Error;
