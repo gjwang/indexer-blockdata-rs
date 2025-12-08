@@ -125,8 +125,9 @@ impl DeduplicationGuard {
             return Err(RejectReason::FutureTimestamp);
         }
 
-        // 2. EVICTION BOUNDARY CHECK: Reject if older than evicted entries
-        //    This prevents duplicates of force-evicted IDs!
+        // 2. EVICTION BOUNDARY CHECK: Reject if STRICTLY older than evicted entries
+        //    Note: halfULID has random bits, so same timestamp ≠ same order ID
+        //    We use < (not <=) to allow new orders with same timestamp
         if order_ts < self.min_allowed_ts {
             return Err(RejectReason::OrderTooOld);
         }
