@@ -462,51 +462,46 @@ fn test_vip_level_capped() {
 - Log error and return error
 - Only panic in tests (use `#[cfg(test)]`)
 
-**📌 NOTE: MAX_BALANCE vs Internal Calculations**
+**📌 Responsibility Split**
 
-| Layer | Limit | Example |
-|-------|-------|---------|
-| **Final stored value** | MAX_BALANCE (10^18) | Balance in DB |
-| **Internal calculation** | u64::MAX | price × qty |
-| **Overflow detection** | checked_mul | Returns u64::MAX on overflow |
+| Layer | Responsibility |
+|-------|----------------|
+| **Asset Config** | Decimals per asset (Gateway config) |
+| **Gateway** | Scale conversion, validate per-asset limits |
+| **UBSCore** | Only check: value ≤ i64::MAX |
 
-```
-Example: ETH has 18 decimals → 1 ETH = 10^18 wei
-- 1 ETH balance = 1_000_000_000_000_000_000 (fits in MAX_BALANCE)
-- price × qty may exceed MAX_BALANCE temporarily (during calculation)
-- Final result MUST fit in MAX_BALANCE (for DB)
-- Use checked_mul to detect u64 overflow
-```
+**Why i64::MAX?**
+- ScyllaDB BIGINT is signed i64
+- Values > i64::MAX would appear negative when read back
+- i64::MAX = 9,223,372,036,854,775,807 ≈ 9.2 × 10^18
+- More than enough for any asset at any decimal precision
 
 ```rust
 use thiserror::Error;
 
-/// Maximum FINAL balance value (fits in both u64 and positive i64)
-/// 10^18 = 1 quintillion (e.g., 1 ETH in wei)
-/// NOTE: Internal calculations may exceed this, but final result must fit
-pub const MAX_BALANCE: u64 = 1_000_000_000_000_000_000;
+/// UBSCore only needs to check this limit (for DB compatibility)
+/// Decimal handling is Gateway's responsibility
+pub const MAX_SAFE_VALUE: u64 = i64::MAX as u64;
 
 #[derive(Debug, Error, Clone, PartialEq)]
 pub enum DbValueError {
     #[error("Negative value in DB: {0}")]
     NegativeValue(i64),
 
-    #[error("Value exceeds maximum: {0} > {MAX_BALANCE}")]
-    ExceedsMaximum(u64),
+    #[error("Value exceeds i64::MAX: {0}")]
+    ExceedsMax(u64),
 }
 
 /// Convert u64 to i64 for DB storage (write)
-/// Returns Error if value exceeds safe range
 pub fn u64_to_db(value: u64) -> Result<i64, DbValueError> {
-    if value > MAX_BALANCE {
-        log::error!("DB_WRITE_ERROR: value {} exceeds MAX_BALANCE", value);
-        return Err(DbValueError::ExceedsMaximum(value));
+    if value > MAX_SAFE_VALUE {
+        log::error!("DB_WRITE_ERROR: value {} exceeds i64::MAX", value);
+        return Err(DbValueError::ExceedsMax(value));
     }
     Ok(value as i64)
 }
 
 /// Convert i64 from DB to u64 (read)
-/// Returns Error if value is negative (data corruption)
 pub fn db_to_u64(value: i64) -> Result<u64, DbValueError> {
     if value < 0 {
         log::error!("DB_READ_ERROR: negative value {} in DB", value);
@@ -536,20 +531,19 @@ mod tests {
     }
 
     #[test]
-    fn test_u64_to_db_max_balance() {
-        assert_eq!(u64_to_db(MAX_BALANCE), Ok(MAX_BALANCE as i64));
+    fn test_u64_to_db_i64_max() {
+        assert_eq!(u64_to_db(MAX_SAFE_VALUE), Ok(i64::MAX));
     }
 
     #[test]
     fn test_u64_to_db_exceeds_max() {
-        let too_large = MAX_BALANCE + 1;
-        assert_eq!(u64_to_db(too_large), Err(DbValueError::ExceedsMaximum(too_large)));
+        let too_large = MAX_SAFE_VALUE + 1;
+        assert_eq!(u64_to_db(too_large), Err(DbValueError::ExceedsMax(too_large)));
     }
 
     #[test]
-    fn test_u64_to_db_way_too_large() {
-        let huge = u64::MAX;
-        assert_eq!(u64_to_db(huge), Err(DbValueError::ExceedsMaximum(huge)));
+    fn test_u64_to_db_u64_max() {
+        assert_eq!(u64_to_db(u64::MAX), Err(DbValueError::ExceedsMax(u64::MAX)));
     }
 
     // === db_to_u64 tests ===
@@ -565,18 +559,13 @@ mod tests {
     }
 
     #[test]
-    fn test_db_to_u64_max_balance() {
-        assert_eq!(db_to_u64(MAX_BALANCE as i64), Ok(MAX_BALANCE));
+    fn test_db_to_u64_i64_max() {
+        assert_eq!(db_to_u64(i64::MAX), Ok(MAX_SAFE_VALUE));
     }
 
     #[test]
     fn test_db_to_u64_negative_one() {
         assert_eq!(db_to_u64(-1), Err(DbValueError::NegativeValue(-1)));
-    }
-
-    #[test]
-    fn test_db_to_u64_large_negative() {
-        assert_eq!(db_to_u64(-1_000_000), Err(DbValueError::NegativeValue(-1_000_000)));
     }
 
     #[test]
@@ -595,16 +584,8 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_normal() {
-        let original: u64 = 123_456_789;
-        let db_value = u64_to_db(original).unwrap();
-        let restored = db_to_u64(db_value).unwrap();
-        assert_eq!(original, restored);
-    }
-
-    #[test]
-    fn test_roundtrip_max_balance() {
-        let original: u64 = MAX_BALANCE;
+    fn test_roundtrip_max() {
+        let original: u64 = MAX_SAFE_VALUE;
         let db_value = u64_to_db(original).unwrap();
         let restored = db_to_u64(db_value).unwrap();
         assert_eq!(original, restored);
