@@ -42,10 +42,14 @@ pub struct AeronConfig {
     pub busy_spin: bool,
 }
 
+/// Default Aeron UDP endpoint for UBSCore
+pub const UDP_ENDPOINT: &str = "localhost:40456";
+
 impl Default for AeronConfig {
     fn default() -> Self {
+        // Default to UDP transport (works across servers in production)
         Self {
-            channel: IPC_CHANNEL.to_string(),
+            channel: format!("aeron:udp?endpoint={}", UDP_ENDPOINT),
             orders_in_stream: streams::ORDERS_IN,
             orders_out_stream: streams::ORDERS_OUT,
             fills_in_stream: streams::FILLS_IN,
@@ -56,9 +60,19 @@ impl Default for AeronConfig {
 }
 
 impl AeronConfig {
+    /// Create config for UDP unicast (point-to-point)
+    pub fn udp(endpoint: &str) -> Self {
+        Self { channel: format!("aeron:udp?endpoint={}", endpoint), ..Default::default() }
+    }
+
     /// Create config for UDP multicast (for distributed deployment)
     pub fn udp_multicast(address: &str) -> Self {
         Self { channel: format!("aeron:udp?endpoint={}", address), ..Default::default() }
+    }
+
+    /// Create config for IPC (shared memory - same machine only, dev/test)
+    pub fn ipc() -> Self {
+        Self { channel: IPC_CHANNEL.to_string(), ..Default::default() }
     }
 }
 
@@ -67,16 +81,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config() {
+    fn test_default_config_is_udp() {
         let config = AeronConfig::default();
-        assert_eq!(config.channel, "aeron:ipc");
+        assert!(config.channel.contains("aeron:udp"));
+        assert!(config.channel.contains(UDP_ENDPOINT));
         assert_eq!(config.orders_in_stream, 1001);
         assert!(config.busy_spin);
     }
 
     #[test]
-    fn test_udp_config() {
-        let config = AeronConfig::udp_multicast("224.0.1.1:40456");
-        assert!(config.channel.contains("224.0.1.1"));
+    fn test_ipc_config() {
+        let config = AeronConfig::ipc();
+        assert_eq!(config.channel, "aeron:ipc");
+    }
+
+    #[test]
+    fn test_udp_unicast() {
+        let config = AeronConfig::udp("192.168.1.100:40456");
+        assert!(config.channel.contains("192.168.1.100"));
     }
 }
