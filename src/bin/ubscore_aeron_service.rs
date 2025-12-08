@@ -245,7 +245,6 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         };
-        let t_parse = start.elapsed();
 
         // Convert to InternalOrder
         let order = match order_msg.to_internal_order() {
@@ -257,8 +256,6 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         };
-        let t_convert = start.elapsed();
-        let order_id = order.order_id;
 
         // 1. VALIDATE FIRST (cheap, no I/O)
         if let Err(reason) = self.ubs_core.validate_order(&order) {
@@ -272,7 +269,6 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             *self.orders_rejected += 1;
             return;
         }
-        let t_validate = start.elapsed();
 
         // 2. WAL APPEND (only for valid orders)
         if let Ok(payload) = bincode::serialize(&order) {
@@ -284,17 +280,14 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 return;
             }
         }
-        let t_wal_append = start.elapsed();
 
         // 3. WAL FLUSH (durability guarantee)
         if let Err(e) = self.wal.flush() {
             error!("WAL flush failed: {:?}", e);
         }
-        let t_wal_flush = start.elapsed();
 
         // 4. Send accept response
         self.send_response(order.order_id, true, 0);
-        let t_response = start.elapsed();
         *self.orders_accepted += 1;
 
         // 5. Forward to Kafka (async, best-effort)
@@ -305,23 +298,6 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
                 .payload(&payload)
                 .key(&key);
             let _ = producer.send(record, Duration::from_secs(0));
-        }
-        let t_kafka = start.elapsed();
-
-        // Log profiling every 100th order
-        if order_id % 100 == 0 {
-            log::info!(
-                "[PROFILE] order_id={} parse={}µs convert={}µs validate={}µs wal_append={}µs wal_flush={}µs response={}µs kafka={}µs TOTAL={}µs",
-                order_id,
-                t_parse.as_micros(),
-                (t_convert - t_parse).as_micros(),
-                (t_validate - t_convert).as_micros(),
-                (t_wal_append - t_validate).as_micros(),
-                (t_wal_flush - t_wal_append).as_micros(),
-                (t_response - t_wal_flush).as_micros(),
-                (t_kafka - t_response).as_micros(),
-                t_kafka.as_micros()
-            );
         }
 
         // Track latency
