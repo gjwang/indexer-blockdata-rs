@@ -17,6 +17,7 @@ Cargo.lock
 .env
 .zed/
 log/
+logs/
 config_db/
 
 
