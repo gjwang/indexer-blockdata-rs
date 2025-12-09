@@ -164,16 +164,12 @@ fn run_aeron_service() {
     info!("🎯 UBSCore Service ready - listening for orders");
 
     // --- Main processing loop ---
-    let stats = HandlerStats::new();
-    let mut last_stats = Instant::now();
-    let mut last_received = 0u64;
-
     // Create handler ONCE outside the loop (not every iteration!)
     let business_state = std::cell::RefCell::new(BusinessState {
         ubs_core,
         wal,
         kafka_producer,
-        stats,
+        stats: HandlerStats::new(),
     });
 
     let transport_handler = OrderHandlerRef {
@@ -182,34 +178,37 @@ fn run_aeron_service() {
     };
     let handler_wrapped = Handler::leak(transport_handler);
 
+    let mut last_stats_time = Instant::now();
+    let mut last_received = 0u64;
+
     loop {
-        // Just poll - handler already created
+        // Poll for messages
         let _ = subscription.poll(Some(&handler_wrapped), 10);
 
         // Print stats every 10 seconds
-        let stats = business_state.borrow();
-        if last_stats.elapsed() > Duration::from_secs(10) {
-            let elapsed_secs = last_stats.elapsed().as_secs_f64();
-            let orders_in_period = stats.stats.received - last_received;
+        if last_stats_time.elapsed() > Duration::from_secs(10) {
+            let state = business_state.borrow();
+            let elapsed_secs = last_stats_time.elapsed().as_secs_f64();
+            let orders_in_period = state.stats.received - last_received;
             let qps = orders_in_period as f64 / elapsed_secs;
 
-            if stats.stats.received > 0 && stats.stats.latency_min_us < u64::MAX {
-                let avg_us = stats.stats.latency_sum_us / stats.stats.received;
+            if state.stats.received > 0 && state.stats.latency_min_us < u64::MAX {
+                let avg_us = state.stats.latency_sum_us / state.stats.received;
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1} latency(µs): min={} avg={} max={}",
-                    stats.stats.received, stats.stats.accepted, stats.stats.rejected, qps,
-                    stats.stats.latency_min_us, avg_us, stats.stats.latency_max_us
+                    state.stats.received, state.stats.accepted, state.stats.rejected, qps,
+                    state.stats.latency_min_us, avg_us, state.stats.latency_max_us
                 );
             } else {
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1}",
-                    stats.stats.received, stats.stats.accepted, stats.stats.rejected, qps
+                    state.stats.received, state.stats.accepted, state.stats.rejected, qps
                 );
             }
-            last_stats = Instant::now();
-            last_received = stats.stats.received;
+            last_received = state.stats.received;
+            drop(state);
+            last_stats_time = Instant::now();
         }
-        drop(stats);  // Release borrow before sleep
 
         // Small sleep to avoid busy-spin
         std::thread::sleep(Duration::from_micros(100));
