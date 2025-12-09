@@ -23,7 +23,7 @@ async fn main() {
     let counter = Arc::new(AtomicU64::new(0));
     let total_count: u64 = 10_000;  // Stress test with 10K iterations
 
-    let concurrency = 100;
+    let concurrency = 10;  // Reduced from 100 to prevent Aeron overwhelm
     let interval_ms = 0;
 
     let mut handles = Vec::new();
