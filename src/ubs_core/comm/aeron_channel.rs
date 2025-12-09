@@ -219,13 +219,23 @@ impl AeronChannel {
         message.extend_from_slice(&correlation_id.to_le_bytes());
         message.extend_from_slice(payload);
 
-        // Send
+        // Send - check Aeron error codes
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let position = publication.offer(&message, handler);
 
-        if position <= 0 {
-            log::warn!("[AERON_CHANNEL] offer failed: position={}", position);
-            return Err(SendError::Unknown(position));
+        if position < 0 {
+            let err = match position {
+                -1 => SendError::NotConnected,
+                -2 => {
+                    log::warn!("[AERON_CHANNEL] Back pressured - buffer full");
+                    SendError::BackPressured
+                }
+                -3 => SendError::AdminAction,
+                -4 => SendError::Closed,
+                -5 => SendError::MaxPositionExceeded,
+                _ => SendError::Unknown(position),
+            };
+            return Err(err);
         }
 
         // Wait for response using tokio timeout
@@ -247,11 +257,15 @@ impl AeronChannel {
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let position = publication.offer(payload, handler);
 
-        if position <= 0 {
-            return Err(SendError::Unknown(position));
+        match position {
+            p if p >= 0 => Ok(p),
+            -1 => Err(SendError::NotConnected),
+            -2 => Err(SendError::BackPressured),
+            -3 => Err(SendError::AdminAction),
+            -4 => Err(SendError::Closed),
+            -5 => Err(SendError::MaxPositionExceeded),
+            _ => Err(SendError::Unknown(position)),
         }
-
-        Ok(position)
     }
 
     /// Check if connected

@@ -59,6 +59,14 @@ impl OrderSender {
     }
 
     /// Send an order to UBSCore
+    ///
+    /// Aeron offer return codes:
+    /// - >= 0: Success (position)
+    /// - -1: NOT_CONNECTED
+    /// - -2: BACK_PRESSURED (buffer full)
+    /// - -3: ADMIN_ACTION
+    /// - -4: CLOSED
+    /// - -5: MAX_POSITION_EXCEEDED
     pub fn send(&self, order: &InternalOrder) -> Result<i64, SendError> {
         let publication = self.publication.as_ref().ok_or(SendError::NotConnected)?;
 
@@ -69,10 +77,14 @@ impl OrderSender {
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let position = publication.offer(bytes, handler);
 
-        if position > 0 {
-            Ok(position)
-        } else {
-            Err(SendError::Unknown(position))
+        match position {
+            p if p >= 0 => Ok(p),
+            -1 => Err(SendError::NotConnected),
+            -2 => Err(SendError::BackPressured),  // Buffer full!
+            -3 => Err(SendError::AdminAction),
+            -4 => Err(SendError::Closed),
+            -5 => Err(SendError::MaxPositionExceeded),
+            _ => Err(SendError::Unknown(position)),
         }
     }
 
@@ -91,19 +103,35 @@ impl OrderSender {
 #[derive(Debug, Clone)]
 pub enum SendError {
     NotConnected,
-    BackPressured,
+    BackPressured,   // Buffer full - respond with SystemBusy
     AdminAction,
+    Closed,
+    MaxPositionExceeded,
     MaxRetriesExceeded,
     AeronError(String),
     Unknown(i64),
+}
+
+impl SendError {
+    /// Check if this is a back pressure (buffer full) error
+    pub fn is_back_pressured(&self) -> bool {
+        matches!(self, SendError::BackPressured)
+    }
+
+    /// Check if this is a "system busy" type error (should return 503)
+    pub fn is_system_busy(&self) -> bool {
+        matches!(self, SendError::BackPressured | SendError::AdminAction | SendError::MaxPositionExceeded)
+    }
 }
 
 impl std::fmt::Display for SendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SendError::NotConnected => write!(f, "Not connected to subscriber"),
-            SendError::BackPressured => write!(f, "Back pressure - subscriber slow"),
+            SendError::BackPressured => write!(f, "System busy - buffer full"),
             SendError::AdminAction => write!(f, "Admin action in progress"),
+            SendError::Closed => write!(f, "Publication closed"),
+            SendError::MaxPositionExceeded => write!(f, "Max position exceeded"),
             SendError::MaxRetriesExceeded => write!(f, "Max retries exceeded"),
             SendError::AeronError(e) => write!(f, "Aeron error: {}", e),
             SendError::Unknown(code) => write!(f, "Unknown error code: {}", code),
