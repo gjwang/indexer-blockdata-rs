@@ -279,7 +279,7 @@ ORDER_QTY="0.01"  # 0.01 BTC
 # Step 6.1: Place SELL order first (creates order book entry)
 log_info "Placing SELL order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 
-SELL_CID="sell_order_$(date +%s)_$$_$RANDOM"
+SELL_CID="s_$(date +%s)_$$_$RANDOM"
 log_info "Sell Order ID: $SELL_CID (len: ${#SELL_CID})"
 
 sell_response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \
@@ -293,7 +293,7 @@ sleep 1
 # Step 6.2: Place BUY order (should match with SELL and create trade!)
 log_info "Placing BUY order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 
-BUY_CID="buy_order_$(date +%s)_$$_$RANDOM"
+BUY_CID="b_$(date +%s)_$$_$RANDOM"
 log_info "Client Order ID: $BUY_CID (len: ${#BUY_CID})"
 
 response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \

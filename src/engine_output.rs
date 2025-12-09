@@ -58,8 +58,8 @@ pub struct InputBundle {
 }
 
 /// All possible input types
+/// NOTE: No serde tags - bincode uses enum discriminant (more efficient)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
 pub enum InputData {
     PlaceOrder(PlaceOrderInput),
     CancelOrder(CancelOrderInput),
