@@ -13,6 +13,7 @@ use crate::engine_output::{
 };
 use crate::fast_ulid::FastUlidHalfGen;
 use crate::ledger::{GlobalLedger, Ledger, LedgerCommand, MatchExecData, ShadowLedger};
+use crate::null_ledger::NullLedger; // Stub ledger for refactoring
 use crate::models::{Order, OrderError, OrderStatus, OrderType, Side, Trade};
 use crate::order_wal::{LogEntry, Wal};
 use crate::user_account::UserAccount;
@@ -242,7 +243,7 @@ pub struct EngineSnapshot {
 
 pub struct MatchingEngine {
     pub order_books: Vec<Option<OrderBook>>,
-    pub ledger: GlobalLedger,
+    // REMOVED: Balance state is now in UBSCore!
     pub asset_map: FxHashMap<u32, (u32, u32)>,
     pub order_wal: Option<Wal>,
     pub snapshot_dir: std::path::PathBuf,
@@ -271,8 +272,7 @@ impl MatchingEngine {
 
         // 1. Try Load Snapshot
         let mut order_books = Vec::new();
-        let mut accounts = FxHashMap::default();
-        let mut ledger_seq = 0;
+        // REMOVED: accounts, ledger_seq - Balance state is in UBSCore
         let mut order_wal_seq = 0;
         let mut state_hash = 0;
         let mut output_seq = 0;
@@ -309,23 +309,17 @@ impl MatchingEngine {
                 bincode::deserialize_from(reader).map_err(|e| e.to_string())?;
 
             order_books = snap.order_books;
-            accounts = snap.ledger_accounts;
-            ledger_seq = snap.ledger_seq;
+            // REMOVED: accounts, ledger_seq loading
             order_wal_seq = snap.order_wal_seq;
             output_seq = snap.output_seq;
             last_output_hash = snap.last_output_hash;
             println!(
-                "   [Recover] Snapshot Loaded. OrderWalSeq: {}, LedgerSeq: {}",
-                order_wal_seq, ledger_seq
+                "   [Recover] Snapshot Loaded. OrderWalSeq: {}",
+                order_wal_seq
             );
         }
 
-        let ledger_wal_path = wal_dir.join("ledger");
-        let ledger_snap_path = snap_dir.join("ledger_snapshots");
-
-        // 2. Initialize Ledger from State
-        let ledger =
-            GlobalLedger::new(&ledger_wal_path, &ledger_snap_path).map_err(|e| e.to_string())?;
+        // REMOVED: Ledger initialization - Balance state is in UBSCore
 
         // 3. Replay WAL (Only if enabled)
         let order_wal = if enable_local_wal {
@@ -336,7 +330,7 @@ impl MatchingEngine {
 
         let mut engine = Self {
             order_books,
-            ledger,
+            // REMOVED: ledger field
             asset_map: FxHashMap::default(),
             order_wal,
             snapshot_dir: snap_dir.to_path_buf(),
@@ -447,22 +441,8 @@ impl MatchingEngine {
             Side::Buy => (quote_asset_id, price * quantity),
             Side::Sell => (base_asset_id, quantity),
         };
-
-        let accounts = self.ledger.get_accounts();
-        let balance = accounts
-            .get(&user_id)
-            .and_then(|user| user.assets.iter().find(|(a, _)| *a == required_asset))
-            .map(|(_, b)| b.avail)
-            .unwrap_or(0);
-
-        if balance < required_amount {
-            return Err(OrderError::InsufficientFunds {
-                user_id,
-                asset_id: required_asset,
-                required: required_amount,
-                avail: balance,
-            });
-        }
+        // REMOVED: Balance validation is now done by UBSCore
+        // If an order reaches ME, funds are already locked in UBSCore
 
         // 3. Write to Input Log (Source of Truth)
         // 3. Write to Input Log (Source of Truth)
@@ -472,9 +452,9 @@ impl MatchingEngine {
         }
 
         // 2. Process Logic
-        // 2. Process Logic
+        let mut null_ledger = NullLedger::new(); // ME no longer has balance state
         let oid = Self::process_order_logic(
-            &mut self.ledger,
+            &mut null_ledger,
             &mut self.order_books,
             &self.asset_map,
             &mut self.trade_id_gen,
@@ -500,11 +480,10 @@ impl MatchingEngine {
         self.update_hash(&hash_data);
 
         // 3. Flush WALs
-        // 3. Flush WALs
         if let Some(wal) = &mut self.order_wal {
             wal.flush().map_err(|e| OrderError::Other(e.to_string()))?;
         }
-        self.ledger.flush().map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        // REMOVED: ledger flush - ME no longer has ledger
 
         Ok(oid)
     }
@@ -1559,122 +1538,8 @@ impl MatchingEngine {
         Ok(cmd)
     }
 
-    /// Transfer IN with EngineOutput (new architecture)
-    /// Produces atomic EngineOutput bundle with balance event
-    pub fn transfer_in_and_build_output(
-        &mut self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-    ) -> Result<EngineOutput, String> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-
-        // Build input (use next output_seq as input_seq for deposits)
-        let input_seq = self.output_seq + 1;
-        let input = InputBundle::new(
-            input_seq,
-            InputData::Deposit(DepositInput { user_id, asset_id, amount, created_at: now }),
-        );
-
-        // Get current state before deposit
-        let current_bal = self.ledger.get_balance(user_id, asset_id);
-        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
-        let current_frozen = self.ledger.get_frozen(user_id, asset_id);
-
-        // Apply deposit
-        let balance_after = current_bal + amount;
-        let version = current_ver + 1;
-        let cmd = LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version };
-        self.ledger.apply(&cmd).map_err(|e| format!("Failed to transfer in: {}", e))?;
-
-        // Build balance event
-        let balance_event = EOBalanceEvent {
-            user_id,
-            asset_id,
-            event_type: "deposit".to_string(),
-            delta_avail: amount as i64,
-            delta_frozen: 0,
-            avail: balance_after as i64,
-            frozen: current_frozen as i64,
-            seq: version,
-            ref_id: 0,
-        };
-
-        // Build EngineOutput
-        self.output_seq += 1;
-        let output = EngineOutput::new(
-            self.output_seq,
-            self.last_output_hash,
-            input,
-            None,   // no order_update for deposit
-            vec![], // no trades
-            vec![balance_event],
-        );
-        self.last_output_hash = output.hash;
-
-        Ok(output)
-    }
-
-    /// Transfer OUT with EngineOutput (new architecture)
-    /// Produces atomic EngineOutput bundle with balance event
-    pub fn transfer_out_and_build_output(
-        &mut self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-    ) -> Result<EngineOutput, String> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64;
-
-        // Build input (use next output_seq as input_seq for withdraws)
-        let input_seq = self.output_seq + 1;
-        let input = InputBundle::new(
-            input_seq,
-            InputData::Withdraw(WithdrawInput { user_id, asset_id, amount, created_at: now }),
-        );
-
-        // Get current state before withdraw
-        let current_bal = self.ledger.get_balance(user_id, asset_id);
-        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
-        let current_frozen = self.ledger.get_frozen(user_id, asset_id);
-
-        // Validate sufficient balance
-        if current_bal < amount {
-            return Err(format!("Insufficient balance: have {} need {}", current_bal, amount));
-        }
-
-        // Apply withdraw
-        let balance_after = current_bal - amount;
-        let version = current_ver + 1;
-        let cmd = LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version };
-        self.ledger.apply(&cmd).map_err(|e| format!("Failed to transfer out: {}", e))?;
-
-        // Build balance event
-        let balance_event = EOBalanceEvent {
-            user_id,
-            asset_id,
-            event_type: "withdraw".to_string(),
-            delta_avail: -(amount as i64),
-            delta_frozen: 0,
-            avail: balance_after as i64,
-            frozen: current_frozen as i64,
-            seq: version,
-            ref_id: 0,
-        };
-
-        // Build EngineOutput
-        self.output_seq += 1;
-        let output = EngineOutput::new(
-            self.output_seq,
-            self.last_output_hash,
-            input,
-            None,   // no order_update for withdraw
-            vec![], // no trades
-            vec![balance_event],
-        );
-        self.last_output_hash = output.hash;
-
-        Ok(output)
-    }
+    // REMOVED: transfer_in_and_build_output() and transfer_out_and_build_output()
+    // Deposits and withdrawals are now handled exclusively by UBSCore
 }
 
 #[cfg(test)]

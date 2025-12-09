@@ -10,6 +10,7 @@ pub mod fast_ulid;
 pub mod gateway;
 
 pub mod ledger;
+pub mod null_ledger; // Stub for ME refactoring
 pub mod log_macros;
 pub mod logger;
 pub mod matching_engine_base;
