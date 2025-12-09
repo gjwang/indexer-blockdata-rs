@@ -203,10 +203,14 @@ log_step "4" "TEST: Deposit (Transfer In)"
 DEPOSIT_AMOUNT="10000.0"  # 10,000 BTC (will be converted to satoshis internally)
 log_info "Depositing $DEPOSIT_AMOUNT BTC to user=$TEST_USER..."
 
+# Generate unique request ID for tracing
+DEPOSIT_REQUEST_ID="deposit_btc_$(date +%s)_$$_$RANDOM"
+log_info "Request ID: $DEPOSIT_REQUEST_ID"
+
 response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
     -H "Content-Type: application/json" \
     -d "{
-        \"request_id\": \"test_deposit_btc_001\",
+        \"request_id\": \"$DEPOSIT_REQUEST_ID\",
         \"user_id\": $TEST_USER,
         \"asset\": \"BTC\",
         \"amount\": \"$DEPOSIT_AMOUNT\"
@@ -240,10 +244,14 @@ log_step "5" "TEST: Deposit USDT (for trading)"
 USDT_AMOUNT="100000.0"  # 100,000 USDT
 log_info "Depositing $USDT_AMOUNT USDT for trading..."
 
+# Generate unique request ID for tracing
+USDT_REQUEST_ID="deposit_usdt_$(date +%s)_$$_$RANDOM"
+log_info "Request ID: $USDT_REQUEST_ID"
+
 response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
     -H "Content-Type: application/json" \
     -d "{
-        \"request_id\": \"test_deposit_usdt_001\",
+        \"request_id\": \"$USDT_REQUEST_ID\",
         \"user_id\": $TEST_USER,
         \"asset\": \"USDT\",
         \"amount\": \"$USDT_AMOUNT\"
@@ -334,10 +342,14 @@ log_step "8" "TEST: Withdraw (Transfer Out)"
 WITHDRAW_AMOUNT="1000.0"  # 1,000 BTC
 log_info "Withdrawing $WITHDRAW_AMOUNT BTC from user=$TEST_USER..."
 
+# Generate unique request ID for tracing
+WITHDRAW_REQUEST_ID="withdraw_btc_$(date +%s)_$$_$RANDOM"
+log_info "Request ID: $WITHDRAW_REQUEST_ID"
+
 response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_out" \
     -H "Content-Type: application/json" \
     -d "{
-        \"request_id\": \"test_withdraw_btc_001\",
+        \"request_id\": \"$WITHDRAW_REQUEST_ID\",
         \"user_id\": $TEST_USER,
         \"asset\": \"BTC\",
         \"amount\": \"$WITHDRAW_AMOUNT\"
