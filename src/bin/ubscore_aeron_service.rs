@@ -37,6 +37,11 @@ macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
 macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
 macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
 
+// Tuning constants
+const POLL_LIMIT: usize = 10;            // Max fragments per poll
+const HEARTBEAT_INTERVAL_SECS: u64 = 10; // Heartbeat log interval
+const POLL_SLEEP_US: u64 = 100;          // Sleep between polls to avoid busy-spin
+
 fn init_env_logger() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .format_timestamp_millis()
@@ -182,18 +187,18 @@ fn run_aeron_service() {
 
     loop {
         // Poll for messages
-        if let Ok(fragments) = subscription.poll(Some(&handler_wrapped), 10) {
+        if let Ok(fragments) = subscription.poll(Some(&handler_wrapped), POLL_LIMIT) {
             count += fragments as u64;
         }
 
-        // Log heartbeat every 10 seconds
-        if last_log.elapsed() > Duration::from_secs(10) {
+        // Log heartbeat
+        if last_log.elapsed() > Duration::from_secs(HEARTBEAT_INTERVAL_SECS) {
             info!("[HEARTBEAT] processed={} messages", count);
             last_log = Instant::now();
         }
 
         // Small sleep to avoid busy-spin
-        std::thread::sleep(Duration::from_micros(100));
+        std::thread::sleep(Duration::from_micros(POLL_SLEEP_US));
     }
 }
 
