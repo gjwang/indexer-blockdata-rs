@@ -1,15 +1,23 @@
 //! Error types for UBSCore
 
-/// Reasons for rejecting an order
+/// Reasons for rejecting an order or balance operation
 #[derive(Debug, Clone, PartialEq)]
 pub enum RejectReason {
+    // Order validation errors
     OrderTooOld,
     FutureTimestamp,
     DuplicateOrderId,
-    InsufficientBalance,
-    AccountNotFound,
     InvalidSymbol,
     OrderCostOverflow,
+
+    // Balance errors
+    InsufficientBalance,
+    InsufficientFunds,    // Not enough available balance to lock
+    InsufficientFrozen,   // Not enough frozen balance to spend/unlock
+    BalanceOverflow,      // Deposit would overflow u64
+    AccountNotFound,
+
+    // System errors
     SystemBusy,
     /// Internal error (WAL, serialization, etc.)
     InternalError,

@@ -341,6 +341,139 @@ impl<R: RiskModel> UBSCore<R> {
     pub fn has_debt(&self, user_id: UserId) -> bool {
         self.debt_ledger.has_debt(user_id)
     }
+
+    // ========================================================================
+    // BALANCE OPERATIONS FOR MATCHING ENGINE
+    // These methods make UBSCore the authoritative source for user balances
+    // ========================================================================
+
+    /// Lock funds for an order (move from avail to frozen)
+    /// Called when an order is accepted and about to be sent to ME
+    /// Returns the new available balance, or error if insufficient funds
+    pub fn lock_funds(
+        &mut self,
+        user_id: UserId,
+        asset_id: AssetId,
+        amount: u64,
+    ) -> Result<u64, RejectReason> {
+        let account = self.accounts.get_mut(&user_id)
+            .ok_or(RejectReason::AccountNotFound)?;
+
+        let balance = account.get_balance_mut(asset_id);
+        balance.frozen(amount)
+            .map_err(|_| RejectReason::InsufficientFunds)?;
+
+        log::debug!(
+            "[LOCK] user={} asset={} amount={} avail={} frozen={}",
+            user_id, asset_id, amount, balance.avail, balance.frozen
+        );
+
+        Ok(balance.avail)
+    }
+
+    /// Unlock funds (move from frozen back to avail)
+    /// Called when an order is cancelled or partially unfilled
+    pub fn unlock_funds(
+        &mut self,
+        user_id: UserId,
+        asset_id: AssetId,
+        amount: u64,
+    ) -> Result<u64, RejectReason> {
+        let account = self.accounts.get_mut(&user_id)
+            .ok_or(RejectReason::AccountNotFound)?;
+
+        let balance = account.get_balance_mut(asset_id);
+        balance.unfrozen(amount)
+            .map_err(|_| RejectReason::InsufficientFrozen)?;
+
+        log::debug!(
+            "[UNLOCK] user={} asset={} amount={} avail={} frozen={}",
+            user_id, asset_id, amount, balance.avail, balance.frozen
+        );
+
+        Ok(balance.avail)
+    }
+
+    /// Settle a trade between buyer and seller
+    /// This is the core balance transfer operation after a trade executes
+    ///
+    /// Parameters:
+    /// - buyer_id, seller_id: Users involved in the trade
+    /// - base_asset, quote_asset: Trading pair assets
+    /// - base_qty: Amount of base asset transferred
+    /// - quote_amt: Amount of quote asset transferred (price * qty)
+    /// - buyer_refund: Quote asset refund if trade price < order price
+    pub fn settle_trade(
+        &mut self,
+        buyer_id: UserId,
+        seller_id: UserId,
+        base_asset: AssetId,
+        quote_asset: AssetId,
+        base_qty: u64,
+        quote_amt: u64,
+        buyer_refund: u64,
+    ) -> Result<(), RejectReason> {
+        // --- Buyer: Spend frozen quote, receive base, refund excess ---
+        let buyer = self.accounts.get_mut(&buyer_id)
+            .ok_or(RejectReason::AccountNotFound)?;
+
+        // Spend quote from frozen
+        buyer.get_balance_mut(quote_asset)
+            .spend_frozen(quote_amt)
+            .map_err(|_| RejectReason::InsufficientFrozen)?;
+
+        // Receive base to avail
+        buyer.get_balance_mut(base_asset)
+            .deposit(base_qty)
+            .map_err(|_| RejectReason::BalanceOverflow)?;
+
+        // Refund excess quote (frozen -> avail)
+        if buyer_refund > 0 {
+            buyer.get_balance_mut(quote_asset)
+                .unfrozen(buyer_refund)
+                .map_err(|_| RejectReason::InsufficientFrozen)?;
+        }
+
+        // --- Seller: Spend frozen base, receive quote ---
+        let seller = self.accounts.get_mut(&seller_id)
+            .ok_or(RejectReason::AccountNotFound)?;
+
+        // Spend base from frozen
+        seller.get_balance_mut(base_asset)
+            .spend_frozen(base_qty)
+            .map_err(|_| RejectReason::InsufficientFrozen)?;
+
+        // Receive quote to avail
+        seller.get_balance_mut(quote_asset)
+            .deposit(quote_amt)
+            .map_err(|_| RejectReason::BalanceOverflow)?;
+
+        log::debug!(
+            "[SETTLE] buyer={} seller={} base_qty={} quote_amt={} refund={}",
+            buyer_id, seller_id, base_qty, quote_amt, buyer_refund
+        );
+
+        Ok(())
+    }
+
+    /// Get full balance info (avail, frozen) for an asset
+    pub fn get_balance_full(&self, user_id: UserId, asset_id: AssetId) -> Option<(u64, u64)> {
+        self.accounts.get(&user_id)?
+            .get_balance(asset_id)
+            .map(|b| (b.avail, b.frozen))
+    }
+
+    /// Get all accounts (for ME to query balances)
+    pub fn get_accounts(&self) -> &HashMap<UserId, UserAccount> {
+        &self.accounts
+    }
+
+    /// Get mutable account (for seeding test data)
+    pub fn get_or_create_account(&mut self, user_id: UserId) -> &mut UserAccount {
+        self.accounts
+            .entry(user_id)
+            .or_insert_with(|| UserAccount::new(user_id))
+    }
 }
 
 #[cfg(test)]
@@ -382,5 +515,95 @@ mod tests {
         core.apply_balance_delta(1, 2, -5000, EventType::TradeSettle);
         // Cannot withdraw from asset 1 because user has debt in asset 2
         assert!(!core.can_withdraw(1, 1, 100));
+    }
+
+    // ========================================================================
+    // Tests for Lock/Unlock/Settle operations (ME integration)
+    // ========================================================================
+
+    #[test]
+    fn test_lock_funds_success() {
+        let mut core = UBSCore::new(SpotRiskModel);
+        core.on_deposit(1, 100, 10000); // user 1, asset 100, amount 10000
+
+        // Lock 3000
+        let result = core.lock_funds(1, 100, 3000);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 7000); // 10000 - 3000 = 7000 available
+
+        // Check frozen
+        let (avail, frozen) = core.get_balance_full(1, 100).unwrap();
+        assert_eq!(avail, 7000);
+        assert_eq!(frozen, 3000);
+    }
+
+    #[test]
+    fn test_lock_funds_insufficient() {
+        let mut core = UBSCore::new(SpotRiskModel);
+        core.on_deposit(1, 100, 1000);
+
+        // Try to lock more than available
+        let result = core.lock_funds(1, 100, 5000);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), RejectReason::InsufficientFunds);
+    }
+
+    #[test]
+    fn test_unlock_funds_success() {
+        let mut core = UBSCore::new(SpotRiskModel);
+        core.on_deposit(1, 100, 10000);
+        core.lock_funds(1, 100, 5000).unwrap();
+
+        // Unlock 2000 (order cancelled partially)
+        let result = core.unlock_funds(1, 100, 2000);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 7000); // 5000 + 2000 = 7000 available
+
+        let (avail, frozen) = core.get_balance_full(1, 100).unwrap();
+        assert_eq!(avail, 7000);
+        assert_eq!(frozen, 3000);
+    }
+
+    #[test]
+    fn test_settle_trade_success() {
+        let mut core = UBSCore::new(SpotRiskModel);
+
+        // Buyer: has 10000 USDT (asset 2), will buy BTC (asset 1)
+        // Seller: has 100 BTC (asset 1), will sell for USDT
+        core.on_deposit(1, 2, 10000); // Buyer: 10000 USDT
+        core.on_deposit(2, 1, 100);   // Seller: 100 BTC
+
+        // Buyer locks 5000 USDT for order
+        core.lock_funds(1, 2, 5000).unwrap();
+        // Seller locks 10 BTC for order
+        core.lock_funds(2, 1, 10).unwrap();
+
+        // Trade: 5 BTC @ 500 USDT = 2500 USDT
+        // Buyer gets 5 BTC, spends 2500 USDT, refund 2500 USDT
+        let result = core.settle_trade(
+            1,      // buyer
+            2,      // seller
+            1,      // base_asset (BTC)
+            2,      // quote_asset (USDT)
+            5,      // base_qty (5 BTC)
+            2500,   // quote_amt (2500 USDT)
+            2500,   // buyer_refund (price diff refund)
+        );
+        assert!(result.is_ok());
+
+        // Check buyer balances
+        let (buyer_btc_avail, buyer_btc_frozen) = core.get_balance_full(1, 1).unwrap();
+        let (buyer_usdt_avail, buyer_usdt_frozen) = core.get_balance_full(1, 2).unwrap();
+        assert_eq!(buyer_btc_avail, 5);    // Received 5 BTC
+        assert_eq!(buyer_btc_frozen, 0);
+        assert_eq!(buyer_usdt_avail, 7500); // 5000 + 2500 refund
+        assert_eq!(buyer_usdt_frozen, 0);   // All spent/refunded
+
+        // Check seller balances
+        let (seller_btc_avail, seller_btc_frozen) = core.get_balance_full(2, 1).unwrap();
+        let (seller_usdt_avail, _) = core.get_balance_full(2, 2).unwrap();
+        assert_eq!(seller_btc_avail, 90);   // 100 - 10 locked, but only 5 spent
+        assert_eq!(seller_btc_frozen, 5);   // 5 BTC still frozen (unfilled portion)
+        assert_eq!(seller_usdt_avail, 2500); // Received 2500 USDT
     }
 }
