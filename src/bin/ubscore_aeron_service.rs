@@ -20,14 +20,12 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 
 use fetcher::configure::{self, expand_tilde, AppConfig};
 use fetcher::ubs_core::{
-    MmapWal, InternalOrder, OrderType, RejectReason, Side, SpotRiskModel,
-    UBSCore, WalEntry, WalEntryType, install_sigbus_handler,
+    MmapWal, SpotRiskModel, UBSCore, install_sigbus_handler,
 };
 
 #[cfg(feature = "aeron")]
 use fetcher::ubs_core::comm::{
-    AeronConfig, OrderMessage, ResponseMessage,
-    parse_request, reason_codes, WireMessage,
+    AeronConfig, UbsCoreHandler, HandlerStats, parse_request,
 };
 
 #[cfg(feature = "aeron")]
@@ -161,28 +159,25 @@ fn run_aeron_service() {
     info!("🎯 UBSCore Service ready - listening for orders");
 
     // --- Main processing loop ---
-    let mut stats = Stats {
-        received: 0,
-        accepted: 0,
-        rejected: 0,
-        latency_sum_us: 0,
-        latency_min_us: u64::MAX,
-        latency_max_us: 0,
-    };
+    let mut stats = HandlerStats::new();
     let mut last_stats = Instant::now();
     let mut last_received = 0u64;
 
     loop {
-        // Poll for incoming orders
-        let handler = OrderHandler {
+        // Create handler with clean separation
+        let business_handler = UbsCoreHandler {
             ubs_core: &mut ubs_core,
             wal: &mut wal,
-            publication: &publication,
             kafka_producer: &kafka_producer,
             stats: &mut stats,
         };
 
-        let handler_wrapped = Handler::leak(handler);
+        let transport_handler = OrderHandler {
+            handler: business_handler,
+            publication: &publication,
+        };
+
+        let handler_wrapped = Handler::leak(transport_handler);
         let _ = subscription.poll(Some(&handler_wrapped), 10);
 
         // Print stats every 10 seconds
@@ -212,32 +207,22 @@ fn run_aeron_service() {
     }
 }
 
-#[cfg(feature = "aeron")]
-struct Stats {
-    received: u64,
-    accepted: u64,
-    rejected: u64,
-    latency_sum_us: u64,
-    latency_min_us: u64,
-    latency_max_us: u64,
-}
-
+/// Aeron fragment handler - TRANSPORT LAYER ONLY
+///
+/// This handler only deals with:
+/// 1. Parse correlation_id from incoming buffer
+/// 2. Delegate to UbsCoreHandler for business logic
+/// 3. Send response with correlation_id prepended
 #[cfg(feature = "aeron")]
 struct OrderHandler<'a> {
-    ubs_core: &'a mut UBSCore<SpotRiskModel>,
-    wal: &'a mut MmapWal,
+    handler: UbsCoreHandler<'a>,
     publication: &'a AeronPublication,
-    kafka_producer: &'a Option<FutureProducer>,
-    stats: &'a mut Stats,
 }
 
 #[cfg(feature = "aeron")]
 impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        let start = Instant::now();
-        self.stats.received += 1;
-
-        // Parse request: extract correlation_id and payload
+        // 1. Extract correlation_id (transport concern)
         let (correlation_id, order_payload) = match parse_request(buffer) {
             Some(r) => r,
             None => {
@@ -246,124 +231,20 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             }
         };
 
-        // Parse order message
-        let order_msg = match OrderMessage::from_bytes(order_payload) {
-            Some(msg) => msg,
-            None => {
-                warn!("Invalid order message");
-                return;
-            }
-        };
+        // 2. Delegate to business logic (returns response bytes)
+        let response_bytes = self.handler.process(order_payload);
 
-        // Convert to InternalOrder
-        let order = match order_msg.to_internal_order() {
-            Ok(o) => o,
-            Err(e) => {
-                warn!("Order conversion failed: {:?}", e);
-                self.send_response(correlation_id, order_msg.order_id, false, reason_codes::INVALID_SYMBOL);
-                self.stats.rejected += 1;
-                return;
-            }
-        };
-        let t_parse = start.elapsed();
-
-        // 1. VALIDATE FIRST (cheap, no I/O)
-        if let Err(reason) = self.ubs_core.validate_order(&order) {
-            let reason_code = match reason {
-                RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
-                RejectReason::DuplicateOrderId => reason_codes::DUPLICATE_ORDER_ID,
-                RejectReason::AccountNotFound => reason_codes::ACCOUNT_NOT_FOUND,
-                _ => reason_codes::INTERNAL_ERROR,
-            };
-            self.send_response(correlation_id, order.order_id, false, reason_code);
-            self.stats.rejected += 1;
-            return;
-        }
-        let t_validate = start.elapsed();
-
-        // 2. WAL APPEND (only for valid orders)
-        let t_wal_append_start = Instant::now();
-        if let Ok(payload) = bincode::serialize(&order) {
-            let entry = WalEntry::new(WalEntryType::OrderLock, payload);
-            if let Err(e) = self.wal.append(&entry) {
-                error!("WAL append failed: {:?}", e);
-                self.send_response(correlation_id, order.order_id, false, reason_codes::INTERNAL_ERROR);
-                self.stats.rejected += 1;
-                return;
-            }
-        }
-        let wal_append_us = t_wal_append_start.elapsed().as_micros();
-
-        // 3. WAL FLUSH (sync) - fast with pre-allocated file (overwrites only)
-        let t_wal_flush_start = Instant::now();
-        if let Err(e) = self.wal.flush() {
-            error!("WAL flush failed: {:?}", e);
-        }
-        let wal_flush_us = t_wal_flush_start.elapsed().as_micros();
-
-        // 4. Send accept response
-        self.send_response(correlation_id, order.order_id, true, 0);
-        self.stats.accepted += 1;
-
-        // 5. Forward to Kafka (async, best-effort)
-        if let Some(producer) = self.kafka_producer {
-            let payload = bincode::serialize(&order).unwrap_or_default();
-            let key = order.order_id.to_string();
-            let record = FutureRecord::to("validated_orders")
-                .payload(&payload)
-                .key(&key);
-            let _ = producer.send(record, Duration::from_secs(0));
+        if response_bytes.is_empty() {
+            return; // Invalid request, no response
         }
 
-        let total_us = start.elapsed().as_micros();
-
-        // Log profile every 100th order
-        if self.stats.received % 100 == 0 {
-            log::info!(
-                "[PROFILE] parse={}µs validate={}µs wal_append={}µs wal_flush={}µs total={}µs",
-                t_parse.as_micros(),
-                (t_validate - t_parse).as_micros(),
-                wal_append_us,
-                wal_flush_us,
-                total_us
-            );
-        }
-
-        // Track latency
-        self.stats.latency_sum_us += total_us as u64;
-        if (total_us as u64) < self.stats.latency_min_us {
-            self.stats.latency_min_us = total_us as u64;
-        }
-        if (total_us as u64) > self.stats.latency_max_us {
-            self.stats.latency_max_us = total_us as u64;
-        }
-    }
-}
-
-#[cfg(feature = "aeron")]
-impl<'a> OrderHandler<'a> {
-    /// Send response with correlation ID prepended
-    fn send_response(&self, correlation_id: u64, order_id: u64, accepted: bool, reason_code: u8) {
-        let resp = if accepted {
-            ResponseMessage::accept(order_id)
-        } else {
-            ResponseMessage::reject(order_id, reason_code)
-        };
-
-        // Use helper to build correlated message
-        let message = build_response_message(correlation_id, &resp);
+        // 3. Send response with correlation_id (transport concern)
+        let mut message = Vec::with_capacity(8 + response_bytes.len());
+        message.extend_from_slice(&correlation_id.to_le_bytes());
+        message.extend_from_slice(&response_bytes);
 
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let _ = self.publication.offer(&message, handler);
     }
 }
 
-/// Build response message with correlation ID prepended
-#[cfg(feature = "aeron")]
-fn build_response_message(correlation_id: u64, resp: &ResponseMessage) -> Vec<u8> {
-    let resp_bytes = resp.to_bytes();
-    let mut message = Vec::with_capacity(8 + resp_bytes.len());
-    message.extend_from_slice(&correlation_id.to_le_bytes());
-    message.extend_from_slice(resp_bytes);
-    message
-}

@@ -55,6 +55,7 @@ pub mod gateway_client;
 pub mod order_receiver;
 pub mod order_sender;
 pub mod response;
+pub mod ubscore_handler;
 
 pub use aeron_channel::{AeronChannel, AeronChannelConfig};
 pub use aeron_config::AeronConfig;
@@ -65,3 +66,4 @@ pub use gateway_client::UbsGatewayClient;
 pub use order_receiver::{OrderMessage, OrderReceiver};
 pub use order_sender::{OrderSender, SendError};
 pub use response::{ResponseMessage, reason_codes};
+pub use ubscore_handler::{UbsCoreHandler, HandlerStats};
