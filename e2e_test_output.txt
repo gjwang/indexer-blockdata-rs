@@ -1,0 +1,172 @@
+==========================================
+  Complete E2E Test with Transfer In
+==========================================
+
+=== Step 1: Killing all processes ===
+
+=== Step 2: Cleaning all data ===
+✅ All data cleaned
+
+=== Step 3: Building binaries ===
+warning: `fetcher` (bin "matching_engine_server") generated 9 warnings (run `cargo fix --bin "matching_engine_server"` to apply 4 suggestions)
+warning: `fetcher` (bin "settlement_service") generated 2 warnings (run `cargo fix --bin "settlement_service"` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.29s
+
+=== Step 4: Starting services ===
+  4.1 Starting Aeron Media Driver...
+    ⚠️  Aeron media driver may not be installed, using system default
+  4.2 Starting UBSCore Aeron Service...
+  4.3 Starting Settlement Service...
+  4.4 Starting Matching Engine...
+  4.5 Starting Order Gateway (includes Transfer API)...
+
+=== Step 5: Verifying services ===
+  ✅ UBSCore
+  ✅ Settlement
+  ✅ ME
+  ✅ Gateway
+
+=== Step 6: Transfer In (Initialize Balances) ===
+  Checking if Gateway is listening on 3001...
+COMMAND    PID   USER   FD   TYPE            DEVICE SIZE/OFF NODE NAME
+order_gat 4407 gjwang    8u  IPv4 0x1c84ff9ec95ec73      0t0  TCP *:redwood-broker (LISTEN)
+  Transferring to user 1001...
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+100    82    0     0  100    82      0    397 --:--:-- --:--:-- --:--:--   403100    82    0     0  100    82      0     67  0:00:01  0:00:01 --:--:--    67< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+  Transferring to user 1002...
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+  Transferring to user 1003...
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+* Connected to localhost (127.0.0.1) port 3001 (#0)
+> POST /api/v1/transfer_in HTTP/1.1
+< HTTP/1.1 200 OK
+  ✅ Transfer in completed
+
+=== Step 7: Waiting for settlement (1 seconds) ===
+
+=== Step 8: Verifying initial balances ===
+
+ user_id | asset_id | avail | version
+---------+----------+-------+---------
+
+
+(0 rows)
+
+=== Step 8.5: Verify Balance API Response ===
+{"status":0,"msg":"ok","data":[]}
+
+=== Step 9: Sending test orders (3 seconds) ===
+  Waiting for settlement to catch up (60s)...
+./test_full_e2e.sh: line 143:  4450 Terminated: 15          ./target/debug/order_http_client > /tmp/client.log 2>&1
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+    Progress: processed=/0
+0 trades= msg_ops=msg/s
+
+==========================================
+  Test Results
+==========================================
+
+=== Settlement Service Logs (last 30 lines) ===
+Invalid RUST_LOG value: settlement=debug,scylla=warn, defaulting to Info
+Logging to file: log/settlement.log (level: Info)
+2025-12-10 00:04:26.237 [INFO] [settlement] - Connecting to ScyllaDB (Settlement)...
+2025-12-10 00:04:26.274 [INFO] [settlement] - ✅ Connected to ScyllaDB (Settlement)
+2025-12-10 00:04:26.274 [INFO] [settlement] - Connecting to ScyllaDB (OrderHistory)...
+2025-12-10 00:04:26.295 [INFO] [settlement] - ✅ Connected to ScyllaDB (OrderHistory)
+2025-12-10 00:04:26.302 [INFO] [settlement] - 📡 Listening on tcp://localhost:5557
+2025-12-10 00:04:26.302 [INFO] [settlement] - 🔄 Sync socket on port 5559
+2025-12-10 00:04:26.302 [INFO] [settlement] - ⏳ Waiting for ME sync...
+2025-12-10 00:04:26.302 [INFO] [settlement] - 📂 CSV backup: ./data/settled_trades.csv
+2025-12-10 00:04:26.303 [INFO] [settlement] - ✅ Derived writers spawned: 4 balance writers, buffer=10000
+2025-12-10 00:04:26.303 [INFO] [settlement] - ✅ Settlement Service Ready
+2025-12-10 00:04:28.159 [INFO] [settlement] - ✅ Sent READY to ME
+
+=== Database Stats ===
+1. Settled Trades:
+
+ count
+-------
+     0
+
+(1 rows)
+
+2. User Balances (test users):
+
+ user_id | asset_id | avail | frozen | version
+---------+----------+-------+--------+---------
+
+
+(0 rows)
+
+3. All User Balances Count:
+(Note: user_balances table is deprecated, balances are now in balance_ledger)
+
+ count
+-------
+     0
+
+(1 rows)
+
+4. Balance Ledger Events (deposits):
+
+ user_id | asset_id | event_type | delta_avail | avail
+---------+----------+------------+-------------+-------
+
+
+(0 rows)
+
+=== Balance Update Statistics ===
+  Deposit balance updates: 0
+0
+  Trade balance updates: 0
+0
+  Version conflicts: 0
+0
+  Balance errors: 0
+0
+
+=== Sample Logs ===
+Deposit updates:
+
+Trade updates:
+
+==========================================
+  Cleanup
+==========================================
+
+✅ E2E Test Complete!
+
+Expected Results:
+  - 9 deposit balance updates (3 users × 3 assets)
+  - Multiple trade balance updates
+  - User balances should show correct amounts with versions
+  - No balance errors (all updates successful)

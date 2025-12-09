@@ -166,7 +166,37 @@ fn run_aeron_service() {
         }
     };
 
-    info!("🎯 UBSCore Service ready - listening for orders");
+    // --- Initialize Kafka consumer (for balance operations: deposits/withdrawals) ---
+    use rdkafka::consumer::{BaseConsumer, Consumer};
+    use rdkafka::Message;
+    use fetcher::models::BalanceRequest;
+
+    let kafka_consumer: Option<BaseConsumer> = match configure::load_config() {
+        Ok(config) => {
+            let balance_topic = config.kafka.topics.balance_ops.clone()
+                .unwrap_or("balance.operations".to_string());
+
+            let consumer: BaseConsumer = ClientConfig::new()
+                .set("bootstrap.servers", &config.kafka.broker)
+                .set("group.id", "ubscore-balance-consumer")
+                .set("enable.auto.commit", "true")
+                .set("auto.offset.reset", "latest")  // Only process new deposits
+                .create()
+                .expect("Failed to create Kafka consumer");
+
+            consumer.subscribe(&[&balance_topic])
+                .expect("Failed to subscribe to balance topic");
+
+            info!("✅ Kafka consumer created for topic: {}", balance_topic);
+            Some(consumer)
+        }
+        Err(e) => {
+            warn!("⚠️ Kafka config not found ({}), balance operations disabled", e);
+            None
+        }
+    };
+
+    info!("🎯 UBSCore Service ready - listening for orders and balance operations");
 
     // --- Main processing loop ---
     // Batch buffer for collecting messages during poll
@@ -213,6 +243,48 @@ fn run_aeron_service() {
                 }
 
                 batch.clear();
+            }
+        }
+
+        // Phase 4: Poll Kafka for balance operations (deposits/withdrawals)
+        if let Some(ref consumer) = kafka_consumer {
+            match consumer.poll(Duration::from_millis(0)) {  // Non-blocking poll
+                Some(Ok(message)) => {
+                    if let Some(payload) = message.payload() {
+                        match serde_json::from_slice::<BalanceRequest>(payload) {
+                            Ok(req) => {
+                                info!("📥 Balance request: {:?}", req);
+                                let mut state = business_state.borrow_mut();
+                                match req {
+                                    BalanceRequest::TransferIn { user_id, asset_id, amount, .. } => {
+                                        state.ubs_core.on_deposit(user_id, asset_id, amount);
+                                        info!("✅ Deposit processed: user={}, asset={}, amount={}",
+                                            user_id, asset_id, amount);
+                                        // TODO: Emit balance event to Settlement via Kafka
+                                    }
+                                    BalanceRequest::TransferOut { user_id, asset_id, amount, .. } => {
+                                        if state.ubs_core.on_withdraw(user_id, asset_id, amount) {
+                                            info!("✅ Withdrawal processed: user={}, asset={}, amount={}",
+                                                user_id, asset_id, amount);
+                                            // TODO: Emit balance event to Settlement via Kafka
+                                        } else {
+                                            error!("❌ Withdrawal failed: insufficient funds");
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to parse BalanceRequest: {}", e);
+                            }
+                        }
+                    }
+                }
+                Some(Err(e)) => {
+                    error!("Kafka consumer error: {}", e);
+                }
+                None => {
+                    // No messages available
+                }
             }
         }
 
