@@ -39,7 +39,7 @@ const DERIVED_WRITER_BUFFER: usize = 10_000;
 // ============================================================================
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     // Phase 3: Async logging with JSON + daily rotation
     let _guard = setup_async_file_logging("settlement", "logs");
 
@@ -165,8 +165,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         starrocks_tx,
     )
     .await;
-
-    Ok(())
 }
 
 // ============================================================================

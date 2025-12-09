@@ -17,6 +17,7 @@ use fetcher::models::client_order::calculate_checksum;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
 use fetcher::zmq_publisher::ZmqPublisher;
+use fetcher::logging::setup_async_file_logging;
 
 /// Event structure for the Disruptor ring buffer
 struct OrderEvent {
@@ -125,6 +126,11 @@ impl BalanceProcessor {
 
 #[tokio::main]
 async fn main() {
+    // Phase 3: Async logging with JSON + daily rotation
+    let _guard = setup_async_file_logging("matching_engine", "logs");
+
+    tracing::info!("⚡ Matching Engine starting with async JSON logging");
+
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
     // Initialize ZMQ Publisher

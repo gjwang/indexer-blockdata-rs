@@ -20,8 +20,8 @@ use fetcher::models::{balance_manager, UserAccountManager};
 use fetcher::symbol_manager::SymbolManager;
 
 use fetcher::gateway::{create_app, AppState};
-
 use fetcher::gateway::OrderPublisher;
+use fetcher::logging::setup_async_file_logging;
 
 struct KafkaPublisher(FutureProducer);
 
@@ -39,17 +39,17 @@ impl OrderPublisher for KafkaPublisher {
                 .send(record, Duration::from_secs(0))
                 .await
                 .map(|_| ())
-                .map_err(|(e, _)| e.to_string())
+                .map_err(|(e, _)| format!("Kafka send failed: {:?}", e))
         })
     }
 }
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
+    // Phase 3: Async logging with JSON + daily rotation
+    let _guard = setup_async_file_logging("gateway", "logs");
+
+    tracing::info!("🚪 Gateway starting with async JSON logging");
 
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
