@@ -7,33 +7,37 @@
 
 use super::WireMessage;
 
-/// Message type enum with explicit wire values
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MsgType {
-    Order = 1,
-    Cancel = 2,
-    Query = 3,
-    Response = 128,
-}
-
-impl TryFrom<u8> for MsgType {
-    type Error = ();
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            1 => Ok(MsgType::Order),
-            2 => Ok(MsgType::Cancel),
-            3 => Ok(MsgType::Query),
-            128 => Ok(MsgType::Response),
-            _ => Err(()),
+/// Macro to define message types with automatic TryFrom
+macro_rules! define_msg_type {
+    ($(#[$meta:meta])* pub enum $name:ident { $($variant:ident = $value:expr),* $(,)? }) => {
+        $(#[$meta])*
+        #[repr(u8)]
+        pub enum $name {
+            $($variant = $value),*
         }
-    }
+
+        impl TryFrom<u8> for $name {
+            type Error = ();
+
+            fn try_from(value: u8) -> Result<Self, Self::Error> {
+                match value {
+                    $($value => Ok($name::$variant),)*
+                    _ => Err(()),
+                }
+            }
+        }
+    };
 }
 
-impl From<MsgType> for u8 {
-    fn from(mt: MsgType) -> u8 {
-        mt as u8
+// Define all message types in one place - no duplication!
+define_msg_type! {
+    /// Message type enum with explicit wire values
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum MsgType {
+        Order = 1,
+        Cancel = 2,
+        Query = 3,
+        Response = 128,
     }
 }
 
