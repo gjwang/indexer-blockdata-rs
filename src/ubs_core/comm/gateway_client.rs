@@ -49,14 +49,14 @@ impl UbsGatewayClient {
         order: &InternalOrder,
         timeout_ms: u64,
     ) -> Result<ResponseMessage, SendError> {
-        use super::message::{msg_type, parse_message};
+        use super::message::{MsgType, parse_message};
 
         // Build message: [msg_type] + [order_bytes]
         let msg = OrderMessage::from_order(order);
         let order_bytes = msg.to_bytes();
 
         let mut payload = Vec::with_capacity(1 + order_bytes.len());
-        payload.push(msg_type::ORDER);
+        payload.push(MsgType::Order as u8);
         payload.extend_from_slice(order_bytes);
 
         log::debug!("[UBS_CLIENT] Sending order_id={}", order.order_id);

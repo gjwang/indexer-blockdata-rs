@@ -7,36 +7,59 @@
 
 use super::WireMessage;
 
-/// Message types
-pub mod msg_type {
-    pub const ORDER: u8 = 1;
-    pub const CANCEL: u8 = 2;
-    pub const QUERY: u8 = 3;
-    pub const RESPONSE: u8 = 128;  // Response flag
+/// Message type enum with explicit wire values
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum MsgType {
+    Order = 1,
+    Cancel = 2,
+    Query = 3,
+    Response = 128,
+}
+
+impl TryFrom<u8> for MsgType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(MsgType::Order),
+            2 => Ok(MsgType::Cancel),
+            3 => Ok(MsgType::Query),
+            128 => Ok(MsgType::Response),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<MsgType> for u8 {
+    fn from(mt: MsgType) -> u8 {
+        mt as u8
+    }
 }
 
 /// Parse message type from raw bytes
-/// Returns (msg_type, body) or None if empty
-pub fn parse_message(payload: &[u8]) -> Option<(u8, &[u8])> {
+/// Returns (MsgType, body) or None if invalid
+pub fn parse_message(payload: &[u8]) -> Option<(MsgType, &[u8])> {
     if payload.is_empty() {
         return None;
     }
-    Some((payload[0], &payload[1..]))
+    let msg_type = MsgType::try_from(payload[0]).ok()?;
+    Some((msg_type, &payload[1..]))
 }
 
 /// Build message with type prefix
-pub fn build_message<T: WireMessage>(msg_type: u8, msg: &T) -> Vec<u8> {
+pub fn build_message<T: WireMessage>(msg_type: MsgType, msg: &T) -> Vec<u8> {
     let body = msg.to_bytes();
     let mut result = Vec::with_capacity(1 + body.len());
-    result.push(msg_type);
+    result.push(msg_type as u8);
     result.extend_from_slice(body);
     result
 }
 
 /// Build message with type prefix (from bytes)
-pub fn build_message_bytes(msg_type: u8, body: &[u8]) -> Vec<u8> {
+pub fn build_message_bytes(msg_type: MsgType, body: &[u8]) -> Vec<u8> {
     let mut result = Vec::with_capacity(1 + body.len());
-    result.push(msg_type);
+    result.push(msg_type as u8);
     result.extend_from_slice(body);
     result
 }
@@ -47,9 +70,16 @@ mod tests {
 
     #[test]
     fn test_parse_message() {
-        let raw = [msg_type::ORDER, 1, 2, 3, 4];
+        let raw = [MsgType::Order as u8, 1, 2, 3, 4];
         let (mt, body) = parse_message(&raw).unwrap();
-        assert_eq!(mt, msg_type::ORDER);
+        assert_eq!(mt, MsgType::Order);
         assert_eq!(body, &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_msg_type_roundtrip() {
+        assert_eq!(MsgType::try_from(1).unwrap(), MsgType::Order);
+        assert_eq!(MsgType::try_from(128).unwrap(), MsgType::Response);
+        assert!(MsgType::try_from(255).is_err());
     }
 }

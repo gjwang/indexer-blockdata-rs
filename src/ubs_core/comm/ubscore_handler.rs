@@ -18,7 +18,7 @@ use crate::ubs_core::{
 use crate::ubs_core::comm::{
     OrderMessage, ResponseMessage, reason_codes, WireMessage,
 };
-use super::message::{msg_type, parse_message, build_message};
+use super::message::{MsgType, parse_message, build_message};
 
 /// Handler stats
 #[derive(Debug, Default)]
@@ -70,7 +70,7 @@ impl<'a> UbsCoreHandler<'a> {
         self.stats.received += 1;
 
         // Parse message type
-        let (msg_type_id, body) = match parse_message(payload) {
+        let (msg_type, body) = match parse_message(payload) {
             Some(r) => r,
             None => {
                 log::warn!("[UBSC] Empty message");
@@ -79,12 +79,12 @@ impl<'a> UbsCoreHandler<'a> {
         };
 
         // Dispatch by message type
-        match msg_type_id {
-            msg_type::ORDER => self.handle_order(body),
-            msg_type::CANCEL => self.handle_cancel(body),
-            msg_type::QUERY => self.handle_query(body),
-            _ => {
-                log::warn!("[UBSC] Unknown message type: {}", msg_type_id);
+        match msg_type {
+            MsgType::Order => self.handle_order(body),
+            MsgType::Cancel => self.handle_cancel(body),
+            MsgType::Query => self.handle_query(body),
+            MsgType::Response => {
+                log::warn!("[UBSC] Unexpected response message");
                 self.error_response(0, reason_codes::INTERNAL_ERROR)
             }
         }
@@ -196,15 +196,15 @@ impl<'a> UbsCoreHandler<'a> {
     // --- Response builders ---
 
     fn accept_response(&self, order_id: u64) -> Vec<u8> {
-        build_message(msg_type::RESPONSE, &ResponseMessage::accept(order_id))
+        build_message(MsgType::Response, &ResponseMessage::accept(order_id))
     }
 
     fn reject_response(&self, order_id: u64, reason_code: u8) -> Vec<u8> {
-        build_message(msg_type::RESPONSE, &ResponseMessage::reject(order_id, reason_code))
+        build_message(MsgType::Response, &ResponseMessage::reject(order_id, reason_code))
     }
 
     fn error_response(&self, order_id: u64, reason_code: u8) -> Vec<u8> {
-        build_message(msg_type::RESPONSE, &ResponseMessage::reject(order_id, reason_code))
+        build_message(MsgType::Response, &ResponseMessage::reject(order_id, reason_code))
     }
 
     fn track_latency(&mut self, total_us: u64) {

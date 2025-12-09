@@ -64,7 +64,7 @@ pub use aeron_server::{AeronServer, AeronServerConfig, parse_request};
 pub use driver::{EmbeddedDriver, AERON_DIR};
 pub use fill_receiver::{FillMessage, FillReceiver};
 pub use gateway_client::UbsGatewayClient;
-pub use message::{msg_type, parse_message, build_message};
+pub use message::{MsgType, parse_message, build_message};
 pub use order_receiver::{OrderMessage, OrderReceiver};
 pub use order_sender::{OrderSender, SendError};
 pub use response::{ResponseMessage, reason_codes};
