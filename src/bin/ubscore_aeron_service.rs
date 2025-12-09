@@ -25,7 +25,7 @@ use fetcher::ubs_core::{
 
 #[cfg(feature = "aeron")]
 use fetcher::ubs_core::comm::{
-    AeronConfig, UbsCoreHandler, HandlerStats, parse_request,
+    AeronConfig, UbsCoreHandler, parse_request,
 };
 
 #[cfg(feature = "aeron")]
@@ -169,7 +169,6 @@ fn run_aeron_service() {
         ubs_core,
         wal,
         kafka_producer,
-        stats: HandlerStats::new(),
     });
 
     let transport_handler = OrderHandlerRef {
@@ -178,49 +177,32 @@ fn run_aeron_service() {
     };
     let handler_wrapped = Handler::leak(transport_handler);
 
-    let mut last_stats_time = Instant::now();
-    let mut last_received = 0u64;
+    let mut count = 0u64;
+    let mut last_log = Instant::now();
 
     loop {
         // Poll for messages
-        let _ = subscription.poll(Some(&handler_wrapped), 10);
+        if let Ok(fragments) = subscription.poll(Some(&handler_wrapped), 10) {
+            count += fragments as u64;
+        }
 
-        // Print stats every 10 seconds
-        if last_stats_time.elapsed() > Duration::from_secs(10) {
-            let state = business_state.borrow();
-            let elapsed_secs = last_stats_time.elapsed().as_secs_f64();
-            let orders_in_period = state.stats.received - last_received;
-            let qps = orders_in_period as f64 / elapsed_secs;
-
-            if state.stats.received > 0 && state.stats.latency_min_us < u64::MAX {
-                let avg_us = state.stats.latency_sum_us / state.stats.received;
-                info!(
-                    "[STATS] received={} accepted={} rejected={} qps={:.1} latency(µs): min={} avg={} max={}",
-                    state.stats.received, state.stats.accepted, state.stats.rejected, qps,
-                    state.stats.latency_min_us, avg_us, state.stats.latency_max_us
-                );
-            } else {
-                info!(
-                    "[STATS] received={} accepted={} rejected={} qps={:.1}",
-                    state.stats.received, state.stats.accepted, state.stats.rejected, qps
-                );
-            }
-            last_received = state.stats.received;
-            drop(state);
-            last_stats_time = Instant::now();
+        // Log heartbeat every 10 seconds
+        if last_log.elapsed() > Duration::from_secs(10) {
+            info!("[HEARTBEAT] processed={} messages", count);
+            last_log = Instant::now();
         }
 
         // Small sleep to avoid busy-spin
         std::thread::sleep(Duration::from_micros(100));
     }
 }
-/// Business state held in RefCell for interior mutability
+
+/// Business state - PURE business logic, no stats
 #[cfg(feature = "aeron")]
 struct BusinessState {
     ubs_core: UBSCore<SpotRiskModel>,
     wal: MmapWal,
     kafka_producer: Option<FutureProducer>,
-    stats: HandlerStats,
 }
 
 #[cfg(feature = "aeron")]
@@ -230,7 +212,6 @@ impl BusinessState {
             ubs_core: &mut self.ubs_core,
             wal: &mut self.wal,
             kafka_producer: &self.kafka_producer,
-            stats: &mut self.stats,
         };
         handler.on_message(payload)
     }

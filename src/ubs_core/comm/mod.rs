@@ -68,4 +68,4 @@ pub use message::{MsgType, parse_message, build_message};
 pub use order_receiver::{OrderMessage, OrderReceiver, DepositMessage, WithdrawMessage};
 pub use order_sender::{OrderSender, SendError};
 pub use response::{ResponseMessage, reason_codes};
-pub use ubscore_handler::{UbsCoreHandler, HandlerStats};
+pub use ubscore_handler::UbsCoreHandler;
