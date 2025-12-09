@@ -49,17 +49,26 @@ impl UbsGatewayClient {
         order: &InternalOrder,
         timeout_ms: u64,
     ) -> Result<ResponseMessage, SendError> {
-        // Serialize order
+        use super::message::{msg_type, parse_message};
+
+        // Build message: [msg_type] + [order_bytes]
         let msg = OrderMessage::from_order(order);
-        let payload = msg.to_bytes();
+        let order_bytes = msg.to_bytes();
+
+        let mut payload = Vec::with_capacity(1 + order_bytes.len());
+        payload.push(msg_type::ORDER);
+        payload.extend_from_slice(order_bytes);
 
         log::debug!("[UBS_CLIENT] Sending order_id={}", order.order_id);
 
         // Send via channel
         let response_bytes = self.channel.send_and_receive(&payload, timeout_ms).await?;
 
-        // Parse response
-        ResponseMessage::from_bytes(&response_bytes)
+        // Parse response: [msg_type] + [response_bytes]
+        let (_resp_type, resp_body) = parse_message(&response_bytes)
+            .ok_or_else(|| SendError::AeronError("Empty response".into()))?;
+
+        ResponseMessage::from_bytes(resp_body)
             .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
     }
 

@@ -232,7 +232,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         };
 
         // 2. Delegate to business logic (returns response bytes)
-        let response_bytes = self.handler.process(order_payload);
+        let response_bytes = self.handler.on_message(order_payload);
 
         if response_bytes.is_empty() {
             return; // Invalid request, no response

@@ -3,8 +3,8 @@
 //! This module contains the order processing business logic,
 //! completely separated from transport (Aeron).
 //!
-//! The handler receives order bytes and returns response bytes.
-//! It doesn't know about Aeron, correlation IDs, or channels.
+//! The handler receives raw bytes and returns response bytes.
+//! It uses a generic message dispatch pattern like WebSocket handlers.
 
 use std::time::Instant;
 
@@ -18,6 +18,7 @@ use crate::ubs_core::{
 use crate::ubs_core::comm::{
     OrderMessage, ResponseMessage, reason_codes, WireMessage,
 };
+use super::message::{msg_type, parse_message, build_message};
 
 /// Handler stats
 #[derive(Debug, Default)]
@@ -39,14 +40,19 @@ impl HandlerStats {
     }
 }
 
-/// Order processing result
-pub enum ProcessResult {
-    Accept { order_id: u64 },
-    Reject { order_id: u64, reason_code: u8 },
-    Invalid,
-}
-
-/// UBSCore order handler - business logic only
+/// UBSCore message handler - business logic only
+///
+/// Pattern similar to WebSocket/gRPC handlers:
+/// ```
+/// fn on_message(payload: &[u8]) -> Vec<u8> {
+///     let (msg_type, body) = parse_message(payload)?;
+///     match msg_type {
+///         MSG_ORDER => handle_order(body),
+///         MSG_CANCEL => handle_cancel(body),
+///         _ => error_response(),
+///     }
+/// }
+/// ```
 pub struct UbsCoreHandler<'a> {
     pub ubs_core: &'a mut UBSCore<SpotRiskModel>,
     pub wal: &'a mut MmapWal,
@@ -55,20 +61,45 @@ pub struct UbsCoreHandler<'a> {
 }
 
 impl<'a> UbsCoreHandler<'a> {
-    /// Process raw order bytes and return response bytes
+    /// Process raw message bytes and return response bytes
     ///
-    /// This is the ONLY interface - bytes in, bytes out.
-    /// No transport concerns here.
-    pub fn process(&mut self, order_payload: &[u8]) -> Vec<u8> {
-        let start = Instant::now();
+    /// Wire format: [1-byte msg_type] + [message_body]
+    ///
+    /// This is the message dispatch entry point.
+    pub fn on_message(&mut self, payload: &[u8]) -> Vec<u8> {
         self.stats.received += 1;
 
-        // Parse order message
-        let order_msg = match OrderMessage::from_bytes(order_payload) {
+        // Parse message type
+        let (msg_type_id, body) = match parse_message(payload) {
+            Some(r) => r,
+            None => {
+                log::warn!("[UBSC] Empty message");
+                return self.error_response(0, reason_codes::INTERNAL_ERROR);
+            }
+        };
+
+        // Dispatch by message type
+        match msg_type_id {
+            msg_type::ORDER => self.handle_order(body),
+            msg_type::CANCEL => self.handle_cancel(body),
+            msg_type::QUERY => self.handle_query(body),
+            _ => {
+                log::warn!("[UBSC] Unknown message type: {}", msg_type_id);
+                self.error_response(0, reason_codes::INTERNAL_ERROR)
+            }
+        }
+    }
+
+    /// Handle ORDER message
+    fn handle_order(&mut self, body: &[u8]) -> Vec<u8> {
+        let start = Instant::now();
+
+        // Parse order from body
+        let order_msg = match OrderMessage::from_bytes(body) {
             Some(msg) => msg,
             None => {
                 log::warn!("[UBSC] Invalid order message");
-                return Vec::new(); // Empty = invalid
+                return self.error_response(0, reason_codes::INTERNAL_ERROR);
             }
         };
 
@@ -78,9 +109,7 @@ impl<'a> UbsCoreHandler<'a> {
             Err(e) => {
                 log::warn!("[UBSC] Order conversion failed: {:?}", e);
                 self.stats.rejected += 1;
-                return ResponseMessage::reject(order_msg.order_id, reason_codes::INVALID_SYMBOL)
-                    .to_bytes()
-                    .to_vec();
+                return self.reject_response(order_msg.order_id, reason_codes::INVALID_SYMBOL);
             }
         };
         let t_parse = start.elapsed();
@@ -94,9 +123,7 @@ impl<'a> UbsCoreHandler<'a> {
                 _ => reason_codes::INTERNAL_ERROR,
             };
             self.stats.rejected += 1;
-            return ResponseMessage::reject(order.order_id, reason_code)
-                .to_bytes()
-                .to_vec();
+            return self.reject_response(order.order_id, reason_code);
         }
         let t_validate = start.elapsed();
 
@@ -107,9 +134,7 @@ impl<'a> UbsCoreHandler<'a> {
             if let Err(e) = self.wal.append(&entry) {
                 log::error!("[UBSC] WAL append failed: {:?}", e);
                 self.stats.rejected += 1;
-                return ResponseMessage::reject(order.order_id, reason_codes::INTERNAL_ERROR)
-                    .to_bytes()
-                    .to_vec();
+                return self.reject_response(order.order_id, reason_codes::INTERNAL_ERROR);
             }
         }
         let wal_append_us = t_wal_append_start.elapsed().as_micros();
@@ -149,14 +174,46 @@ impl<'a> UbsCoreHandler<'a> {
         }
 
         // Track latency
-        self.stats.latency_sum_us += total_us as u64;
-        if (total_us as u64) < self.stats.latency_min_us {
-            self.stats.latency_min_us = total_us as u64;
-        }
-        if (total_us as u64) > self.stats.latency_max_us {
-            self.stats.latency_max_us = total_us as u64;
-        }
+        self.track_latency(total_us as u64);
 
-        ResponseMessage::accept(order.order_id).to_bytes().to_vec()
+        self.accept_response(order.order_id)
+    }
+
+    /// Handle CANCEL message (stub for future)
+    fn handle_cancel(&mut self, _body: &[u8]) -> Vec<u8> {
+        // TODO: Implement cancel order
+        log::warn!("[UBSC] Cancel not implemented yet");
+        self.error_response(0, reason_codes::INTERNAL_ERROR)
+    }
+
+    /// Handle QUERY message (stub for future)
+    fn handle_query(&mut self, _body: &[u8]) -> Vec<u8> {
+        // TODO: Implement query
+        log::warn!("[UBSC] Query not implemented yet");
+        self.error_response(0, reason_codes::INTERNAL_ERROR)
+    }
+
+    // --- Response builders ---
+
+    fn accept_response(&self, order_id: u64) -> Vec<u8> {
+        build_message(msg_type::RESPONSE, &ResponseMessage::accept(order_id))
+    }
+
+    fn reject_response(&self, order_id: u64, reason_code: u8) -> Vec<u8> {
+        build_message(msg_type::RESPONSE, &ResponseMessage::reject(order_id, reason_code))
+    }
+
+    fn error_response(&self, order_id: u64, reason_code: u8) -> Vec<u8> {
+        build_message(msg_type::RESPONSE, &ResponseMessage::reject(order_id, reason_code))
+    }
+
+    fn track_latency(&mut self, total_us: u64) {
+        self.stats.latency_sum_us += total_us;
+        if total_us < self.stats.latency_min_us {
+            self.stats.latency_min_us = total_us;
+        }
+        if total_us > self.stats.latency_max_us {
+            self.stats.latency_max_us = total_us;
+        }
     }
 }
