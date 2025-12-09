@@ -37,7 +37,8 @@ docker exec scylla cqlsh -e "TRUNCATE trading.ledger_events;" 2>/dev/null || tru
 docker exec scylla cqlsh -e "TRUNCATE trading.balance_ledger;" 2>/dev/null || true
 docker exec scylla cqlsh -e "TRUNCATE trading.settlement_state;" 2>/dev/null || true
 docker exec scylla cqlsh -e "TRUNCATE trading.engine_output_log;" 2>/dev/null || true
-rm -f /tmp/*.log
+mkdir -p logs
+rm -f logs/*.log
 echo "✅ All data cleaned"
 
 echo ""
@@ -65,17 +66,17 @@ fi
 
 echo "  4.2 Starting UBSCore Aeron Service..."
 rm -rf ~/ubscore_data || true
-RUST_LOG=info $BIN_DIR/ubscore_aeron_service > /tmp/ubscore.log 2>&1 &
+RUST_LOG=info $BIN_DIR/ubscore_aeron_service > logs/ubscore.log 2>&1 &
 UBSCORE_PID=$!
 sleep 3
 
 echo "  4.3 Starting Settlement Service..."
-RUST_LOG=settlement=debug,scylla=warn $BIN_DIR/settlement_service > /tmp/settle.log 2>&1 &
+RUST_LOG=settlement=debug,scylla=warn $BIN_DIR/settlement_service > logs/settlement.log 2>&1 &
 SETTLE_PID=$!
 sleep 2
 
 echo "  4.4 Starting Matching Engine..."
-RUST_LOG=info $BIN_DIR/matching_engine_server > /tmp/me.log 2>&1 &
+RUST_LOG=info $BIN_DIR/matching_engine_server > logs/matching_engine.log 2>&1 &
 ME_PID=$!
 echo "    Waiting for ME to initialize (8s)..."
 sleep 8
@@ -83,13 +84,13 @@ echo "    Checking if ME is still running..."
 if ps -p $ME_PID > /dev/null; then
     echo "    ✅ ME running (PID: $ME_PID)"
 else
-    echo "    ❌ ME crashed! Check /tmp/me.log"
-    tail -20 /tmp/me.log
+    echo "    ❌ ME crashed! Check logs/matching_engine.log"
+    tail -20 logs/matching_engine.log
     exit 1
 fi
 
 echo "  4.5 Starting Order Gateway (includes Transfer API)..."
-$BIN_DIR/order_gate_server > /tmp/gateway.log 2>&1 &
+RUST_LOG=info $BIN_DIR/order_gate_server > logs/gateway.log 2>&1 &
 GATEWAY_PID=$!
 sleep 5
 
