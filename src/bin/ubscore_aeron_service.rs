@@ -169,26 +169,51 @@ fn run_aeron_service() {
     info!("🎯 UBSCore Service ready - listening for orders");
 
     // --- Main processing loop ---
-    // Create handler ONCE outside the loop (not every iteration!)
+    // Batch buffer for collecting messages during poll
+    let batch_buffer: std::cell::RefCell<Vec<(u64, Vec<u8>)>> = std::cell::RefCell::new(Vec::with_capacity(POLL_LIMIT));
+
+    // Business state
     let business_state = std::cell::RefCell::new(BusinessState {
         ubs_core,
         wal,
         kafka_producer,
     });
 
-    let transport_handler = OrderHandlerRef {
-        state: &business_state,
-        publication: &publication,
+    // Collector callback - just stores messages, doesn't process
+    let collector = BatchCollector {
+        batch: &batch_buffer,
     };
-    let handler_wrapped = Handler::leak(transport_handler);
+    let collector_wrapped = Handler::leak(collector);
 
     let mut count = 0u64;
     let mut last_log = Instant::now();
 
     loop {
-        // Poll for messages
-        if let Ok(fragments) = subscription.poll(Some(&handler_wrapped), POLL_LIMIT) {
+        // Phase 1: Collect messages into batch
+        if let Ok(fragments) = subscription.poll(Some(&collector_wrapped), POLL_LIMIT) {
             count += fragments as u64;
+        }
+
+        // Phase 2: Process batch with single flush
+        {
+            let mut batch = batch_buffer.borrow_mut();
+            if !batch.is_empty() {
+                let responses = business_state.borrow_mut().process_batch(&batch);
+
+                // Phase 3: Send all responses
+                for (correlation_id, response_bytes) in responses {
+                    if !response_bytes.is_empty() {
+                        let mut message = Vec::with_capacity(8 + response_bytes.len());
+                        message.extend_from_slice(&correlation_id.to_le_bytes());
+                        message.extend_from_slice(&response_bytes);
+
+                        let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
+                        let _ = publication.offer(&message, handler);
+                    }
+                }
+
+                batch.clear();
+            }
         }
 
         // Log heartbeat
@@ -202,7 +227,7 @@ fn run_aeron_service() {
     }
 }
 
-/// Business state - PURE business logic, no stats
+/// Business state - PURE business logic
 #[cfg(feature = "aeron")]
 struct BusinessState {
     ubs_core: UBSCore<SpotRiskModel>,
@@ -212,30 +237,26 @@ struct BusinessState {
 
 #[cfg(feature = "aeron")]
 impl BusinessState {
-    fn on_message(&mut self, payload: &[u8]) -> Vec<u8> {
+    fn process_batch(&mut self, items: &[(u64, Vec<u8>)]) -> Vec<(u64, Vec<u8>)> {
         let mut handler = UbsCoreHandler {
             ubs_core: &mut self.ubs_core,
             wal: &mut self.wal,
             kafka_producer: &self.kafka_producer,
         };
-        handler.on_message(payload)
+        handler.process_batch(items)
     }
 }
 
-/// Aeron fragment handler using RefCell for single initialization
-///
-/// Created ONCE outside the loop, not on every poll iteration.
+/// Batch collector - just stores messages during poll, doesn't process
 #[cfg(feature = "aeron")]
-struct OrderHandlerRef<'a> {
-    state: &'a std::cell::RefCell<BusinessState>,
-    publication: &'a AeronPublication,
+struct BatchCollector<'a> {
+    batch: &'a std::cell::RefCell<Vec<(u64, Vec<u8>)>>,
 }
 
 #[cfg(feature = "aeron")]
-impl<'a> AeronFragmentHandlerCallback for OrderHandlerRef<'a> {
+impl<'a> AeronFragmentHandlerCallback for BatchCollector<'a> {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
-        // 1. Extract correlation_id (transport concern)
-        let (correlation_id, order_payload) = match parse_request(buffer) {
+        let (correlation_id, payload) = match parse_request(buffer) {
             Some(r) => r,
             None => {
                 warn!("Message too short: {} bytes", buffer.len());
@@ -243,19 +264,7 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandlerRef<'a> {
             }
         };
 
-        // 2. Borrow state and delegate to business logic
-        let response_bytes = self.state.borrow_mut().on_message(order_payload);
-
-        if response_bytes.is_empty() {
-            return; // Invalid request, no response
-        }
-
-        // 3. Send response with correlation_id (transport concern)
-        let mut message = Vec::with_capacity(8 + response_bytes.len());
-        message.extend_from_slice(&correlation_id.to_le_bytes());
-        message.extend_from_slice(&response_bytes);
-
-        let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
-        let _ = self.publication.offer(&message, handler);
+        // Just collect, don't process
+        self.batch.borrow_mut().push((correlation_id, payload.to_vec()));
     }
 }

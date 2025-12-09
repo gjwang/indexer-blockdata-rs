@@ -1,10 +1,7 @@
-//! UBSCore Handler - PURE Business Logic
+//! UBSCore Handler - PURE Business Logic with Batch Support
 //!
-//! This module contains the order processing business logic,
-//! completely separated from transport (Aeron) and metrics.
-//!
-//! The handler receives raw bytes and returns response bytes.
-//! NO stats, NO latency tracking - that belongs to the transport layer.
+//! Supports both single-message and batch processing.
+//! Batch mode: append all → single flush → respond all
 
 use std::time::Duration;
 
@@ -17,21 +14,24 @@ use crate::ubs_core::{
 use crate::ubs_core::comm::{
     OrderMessage, DepositMessage, WithdrawMessage, ResponseMessage, reason_codes, WireMessage,
 };
+use crate::ubs_core::order::InternalOrder;
 use super::message::{MsgType, parse_message, build_message};
 
+/// Pending order after validation and WAL append (before flush)
+struct PendingOrder {
+    order: InternalOrder,
+    response: Vec<u8>,
+}
+
+/// Result of processing a single message (before flush)
+enum ProcessResult {
+    /// Order accepted, WAL appended, waiting for flush
+    Pending(PendingOrder),
+    /// Immediate response (reject, deposit, withdraw, etc.)
+    Immediate(Vec<u8>),
+}
+
 /// UBSCore message handler - PURE business logic
-///
-/// Pattern similar to WebSocket/gRPC handlers:
-/// ```
-/// fn on_message(payload: &[u8]) -> Vec<u8> {
-///     let (msg_type, body) = parse_message(payload)?;
-///     match msg_type {
-///         MsgType::Order => handle_order(body),
-///         MsgType::Cancel => handle_cancel(body),
-///         _ => error_response(),
-///     }
-/// }
-/// ```
 pub struct UbsCoreHandler<'a> {
     pub ubs_core: &'a mut UBSCore<SpotRiskModel>,
     pub wal: &'a mut MmapWal,
@@ -39,11 +39,134 @@ pub struct UbsCoreHandler<'a> {
 }
 
 impl<'a> UbsCoreHandler<'a> {
-    /// Process raw message bytes and return response bytes
+    // ========== BATCH PROCESSING API ==========
+
+    /// Process a batch of messages with single WAL flush
     ///
-    /// Wire format: [1-byte msg_type] + [message_body]
+    /// Flow:
+    /// 1. For each message: validate, append to WAL (no flush)
+    /// 2. Single flush for all
+    /// 3. Forward all to Kafka, return responses
+    pub fn process_batch(&mut self, items: &[(u64, Vec<u8>)]) -> Vec<(u64, Vec<u8>)> {
+        let mut results: Vec<(u64, ProcessResult)> = Vec::with_capacity(items.len());
+        let mut pending_count = 0;
+
+        // Phase 1: Process all messages (append WAL, no flush)
+        for (correlation_id, payload) in items {
+            let result = self.process_no_flush(payload);
+            if matches!(result, ProcessResult::Pending(_)) {
+                pending_count += 1;
+            }
+            results.push((*correlation_id, result));
+        }
+
+        // Phase 2: Single flush if any pending orders
+        if pending_count > 0 {
+            if let Err(e) = self.wal.flush() {
+                log::error!("[UBSC] Batch WAL flush failed: {:?}", e);
+            }
+        }
+
+        // Phase 3: Forward to Kafka and build responses
+        let mut responses = Vec::with_capacity(results.len());
+        for (correlation_id, result) in results {
+            let response = match result {
+                ProcessResult::Pending(pending) => {
+                    self.forward_to_kafka(&pending.order);
+                    pending.response
+                }
+                ProcessResult::Immediate(response) => response,
+            };
+            responses.push((correlation_id, response));
+        }
+
+        responses
+    }
+
+    /// Process single message without flush (for batch mode)
+    fn process_no_flush(&mut self, payload: &[u8]) -> ProcessResult {
+        let (msg_type, body) = match parse_message(payload) {
+            Some(r) => r,
+            None => {
+                log::warn!("[UBSC] Empty message");
+                return ProcessResult::Immediate(self.error_response(0, reason_codes::INTERNAL_ERROR));
+            }
+        };
+
+        match msg_type {
+            MsgType::Order => self.handle_order_no_flush(body),
+            MsgType::Cancel => ProcessResult::Immediate(self.handle_cancel(body)),
+            MsgType::Query => ProcessResult::Immediate(self.handle_query(body)),
+            MsgType::Deposit => ProcessResult::Immediate(self.handle_deposit(body)),
+            MsgType::Withdraw => ProcessResult::Immediate(self.handle_withdraw(body)),
+            MsgType::Response => {
+                log::warn!("[UBSC] Unexpected response message");
+                ProcessResult::Immediate(self.error_response(0, reason_codes::INTERNAL_ERROR))
+            }
+        }
+    }
+
+    /// Handle ORDER without flush (for batch)
+    fn handle_order_no_flush(&mut self, body: &[u8]) -> ProcessResult {
+        let order_msg = match OrderMessage::from_bytes(body) {
+            Some(msg) => msg,
+            None => {
+                log::warn!("[UBSC] Invalid order message");
+                return ProcessResult::Immediate(self.error_response(0, reason_codes::INTERNAL_ERROR));
+            }
+        };
+
+        let order = match order_msg.to_internal_order() {
+            Ok(o) => o,
+            Err(e) => {
+                log::warn!("[UBSC] Order conversion failed: {:?}", e);
+                return ProcessResult::Immediate(self.reject_response(order_msg.order_id, reason_codes::INVALID_SYMBOL));
+            }
+        };
+
+        // 1. VALIDATE
+        if let Err(reason) = self.ubs_core.validate_order(&order) {
+            let reason_code = match reason {
+                RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
+                RejectReason::DuplicateOrderId => reason_codes::DUPLICATE_ORDER_ID,
+                RejectReason::AccountNotFound => reason_codes::ACCOUNT_NOT_FOUND,
+                _ => reason_codes::INTERNAL_ERROR,
+            };
+            return ProcessResult::Immediate(self.reject_response(order.order_id, reason_code));
+        }
+
+        // 2. WAL APPEND (no flush - done in batch)
+        if let Ok(payload) = bincode::serialize(&order) {
+            let entry = WalEntry::new(WalEntryType::OrderLock, payload);
+            if let Err(e) = self.wal.append(&entry) {
+                log::error!("[UBSC] WAL append failed: {:?}", e);
+                return ProcessResult::Immediate(self.reject_response(order.order_id, reason_codes::INTERNAL_ERROR));
+            }
+        }
+
+        // Return pending (will be completed after batch flush)
+        ProcessResult::Pending(PendingOrder {
+            order,
+            response: self.accept_response(order_msg.order_id),
+        })
+    }
+
+    /// Forward order to Kafka (called after flush)
+    fn forward_to_kafka(&self, order: &InternalOrder) {
+        if let Some(producer) = self.kafka_producer {
+            let payload = bincode::serialize(order).unwrap_or_default();
+            let key = order.order_id.to_string();
+            let record = FutureRecord::to("validated_orders")
+                .payload(&payload)
+                .key(&key);
+            let _ = producer.send(record, Duration::from_secs(0));
+        }
+    }
+
+    // ========== SINGLE MESSAGE API (kept for compatibility) ==========
+
+    /// Process single message with immediate flush
     pub fn on_message(&mut self, payload: &[u8]) -> Vec<u8> {
-        // Parse message type
         let (msg_type, body) = match parse_message(payload) {
             Some(r) => r,
             None => {
@@ -52,7 +175,6 @@ impl<'a> UbsCoreHandler<'a> {
             }
         };
 
-        // Dispatch by message type
         match msg_type {
             MsgType::Order => self.handle_order(body),
             MsgType::Cancel => self.handle_cancel(body),
@@ -66,9 +188,8 @@ impl<'a> UbsCoreHandler<'a> {
         }
     }
 
-    /// Handle ORDER message
+    /// Handle ORDER message (single message with flush)
     fn handle_order(&mut self, body: &[u8]) -> Vec<u8> {
-        // Parse order from body
         let order_msg = match OrderMessage::from_bytes(body) {
             Some(msg) => msg,
             None => {
@@ -77,7 +198,6 @@ impl<'a> UbsCoreHandler<'a> {
             }
         };
 
-        // Convert to InternalOrder
         let order = match order_msg.to_internal_order() {
             Ok(o) => o,
             Err(e) => {
@@ -86,7 +206,6 @@ impl<'a> UbsCoreHandler<'a> {
             }
         };
 
-        // 1. VALIDATE
         if let Err(reason) = self.ubs_core.validate_order(&order) {
             let reason_code = match reason {
                 RejectReason::InsufficientBalance => reason_codes::INSUFFICIENT_BALANCE,
@@ -97,7 +216,6 @@ impl<'a> UbsCoreHandler<'a> {
             return self.reject_response(order.order_id, reason_code);
         }
 
-        // 2. WAL APPEND
         if let Ok(payload) = bincode::serialize(&order) {
             let entry = WalEntry::new(WalEntryType::OrderLock, payload);
             if let Err(e) = self.wal.append(&entry) {
@@ -106,37 +224,24 @@ impl<'a> UbsCoreHandler<'a> {
             }
         }
 
-        // 3. WAL FLUSH
         if let Err(e) = self.wal.flush() {
             log::error!("[UBSC] WAL flush failed: {:?}", e);
         }
 
-        // 4. Forward to Kafka (async, best-effort)
-        if let Some(producer) = self.kafka_producer {
-            let payload = bincode::serialize(&order).unwrap_or_default();
-            let key = order.order_id.to_string();
-            let record = FutureRecord::to("validated_orders")
-                .payload(&payload)
-                .key(&key);
-            let _ = producer.send(record, Duration::from_secs(0));
-        }
-
+        self.forward_to_kafka(&order);
         self.accept_response(order.order_id)
     }
 
-    /// Handle CANCEL message (stub for future)
     fn handle_cancel(&mut self, _body: &[u8]) -> Vec<u8> {
         log::warn!("[UBSC] Cancel not implemented yet");
         self.error_response(0, reason_codes::INTERNAL_ERROR)
     }
 
-    /// Handle QUERY message (stub for future)
     fn handle_query(&mut self, _body: &[u8]) -> Vec<u8> {
         log::warn!("[UBSC] Query not implemented yet");
         self.error_response(0, reason_codes::INTERNAL_ERROR)
     }
 
-    /// Handle DEPOSIT message
     fn handle_deposit(&mut self, body: &[u8]) -> Vec<u8> {
         let msg = match DepositMessage::from_bytes(body) {
             Some(m) => m,
@@ -151,7 +256,6 @@ impl<'a> UbsCoreHandler<'a> {
         self.accept_response(msg.user_id)
     }
 
-    /// Handle WITHDRAW message
     fn handle_withdraw(&mut self, body: &[u8]) -> Vec<u8> {
         let msg = match WithdrawMessage::from_bytes(body) {
             Some(m) => m,
