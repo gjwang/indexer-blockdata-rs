@@ -164,68 +164,90 @@ fn run_aeron_service() {
     info!("🎯 UBSCore Service ready - listening for orders");
 
     // --- Main processing loop ---
-    let mut stats = HandlerStats::new();
+    let stats = HandlerStats::new();
     let mut last_stats = Instant::now();
     let mut last_received = 0u64;
 
+    // Create handler ONCE outside the loop (not every iteration!)
+    let business_state = std::cell::RefCell::new(BusinessState {
+        ubs_core,
+        wal,
+        kafka_producer,
+        stats,
+    });
+
+    let transport_handler = OrderHandlerRef {
+        state: &business_state,
+        publication: &publication,
+    };
+    let handler_wrapped = Handler::leak(transport_handler);
+
     loop {
-        // Create handler with clean separation
-        let business_handler = UbsCoreHandler {
-            ubs_core: &mut ubs_core,
-            wal: &mut wal,
-            kafka_producer: &kafka_producer,
-            stats: &mut stats,
-        };
-
-        let transport_handler = OrderHandler {
-            handler: business_handler,
-            publication: &publication,
-        };
-
-        let handler_wrapped = Handler::leak(transport_handler);
+        // Just poll - handler already created
         let _ = subscription.poll(Some(&handler_wrapped), 10);
 
         // Print stats every 10 seconds
+        let stats = business_state.borrow();
         if last_stats.elapsed() > Duration::from_secs(10) {
             let elapsed_secs = last_stats.elapsed().as_secs_f64();
-            let orders_in_period = stats.received - last_received;
+            let orders_in_period = stats.stats.received - last_received;
             let qps = orders_in_period as f64 / elapsed_secs;
 
-            if stats.received > 0 && stats.latency_min_us < u64::MAX {
-                let avg_us = stats.latency_sum_us / stats.received;
+            if stats.stats.received > 0 && stats.stats.latency_min_us < u64::MAX {
+                let avg_us = stats.stats.latency_sum_us / stats.stats.received;
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1} latency(µs): min={} avg={} max={}",
-                    stats.received, stats.accepted, stats.rejected, qps, stats.latency_min_us, avg_us, stats.latency_max_us
+                    stats.stats.received, stats.stats.accepted, stats.stats.rejected, qps,
+                    stats.stats.latency_min_us, avg_us, stats.stats.latency_max_us
                 );
             } else {
                 info!(
                     "[STATS] received={} accepted={} rejected={} qps={:.1}",
-                    stats.received, stats.accepted, stats.rejected, qps
+                    stats.stats.received, stats.stats.accepted, stats.stats.rejected, qps
                 );
             }
             last_stats = Instant::now();
-            last_received = stats.received;
+            last_received = stats.stats.received;
         }
+        drop(stats);  // Release borrow before sleep
 
         // Small sleep to avoid busy-spin
         std::thread::sleep(Duration::from_micros(100));
     }
 }
-
-/// Aeron fragment handler - TRANSPORT LAYER ONLY
-///
-/// This handler only deals with:
-/// 1. Parse correlation_id from incoming buffer
-/// 2. Delegate to UbsCoreHandler for business logic
-/// 3. Send response with correlation_id prepended
+/// Business state held in RefCell for interior mutability
 #[cfg(feature = "aeron")]
-struct OrderHandler<'a> {
-    handler: UbsCoreHandler<'a>,
+struct BusinessState {
+    ubs_core: UBSCore<SpotRiskModel>,
+    wal: MmapWal,
+    kafka_producer: Option<FutureProducer>,
+    stats: HandlerStats,
+}
+
+#[cfg(feature = "aeron")]
+impl BusinessState {
+    fn on_message(&mut self, payload: &[u8]) -> Vec<u8> {
+        let mut handler = UbsCoreHandler {
+            ubs_core: &mut self.ubs_core,
+            wal: &mut self.wal,
+            kafka_producer: &self.kafka_producer,
+            stats: &mut self.stats,
+        };
+        handler.on_message(payload)
+    }
+}
+
+/// Aeron fragment handler using RefCell for single initialization
+///
+/// Created ONCE outside the loop, not on every poll iteration.
+#[cfg(feature = "aeron")]
+struct OrderHandlerRef<'a> {
+    state: &'a std::cell::RefCell<BusinessState>,
     publication: &'a AeronPublication,
 }
 
 #[cfg(feature = "aeron")]
-impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
+impl<'a> AeronFragmentHandlerCallback for OrderHandlerRef<'a> {
     fn handle_aeron_fragment_handler(&mut self, buffer: &[u8], _header: AeronHeader) {
         // 1. Extract correlation_id (transport concern)
         let (correlation_id, order_payload) = match parse_request(buffer) {
@@ -236,8 +258,8 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
             }
         };
 
-        // 2. Delegate to business logic (returns response bytes)
-        let response_bytes = self.handler.on_message(order_payload);
+        // 2. Borrow state and delegate to business logic
+        let response_bytes = self.state.borrow_mut().on_message(order_payload);
 
         if response_bytes.is_empty() {
             return; // Invalid request, no response
@@ -252,4 +274,3 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let _ = self.publication.offer(&message, handler);
     }
 }
-
