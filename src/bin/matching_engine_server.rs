@@ -198,7 +198,7 @@ async fn main() {
     // let mut balance_processor = BalanceProcessor::new();
 
     consumer
-        .subscribe(&[&config.kafka.topics.orders]) // Only subscribe to orders topic
+        .subscribe(&["validated_orders"]) // UBSCore publishes validated orders here
         .expect("Subscription failed");
 
     println!("--------------------------------------------------");
@@ -466,7 +466,42 @@ async fn main() {
             let current_offset = Some((topic.to_string(), partition, offset));
 
             if let Some(payload) = m.payload() {
-                if topic == config.kafka.topics.orders {
+                // UBSCore publishes InternalOrder via bincode to validated_orders topic
+                if topic == "validated_orders" {
+                    if let Ok(internal_order) = bincode::deserialize::<fetcher::ubs_core::InternalOrder>(payload) {
+                        use fetcher::ubs_core::Side as UbsCoreSide;
+                        use fetcher::ubs_core::OrderType as UbsCoreOrderType;
+
+                        // Convert UBSCore types to ME types
+                        let side = match internal_order.side {
+                            UbsCoreSide::Buy => Side::Buy,
+                            UbsCoreSide::Sell => Side::Sell,
+                        };
+                        let order_type = match internal_order.order_type {
+                            UbsCoreOrderType::Limit => OrderType::Limit,
+                            UbsCoreOrderType::Market => OrderType::Market,
+                        };
+
+                        if let Some(_symbol_name) = symbol_manager.get_symbol(internal_order.symbol_id) {
+                            // Accumulate orders for batch processing
+                            place_orders.push((
+                                internal_order.symbol_id,
+                                internal_order.order_id,
+                                side,
+                                order_type,
+                                internal_order.price,
+                                internal_order.qty,
+                                internal_order.user_id,
+                                timestamp,
+                            ));
+                            pending_batch_offset = current_offset;
+                        } else {
+                            eprintln!("Unknown symbol ID: {}", internal_order.symbol_id);
+                        }
+                    } else {
+                        eprintln!("Failed to deserialize InternalOrder from validated_orders topic");
+                    }
+                } else if topic == config.kafka.topics.orders {
                     // Changed from `order_topic` to `config.kafka.topics.orders` to match existing code
                     // Deserialize Order
                     if let Ok(req) = serde_json::from_slice::<OrderRequest>(payload) {
@@ -550,7 +585,7 @@ async fn main() {
                 else if topic == balance_topic {
                     // Deserialize Balance Request
                     match serde_json::from_slice::<BalanceRequest>(payload) {
-                        ... removed
+                    ... removed
                     }
                 }
                 */
