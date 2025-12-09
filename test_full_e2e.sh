@@ -75,9 +75,18 @@ SETTLE_PID=$!
 sleep 2
 
 echo "  4.4 Starting Matching Engine..."
-$BIN_DIR/matching_engine_server > /tmp/me.log 2>&1 &
+RUST_LOG=info $BIN_DIR/matching_engine_server > /tmp/me.log 2>&1 &
 ME_PID=$!
-sleep 3
+echo "    Waiting for ME to initialize (8s)..."
+sleep 8
+echo "    Checking if ME is still running..."
+if ps -p $ME_PID > /dev/null; then
+    echo "    ✅ ME running (PID: $ME_PID)"
+else
+    echo "    ❌ ME crashed! Check /tmp/me.log"
+    tail -20 /tmp/me.log
+    exit 1
+fi
 
 echo "  4.5 Starting Order Gateway (includes Transfer API)..."
 $BIN_DIR/order_gate_server > /tmp/gateway.log 2>&1 &
