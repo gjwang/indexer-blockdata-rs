@@ -270,27 +270,47 @@ else
 fi
 
 # ============================================================================
-log_step "6" "TEST: Create Order (Buy BTC)"
+log_step "6" "TEST: Create Matching Orders (Create Trade)"
 # ============================================================================
 
 ORDER_PRICE="50000.0"
 ORDER_QTY="0.01"  # 0.01 BTC
 
+# Step 6.1: Place SELL order first (creates order book entry)
+log_info "Placing SELL order: price=$ORDER_PRICE qty=$ORDER_QTY..."
+
+SELL_CID="sell_$(date +%s)_$$_$RANDOM"
+log_info "Sell Order ID: $SELL_CID"
+
+sell_response=$(curl -s -X POST "http://localhost:$GATEWAY_PORT/api/orders?user_id=$TEST_USER" \
+    -H "Content-Type: application/json" \
+    -d "{
+        \"cid\": \"$SELL_CID\",
+        \"symbol\": \"BTC_USDT\",
+        \"side\": \"Sell\",
+        \"order_type\": \"Limit\",
+        \"price\": \"$ORDER_PRICE\",
+        \"quantity\": \"$ORDER_QTY\"
+    }")
+
+log_info "Sell Response: $sell_response"
+sleep 1
+
+# Step 6.2: Place BUY order (should match with SELL and create trade!)
 log_info "Placing BUY order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 
-# Generate unique client order ID (must be 16-32 characters)
 BUY_CID="buy_$(date +%s)_$$_$RANDOM"
 log_info "Client Order ID: $BUY_CID"
 
-response=$(curl -s -X POST "$GATEWAY_URL/api/orders?user_id=$TEST_USER" \
+response=$(curl -s -X POST "http://localhost:$GATEWAY_PORT/api/orders?user_id=$TEST_USER" \
     -H "Content-Type: application/json" \
     -d "{
+        \"cid\": \"$BUY_CID\",
         \"symbol\": \"BTC_USDT\",
         \"side\": \"Buy\",
         \"order_type\": \"Limit\",
         \"price\": \"$ORDER_PRICE\",
-        \"quantity\": \"$ORDER_QTY\",
-        \"cid\": \"$BUY_CID\"
+        \"quantity\": \"$ORDER_QTY\"
     }")
 
 echo "Response: $response"
