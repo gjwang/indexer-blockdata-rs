@@ -37,26 +37,18 @@ macro_rules! info  { ($($arg:tt)*) => { log::info!(target: TARGET, $($arg)*) } }
 macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
 macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
 
+use fetcher::logging::setup_async_file_logging;
+
 // Tuning constants
 const POLL_LIMIT: usize = 100;           // Max fragments per poll (batch size)
 const HEARTBEAT_INTERVAL_SECS: u64 = 10; // Heartbeat log interval
 const POLL_SLEEP_US: u64 = 100;          // Sleep between polls to avoid busy-spin
 
-fn init_env_logger() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .format_timestamp_millis()
-        .init();
-}
-
 fn main() {
-    // Try config-based logging, fallback to env_logger
-    if let Ok(config) = configure::load_service_config("ubscore_config") {
-        if fetcher::logger::setup_logger(&config).is_err() {
-            init_env_logger();
-        }
-    } else {
-        init_env_logger();
-    }
+    // Phase 3: Async logging with JSON + daily rotation
+    let _guard = setup_async_file_logging("ubscore", "logs");
+
+    tracing::info!("🚀 UBSCore Service starting with async JSON logging");
 
     #[cfg(not(feature = "aeron"))]
     {

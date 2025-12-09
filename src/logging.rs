@@ -6,6 +6,11 @@
 /// - Metrics integration
 /// - Helper macros for common patterns
 
+pub mod setup;
+
+// Re-export commonly used items
+pub use setup::{setup_async_file_logging, setup_dual_logging};
+
 use serde_json::{json, Value};
 use std::time::{SystemTime, UNIX_EPOCH};
 
