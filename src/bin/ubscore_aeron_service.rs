@@ -26,7 +26,8 @@ use fetcher::ubs_core::{
 
 #[cfg(feature = "aeron")]
 use fetcher::ubs_core::comm::{
-    AeronConfig, OrderMessage, ResponseMessage, reason_codes,
+    AeronConfig, OrderMessage, ResponseMessage,
+    parse_request, reason_codes, WireMessage,
 };
 
 #[cfg(feature = "aeron")]
@@ -236,19 +237,16 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
         let start = Instant::now();
         self.stats.received += 1;
 
-        // Protocol: [8-byte correlation_id LE] + [order_payload]
-        if buffer.len() < 8 {
-            warn!("Message too short: {} bytes", buffer.len());
-            return;
-        }
+        // Parse request: extract correlation_id and payload
+        let (correlation_id, order_payload) = match parse_request(buffer) {
+            Some(r) => r,
+            None => {
+                warn!("Message too short: {} bytes", buffer.len());
+                return;
+            }
+        };
 
-        // Extract correlation ID (first 8 bytes)
-        let mut id_bytes = [0u8; 8];
-        id_bytes.copy_from_slice(&buffer[0..8]);
-        let correlation_id = u64::from_le_bytes(id_bytes);
-
-        // Parse order message (remaining bytes)
-        let order_payload = &buffer[8..];
+        // Parse order message
         let order_msg = match OrderMessage::from_bytes(order_payload) {
             Some(msg) => msg,
             None => {
@@ -345,7 +343,6 @@ impl<'a> AeronFragmentHandlerCallback for OrderHandler<'a> {
 #[cfg(feature = "aeron")]
 impl<'a> OrderHandler<'a> {
     /// Send response with correlation ID prepended
-    /// Protocol: [8-byte correlation_id LE] + [response_payload]
     fn send_response(&self, correlation_id: u64, order_id: u64, accepted: bool, reason_code: u8) {
         let resp = if accepted {
             ResponseMessage::accept(order_id)
@@ -353,14 +350,20 @@ impl<'a> OrderHandler<'a> {
             ResponseMessage::reject(order_id, reason_code)
         };
 
-        let resp_bytes = resp.to_bytes();
-
-        // Build message: [correlation_id] + [response_payload]
-        let mut message = Vec::with_capacity(8 + resp_bytes.len());
-        message.extend_from_slice(&correlation_id.to_le_bytes());
-        message.extend_from_slice(&resp_bytes);
+        // Use helper to build correlated message
+        let message = build_response_message(correlation_id, &resp);
 
         let handler: Option<&Handler<AeronReservedValueSupplierLogger>> = None;
         let _ = self.publication.offer(&message, handler);
     }
+}
+
+/// Build response message with correlation ID prepended
+#[cfg(feature = "aeron")]
+fn build_response_message(correlation_id: u64, resp: &ResponseMessage) -> Vec<u8> {
+    let resp_bytes = resp.to_bytes();
+    let mut message = Vec::with_capacity(8 + resp_bytes.len());
+    message.extend_from_slice(&correlation_id.to_le_bytes());
+    message.extend_from_slice(resp_bytes);
+    message
 }

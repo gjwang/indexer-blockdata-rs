@@ -48,6 +48,7 @@ pub trait WireMessage: Sized + Copy {
 
 pub mod aeron_channel;
 pub mod aeron_config;
+pub mod aeron_server;
 pub mod driver;
 pub mod fill_receiver;
 pub mod gateway_client;
@@ -57,6 +58,7 @@ pub mod response;
 
 pub use aeron_channel::{AeronChannel, AeronChannelConfig};
 pub use aeron_config::AeronConfig;
+pub use aeron_server::{AeronServer, AeronServerConfig, parse_request};
 pub use driver::{EmbeddedDriver, AERON_DIR};
 pub use fill_receiver::{FillMessage, FillReceiver};
 pub use gateway_client::UbsGatewayClient;
