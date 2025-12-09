@@ -22,7 +22,6 @@ use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 use futures_util::future::join_all;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use zmq::{Context, PULL};
 
 const LOG_TARGET: &str = "settlement";
 
@@ -47,16 +46,27 @@ async fn main() {
     let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
 
-    let zmq_config = config.zeromq.expect("ZMQ config missing");
     let scylla_config = config.scylladb.expect("ScyllaDB config missing");
+    let kafka_broker = config.kafka.map(|k| k.broker).expect("Kafka config missing");
 
     // --- Database Connections ---
     let settlement_db = connect_settlement_db(&scylla_config).await;
     let order_history_db = connect_order_history_db(&scylla_config).await;
     let starrocks_client = Arc::new(StarRocksClient::new());
 
-    // --- ZMQ Setup ---
-    let subscriber = setup_zmq(&zmq_config);
+    // --- Kafka Consumer Setup (replaces ZMQ) ---
+    tracing::info!("📥 Setting up Kafka consumer for engine.outputs...");
+    let consumer: rdkafka::consumer::StreamConsumer = rdkafka::config::ClientConfig::new()
+        .set("group.id", "settlement_group")
+        .set("bootstrap.servers", &kafka_broker)
+        .set("enable.auto.commit", "false")  // Manual commit after processing
+        .set("auto.offset.reset", "earliest")
+        .create()
+        .expect("Failed to create Kafka consumer");
+
+    consumer.subscribe(&["engine.outputs"])
+        .expect("Failed to subscribe to engine.outputs topic");
+    tracing::info!("✅ Subscribed to Kafka topic: engine.outputs");
 
     // --- File Writers ---
     let data_dir = configure::prepare_data_dir(&config.data_dir).unwrap_or_else(|e| {
@@ -148,7 +158,7 @@ async fn main() {
 
     // --- Main Processing Loop ---
     run_processing_loop(
-        subscriber,
+        consumer,
         settlement_db,
         &mut csv_writer,
         &mut last_seq,
@@ -193,35 +203,6 @@ async fn connect_order_history_db(
             std::process::exit(1);
         }
     }
-}
-
-fn setup_zmq(config: &fetcher::configure::ZmqConfig) -> zmq::Socket {
-    let context = Context::new();
-
-    // PULL socket for data
-    let subscriber = context.socket(PULL).expect("Failed to create PULL socket");
-    subscriber.set_rcvhwm(1_000_000).expect("Failed to set RCVHWM");
-    let endpoint = format!("tcp://*:{}", config.settlement_port);
-    subscriber.bind(&endpoint).expect("Failed to bind to settlement port");
-    log::info!(target: LOG_TARGET, "📡 Listening on tcp://localhost:{}", config.settlement_port);
-
-    // REP socket for sync handshake with Matching Engine (in separate thread)
-    let sync_port = config.settlement_port + 2;
-    let sync_context = Context::new();
-    std::thread::spawn(move || {
-        let sync_socket = sync_context.socket(zmq::REP).expect("Failed to create REP socket");
-        sync_socket.bind(&format!("tcp://*:{}", sync_port)).expect("Failed to bind sync socket");
-        log::info!(target: "settlement", "🔄 Sync socket on port {}", sync_port);
-        log::info!(target: "settlement", "⏳ Waiting for ME sync...");
-        if let Ok(msg) = sync_socket.recv_bytes(0) {
-            if msg == b"PING" {
-                let _ = sync_socket.send(&b"READY"[..], 0);
-                log::info!(target: "settlement", "✅ Sent READY to ME");
-            }
-        }
-    });
-
-    subscriber
 }
 
 fn create_csv_writer(path: &std::path::Path) -> csv::Writer<std::fs::File> {
@@ -367,7 +348,7 @@ fn spawn_derived_writers(
 // ============================================================================
 
 async fn run_processing_loop(
-    subscriber: zmq::Socket,
+    consumer: rdkafka::consumer::StreamConsumer,
     settlement_db: Arc<SettlementDb>,
     csv_writer: &mut csv::Writer<std::fs::File>,
     last_seq: &mut u64,
@@ -382,9 +363,10 @@ async fn run_processing_loop(
     let mut total_processing_us: u64 = 0;
 
     loop {
-        // --- Step 1: Receive Batch ---
-        let batch = receive_batch(&subscriber, MAX_BATCH_SIZE);
+        // --- Step 1: Receive Batch from Kafka ---
+        let batch = receive_batch_kafka(&consumer, MAX_BATCH_SIZE).await;
         if batch.is_empty() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             continue;
         }
 
@@ -455,32 +437,46 @@ async fn run_processing_loop(
 // BATCH PROCESSING HELPERS
 // ============================================================================
 
-/// Receive up to `max_size` messages from ZMQ (first blocking, rest non-blocking)
-fn receive_batch(subscriber: &zmq::Socket, max_size: usize) -> Vec<EngineOutput> {
+/// Receive up to `max_size` messages from Kafka
+async fn receive_batch_kafka(
+    consumer: &rdkafka::consumer::StreamConsumer,
+    max_size: usize
+) -> Vec<EngineOutput> {
+    use rdkafka::message::Message;
+    use futures_util::StreamExt;
+
     let mut batch = Vec::with_capacity(max_size);
 
-    // First message: blocking
-    match subscriber.recv_bytes(0) {
-        Ok(data) => {
-            if let Ok(output) = serde_json::from_slice::<EngineOutput>(&data) {
-                batch.push(output);
-            }
-        }
-        Err(e) => {
-            log::error!(target: LOG_TARGET, "ZMQ recv error: {}", e);
-            return batch;
-        }
-    }
+    // Poll messages with timeout
+    let timeout = tokio::time::Duration::from_millis(100);
+    let deadline = tokio::time::Instant::now() + timeout;
 
-    // Drain more messages non-blocking
-    while batch.len() < max_size {
-        match subscriber.recv_bytes(zmq::DONTWAIT) {
-            Ok(data) => {
-                if let Ok(output) = serde_json::from_slice::<EngineOutput>(&data) {
-                    batch.push(output);
+    while batch.len() < max_size && tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(
+            tokio::time::Duration::from_millis(10),
+            consumer.recv()
+        ).await {
+            Ok(Ok(message)) => {
+                if let Some(payload) = message.payload() {
+                    match bincode::deserialize::<EngineOutput>(payload) {
+                        Ok(output) => {
+                            batch.push(output);
+                            // Note: Offsets committed after batch processing in main loop
+                        }
+                        Err(e) => {
+                            log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput from Kafka: {}", e);
+                        }
+                    }
                 }
             }
-            Err(_) => break,
+            Ok(Err(e)) => {
+                log::error!(target: LOG_TARGET, "Kafka poll error: {}", e);
+                break;
+            }
+            Err(_) => {
+                // Timeout - no more messages
+                break;
+            }
         }
     }
 
