@@ -1072,13 +1072,13 @@ impl MatchingEngine {
                         (ledger.get_balance(uid, asset_id), ledger.get_frozen(uid, asset_id))
                     });
                     if delta_avail >= 0 {
-                        entry.0 += delta_avail as u64;
+                        entry.0 = entry.0.saturating_add(delta_avail as u64);
                     } else {
                         let abs_d = (-delta_avail) as u64;
                         entry.0 = entry.0.saturating_sub(abs_d);
                     }
                     if delta_frozen >= 0 {
-                        entry.1 += delta_frozen as u64;
+                        entry.1 = entry.1.saturating_add(delta_frozen as u64);
                     } else {
                         let abs_d = (-delta_frozen) as u64;
                         entry.1 = entry.1.saturating_sub(abs_d);
