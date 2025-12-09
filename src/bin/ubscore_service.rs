@@ -150,24 +150,7 @@ impl UBSCoreService {
     async fn validate_order(&self, order: &InternalOrder) -> Result<(), RejectReason> {
         let timer = LatencyTimer::start();
 
-        self.metrics.record_Second Optimization: Use pwrite (Optional)
-If the above doesn't get you to <1ms, standard seek + write might be causing issues with file pointer locks. Using write_at (Positional Write) is slightly cleaner for WALs because it's atomic (stateless regarding the file cursor).
-
-You can use the std::os::unix::fs::FileExt trait:
-
-Rust
-
-use std::os::unix::fs::FileExt; // Import this
-
-// Inside flush():
-// REPLACE:
-// self.file.seek(SeekFrom::Start(self.bytes_written))?;
-// self.file.write_all(self.buffer.as_slice())?;
-
-// WITH:
-self.file.write_all_at(self.buffer.as_slice(), self.bytes_written)
-    .map_err(|e| WalError::IoError(e.to_string()))?;
-Next Step: Apply the Zero-Fill fix and re-run your benchmark. You should see the latency drop significantly. Would you like me to explain how O_DIRECT interacts with this zero-fill strategy if you decide to enable it later?received();
+        self.metrics.record_received();
 
         let mut core = self.core.write().await;
         let result = core.validate_order(order);
@@ -242,6 +225,7 @@ async fn main() {
         max_batch_size: WAL_MAX_BATCH_SIZE,
         buffer_size: WAL_BUFFER_SIZE,
         use_direct_io: false,
+        pre_alloc_size: 64 * 1024 * 1024, // 64MB
     };
 
     let wal = match GroupCommitWal::open(&wal_path, wal_config) {

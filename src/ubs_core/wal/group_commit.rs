@@ -326,7 +326,7 @@ mod tests {
         let path = dir.path().join("test.wal");
 
         let config =
-            GroupCommitConfig { max_batch_size: 10, buffer_size: 4096, use_direct_io: false };
+            GroupCommitConfig { max_batch_size: 10, buffer_size: 4096, use_direct_io: false, pre_alloc_size: 0 };
 
         let mut wal = GroupCommitWal::create(&path, config).unwrap();
 
@@ -351,6 +351,7 @@ mod tests {
             max_batch_size: 5, // Flush after 5 entries
             buffer_size: 4096,
             use_direct_io: false,
+            pre_alloc_size: 0,
         };
 
         let mut wal = GroupCommitWal::create(&path, config).unwrap();
