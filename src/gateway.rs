@@ -338,7 +338,7 @@ async fn create_order(
         log::info!("[CREATE_ORDER] Sending to UBSCore via Aeron, order_id={}", order_id);
 
         // Send order directly via async client
-        let response = state.ubs_client.send_order(&internal_order, 500).await
+        let response = state.ubs_client.send_order(&internal_order, 5000).await
             .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("UBSCore error: {:?}", e)))?;
 
         let validate_time = validate_start.elapsed();
