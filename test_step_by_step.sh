@@ -312,6 +312,19 @@ if echo "$response" | jq -e '.status == 0' > /dev/null 2>&1; then
     fi
 
     log_success "✓ Create Order test PASSED"
+
+    # Step 6.5: Verify trades were created (NEW - critical validation)
+    log_info "Waiting for trade settlement (5s)..."
+    sleep 5
+
+    log_info "Checking if trades were created in database..."
+    TRADE_COUNT=$(cqlsh -e "SELECT COUNT(*) FROM trading.settled_trades;" | grep -A 1 "count" | tail -1 | tr -d ' ')
+
+    if [ "$TRADE_COUNT" -gt 0 ]; then
+        log_success "✓ Trades created: $TRADE_COUNT trade(s) settled"
+    else
+        log_error "✗ WARNING: No trades found in database (orders may not be matching)"
+    fi
 else
     log_error "Order placement failed: $response"
 fi
