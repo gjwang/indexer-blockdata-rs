@@ -17,7 +17,7 @@ impl NullLedger {
 }
 
 impl Ledger for NullLedger {
-    fn apply(&mut self, _cmd: &LedgerCommand) -> Result<(), String> {
+    fn apply(&mut self, _cmd: &LedgerCommand) -> Result<(), anyhow::Error> {
         // ME no longer applies balance commands - UBSCore handles this
         Ok(())
     }
@@ -33,17 +33,5 @@ impl Ledger for NullLedger {
 
     fn get_balance_version(&self, _user_id: u64, _asset_id: u32) -> u64 {
         0 // Version tracking is in UBSCore
-    }
-
-    fn get_accounts(&self) -> &HashMap<u64, UserAccount> {
-        // ME no longer has account state
-        use std::sync::LazyLock;
-        static EMPTY: LazyLock<HashMap<u64, UserAccount>> = LazyLock::new(HashMap::new);
-        &EMPTY
-    }
-
-    fn flush(&mut self) -> Result<(), String> {
-        // Nothing to flush
-        Ok(())
     }
 }

@@ -515,8 +515,9 @@ impl MatchingEngine {
         }
 
         // Process order with output building
+        let mut null_ledger = NullLedger::new();
         let result = Self::process_order_with_output(
-            &mut self.ledger,
+            &mut null_ledger,
             &mut self.order_books,
             &self.asset_map,
             &mut self.trade_id_gen,
@@ -538,7 +539,7 @@ impl MatchingEngine {
         if let Some(wal) = &mut self.order_wal {
             wal.flush().map_err(|e| OrderError::Other(e.to_string()))?;
         }
-        self.ledger.flush().map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        // REMOVED: ledger flush - ME no longer has ledger
 
         Ok(result)
     }
@@ -1276,13 +1277,8 @@ impl MatchingEngine {
             );
 
             match process_result {
-                Ok((oid, final_shadow)) => {
-                    // Success (or handled Rejection): Commit shadow
-                    if !final_shadow.pending_commands.is_empty() {
-                        let (delta, mut cmds) = final_shadow.into_delta();
-                        self.ledger.apply_delta_to_memory(delta);
-                        output_cmds.append(&mut cmds);
-                    }
+                Ok(oid) => {
+                    // Success: Balance state is in UBSCore
                     results.push(Ok(oid));
                 }
                 Err(e) => {
@@ -1307,12 +1303,13 @@ impl MatchingEngine {
         quantity: u64,
         user_id: u64,
         timestamp: u64,
-    ) -> Result<(u64, ShadowLedger<'_>), OrderError> {
-        let mut shadow = ShadowLedger::new(&self.ledger);
+    ) -> Result<u64, OrderError> {
+        // Balance state is in UBSCore - no need for shadow ledger
+        let mut null_ledger = NullLedger::new();
 
-        // Pass the shadow ledger to the core logic
+        // Process order (matching only, no balance operations)
         Self::process_order_logic(
-            &mut shadow,
+            &mut null_ledger,
             &mut self.order_books,
             &self.asset_map,
             &mut self.trade_id_gen,
@@ -1327,7 +1324,7 @@ impl MatchingEngine {
             timestamp,
         )?;
 
-        Ok((order_id, shadow))
+        Ok(order_id)
     }
 
     /// Public API: Cancel Order (Writes to WAL, then processes)
@@ -1384,22 +1381,15 @@ impl MatchingEngine {
             Side::Sell => (base_asset_id, cancelled_order.quantity),
         };
 
-        // Prepare Unlock Command with Snapshots
-        let current_bal = self.ledger.get_balance(cancelled_order.user_id, unlock_asset);
-        let current_ver = self.ledger.get_balance_version(cancelled_order.user_id, unlock_asset);
-        let balance_after = current_bal + unlock_amount; // Unlock returns funds to Avail
+        // REMOVED: Balance operations (unlock) now handled by UBSCore
+        // ME only manipulates order books, not balances
+        let mut null_ledger = NullLedger::new();
+        let current_bal = null_ledger.get_balance(cancelled_order.user_id, unlock_asset);
+        let current_ver = null_ledger.get_balance_version(cancelled_order.user_id, unlock_asset);
+        let balance_after = current_bal + unlock_amount;
         let version = current_ver + 1;
 
-        // Apply unlock to ledger
-        self.ledger
-            .apply(&LedgerCommand::Unlock {
-                user_id: cancelled_order.user_id,
-                asset_id: unlock_asset,
-                amount: unlock_amount,
-                balance_after,
-                version,
-            })
-            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        // No longer apply to ledger - UBSCore handles this
 
         commands.push(LedgerCommand::Unlock {
             user_id: cancelled_order.user_id,
@@ -1427,10 +1417,8 @@ impl MatchingEngine {
             match_id: None,
         };
 
-        // Apply to Ledger for WAL consistency
-        self.ledger
-            .apply(&LedgerCommand::OrderUpdate(order_update.clone()))
-            .map_err(|e| OrderError::LedgerError(e.to_string()))?;
+        // No longer apply OrderUpdate to ledger - not needed
+        // self.ledger.apply(&LedgerCommand::OrderUpdate(order_update.clone()))?;
 
         commands.push(LedgerCommand::OrderUpdate(order_update));
 
@@ -1466,8 +1454,8 @@ impl MatchingEngine {
 
                 let snap = EngineSnapshot {
                     order_books: self.order_books.clone(),
-                    ledger_accounts: self.ledger.get_accounts().clone(),
-                    ledger_seq: self.ledger.last_seq,
+                    ledger_accounts: Default::default(), // REMOVED: ME no longer has balance state
+                    ledger_seq: 0, // REMOVED: Balance state is in UBSCore
                     order_wal_seq: current_seq,
                     output_seq: self.output_seq,
                     last_output_hash: self.last_output_hash,
@@ -1495,48 +1483,9 @@ impl MatchingEngine {
         }
     }
 
-    /// Transfer funds IN to a user's trading account
-    /// Called by balance_processor after validating funding account
-    /// This is the ONLY way to add funds to trading accounts
-    pub fn transfer_in_to_trading_account(
-        &mut self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-    ) -> Result<LedgerCommand, String> {
-        let current_bal = self.ledger.get_balance(user_id, asset_id);
-        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
-        let balance_after = current_bal + amount;
-        let version = current_ver + 1;
-
-        let cmd = LedgerCommand::Deposit { user_id, asset_id, amount, balance_after, version };
-        self.ledger
-            .apply(&cmd)
-            .map_err(|e| format!("Failed to transfer in to trading account: {}", e))?;
-        Ok(cmd)
-    }
-
-    /// Transfer funds OUT from a user's trading account
-    /// Called by balance_processor to return funds to funding account
-    /// This is the ONLY way to remove funds from trading accounts
-    pub fn transfer_out_from_trading_account(
-        &mut self,
-        user_id: u64,
-        asset_id: u32,
-        amount: u64,
-    ) -> Result<LedgerCommand, String> {
-        let current_bal = self.ledger.get_balance(user_id, asset_id);
-        let current_ver = self.ledger.get_balance_version(user_id, asset_id);
-        // Withdraw reduces avail. If logic fails (insufficient), ledger will error, but we calc optimistically.
-        let balance_after = if current_bal >= amount { current_bal - amount } else { current_bal };
-        let version = current_ver + 1;
-
-        let cmd = LedgerCommand::Withdraw { user_id, asset_id, amount, balance_after, version };
-        self.ledger
-            .apply(&cmd)
-            .map_err(|e| format!("Failed to transfer out from trading account: {}", e))?;
-        Ok(cmd)
-    }
+    // REMOVED: transfer_in_to_trading_account() and transfer_out_from_trading_account()
+    // These were test helpers that are no longer valid since ME doesn't have ledger
+    // Tests using these methods need to be updated to use UBSCore client
 
     // REMOVED: transfer_in_and_build_output() and transfer_out_and_build_output()
     // Deposits and withdrawals are now handled exclusively by UBSCore

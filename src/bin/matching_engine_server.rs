@@ -110,88 +110,18 @@ impl MessageDeduplicator {
     }
 }
 
+// REMOVED: BalanceProcessor - Deposits and withdrawals are now handled by UBSCore
+// ME no longer processes balance operations
+/*
 struct BalanceProcessor {
     recent_requests: HashMap<String, u64>,
     request_queue: VecDeque<(String, u64)>,
 }
 
 impl BalanceProcessor {
-    fn new() -> Self {
-        Self { recent_requests: HashMap::new(), request_queue: VecDeque::new() }
-    }
-
-    fn current_time_ms(&self) -> u64 {
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-    }
-
-    fn cleanup_old_requests(&mut self) {
-        let current_time = self.current_time_ms();
-        while let Some((request_id, timestamp)) = self.request_queue.front().cloned() {
-            if current_time - timestamp > TRACKING_WINDOW_MS {
-                self.recent_requests.remove(&request_id);
-                self.request_queue.pop_front();
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn process_balance_request(
-        &mut self,
-        engine: &mut MatchingEngine,
-        req: BalanceRequest,
-    ) -> Result<Vec<EngineOutput>, anyhow::Error> {
-        let current_time = self.current_time_ms();
-        let request_id = req.request_id().to_string();
-        let mut outputs = Vec::new();
-
-        // 1. Validate timestamp
-        if !req.is_within_time_window(current_time) {
-            println!("❌ REJECTED: Request outside time window: {}", request_id);
-            return Ok(outputs);
-        }
-
-        // 2. Check duplicate
-        if self.recent_requests.contains_key(&request_id) {
-            println!("❌ REJECTED: Duplicate request: {}", request_id);
-            return Ok(outputs);
-        }
-
-        // 3. Process
-        match req {
-            BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
-                println!("📥 Transfer In: {} asset {} -> user {}", amount, asset_id, user_id);
-
-                match engine.transfer_in_and_build_output(user_id, asset_id, amount) {
-                    Ok(output) => {
-                        println!("✅ Transfer In success: {}", request_id);
-                        self.recent_requests.insert(request_id.clone(), timestamp);
-                        self.request_queue.push_back((request_id, timestamp));
-                        outputs.push(output);
-                    }
-                    Err(e) => {
-                        println!("❌ Transfer In failed: {}", e);
-                    }
-                }
-            }
-            BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
-                println!("📤 Transfer Out: {} asset {} <- user {}", amount, asset_id, user_id);
-
-                match engine.transfer_out_and_build_output(user_id, asset_id, amount) {
-                    Ok(output) => {
-                        println!("✅ Transfer Out success: {}", request_id);
-                        self.recent_requests.insert(request_id.clone(), timestamp);
-                        self.request_queue.push_back((request_id, timestamp));
-                        outputs.push(output);
-                    }
-                    Err(e) => println!("❌ Transfer Out failed: {}", e),
-                }
-            }
-        }
-        self.cleanup_old_requests();
-        Ok(outputs)
-    }
+    ... (removed 80+ lines)
 }
+*/
 
 #[tokio::main]
 async fn main() {
@@ -263,12 +193,12 @@ async fn main() {
         .create()
         .expect("Producer creation failed");
 
-    let balance_topic =
-        config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
-    let mut balance_processor = BalanceProcessor::new();
+    // REMOVED: Balance operations now handled by UBSCore, not ME
+    // let balance_topic = config.kafka.topics.balance_ops.clone().unwrap_or("balance.operations".to_string());
+    // let mut balance_processor = BalanceProcessor::new();
 
     consumer
-        .subscribe(&[&config.kafka.topics.orders, &balance_topic])
+        .subscribe(&[&config.kafka.topics.orders]) // Only subscribe to orders topic
         .expect("Subscription failed");
 
     println!("--------------------------------------------------");
@@ -393,26 +323,9 @@ async fn main() {
                     msg_dedup.mark_processed(msg_id, msg_ts);
                     let _ = engine.cancel_order(*symbol_id, *order_id);
                 }
-                // Single ID: check once at top
-                EngineCommand::BalanceRequest(req) => {
-                    use std::hash::{Hash, Hasher};
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    req.request_id().hash(&mut h);
-                    let msg_id = h.finish() as i64;
-
-                    if msg_dedup.is_duplicate(msg_id) {
-                        return;
-                    }
-                    msg_dedup.mark_processed(msg_id, msg_ts);
-
-                    if let Ok(outputs) =
-                        balance_processor.process_balance_request(&mut engine, req.clone())
-                    {
-                        if !outputs.is_empty() {
-                            *event.engine_outputs.lock().unwrap() =
-                                Some(std::sync::Arc::new(outputs));
-                        }
-                    }
+                // Balance operations now handled by UBSCore - ignore these messages
+                EngineCommand::BalanceRequest(_) => {
+                    // NO-OP: ME no longer processes balance operations
                 }
             }
         }
@@ -633,38 +546,14 @@ async fn main() {
                     } else {
                         eprintln!("Failed to parse Order JSON");
                     }
-                } else if topic == balance_topic {
+                } /* REMOVED: Balance topic handling - balance operations now in UBSCore
+                else if topic == balance_topic {
                     // Deserialize Balance Request
                     match serde_json::from_slice::<BalanceRequest>(payload) {
-                        Ok(req) => {
-                            // Publish pending place orders first
-                            if !place_orders.is_empty() {
-                                let batch_clone = place_orders.clone();
-                                let offset_clone = pending_batch_offset.clone();
-                                producer.publish(|event| {
-                                    event.command =
-                                        Some(EngineCommand::PlaceOrderBatch(batch_clone));
-                                    event.kafka_offset = offset_clone;
-                                    event.timestamp = timestamp;
-                                });
-                                place_orders.clear();
-                                pending_batch_offset = None;
-                            }
-
-                            // Publish balance request
-                            let offset_clone = current_offset.clone();
-                            producer.publish(|event| {
-                                event.command = Some(EngineCommand::BalanceRequest(req));
-                                event.kafka_offset = offset_clone;
-                                event.timestamp = timestamp;
-                            });
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to parse Balance JSON: {}", e);
-                            eprintln!("Payload: {}", String::from_utf8_lossy(payload));
-                        }
+                        ... removed
                     }
                 }
+                */
             }
         }
 
