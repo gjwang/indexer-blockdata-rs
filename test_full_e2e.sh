@@ -23,6 +23,7 @@ echo "=== Step 1: Killing all processes ==="
 pkill -f matching_engine_server || true
 pkill -f settlement_service || true
 pkill -f order_gate_server || true
+pkill -f ubscore_aeron_service || true
 pkill -f transfer_server || true
 pkill -f order_http_client || true
 sleep 2
@@ -41,31 +42,55 @@ echo "✅ All data cleaned"
 
 echo ""
 echo "=== Step 3: Building binaries ==="
-cargo build $BUILD_FLAG --bin matching_engine_server --bin settlement_service --bin order_gate_server --bin transfer_server 2>&1 | tail -3
+cargo build $BUILD_FLAG --bin matching_engine_server --bin settlement_service --bin order_gate_server --bin ubscore_aeron_service 2>&1 | tail -3
 
 echo ""
 echo "=== Step 4: Starting services ==="
 
-echo "  4.1 Starting Settlement Service..."
+echo "  4.1 Starting Aeron Media Driver..."
+# Check if Aeron is already running
+if pgrep -f "aeronmd" > /dev/null; then
+    echo "    (Aeron media driver already running)"
+else
+    # Start Aeron media driver (assuming it's installed)
+    aeronmd > /tmp/aeronmd.log 2>&1 &
+    AERONMD_PID=$!
+    sleep 2
+    if ps -p $AERONMD_PID > /dev/null; then
+        echo "    ✅ Aeron media driver started"
+    else
+        echo "    ⚠️  Aeron media driver may not be installed, using system default"
+    fi
+fi
+
+echo "  4.2 Starting UBSCore Aeron Service..."
+rm -rf ~/ubscore_data || true
+RUST_LOG=info $BIN_DIR/ubscore_aeron_service > /tmp/ubscore.log 2>&1 &
+UBSCORE_PID=$!
+sleep 3
+
+echo "  4.3 Starting Settlement Service..."
 RUST_LOG=settlement=debug,scylla=warn $BIN_DIR/settlement_service > /tmp/settle.log 2>&1 &
 SETTLE_PID=$!
 sleep 2
 
-echo "  4.2 Starting Matching Engine..."
+echo "  4.4 Starting Matching Engine..."
 $BIN_DIR/matching_engine_server > /tmp/me.log 2>&1 &
 ME_PID=$!
 sleep 3
 
-echo "  4.3 Starting Order Gateway (includes Transfer API)..."
+echo "  4.5 Starting Order Gateway (includes Transfer API)..."
 $BIN_DIR/order_gate_server > /tmp/gateway.log 2>&1 &
 GATEWAY_PID=$!
 sleep 5
 
 echo ""
 echo "=== Step 5: Verifying services ==="
+if ps -p $UBSCORE_PID > /dev/null; then echo "  ✅ UBSCore"; else echo "  ❌ UBSCore failed"; cat /tmp/ubscore.log | tail -20; exit 1; fi
 if ps -p $SETTLE_PID > /dev/null; then echo "  ✅ Settlement"; else echo "  ❌ Settlement failed"; exit 1; fi
 if ps -p $ME_PID > /dev/null; then echo "  ✅ ME"; else echo "  ❌ ME failed"; exit 1; fi
-if ps -p $GATEWAY_PID > /dev/null; then echo "  ✅ Gateway"; else echo "  ❌ Gateway failed"; exit 1; fi
+if ps -p $GATEWAY_PID > /dev/null; then echo "  ✅ Gateway"; else echo "  ❌ Gateway failed"; cat /tmp/gateway.log | tail -20; exit 1; fi
+
 
 echo ""
 echo "=== Step 6: Transfer In (Initialize Balances) ==="
@@ -146,7 +171,12 @@ docker exec scylla cqlsh -e "SELECT user_id, asset_id, avail, frozen, version FR
 
 echo ""
 echo "3. All User Balances Count:"
-docker exec scylla cqlsh -e "SELECT COUNT(*) FROM trading.user_balances;" 2>/dev/null
+echo "(Note: user_balances table is deprecated, balances are now in balance_ledger)"
+docker exec scylla cqlsh -e "SELECT COUNT(*) FROM trading.balance_ledger;" 2>/dev/null
+
+echo ""
+echo "4. Balance Ledger Events (deposits):"
+docker exec scylla cqlsh -e "SELECT user_id, asset_id, event_type, delta_avail, avail FROM trading.balance_ledger LIMIT 15;" 2>/dev/null
 
 echo ""
 echo "=== Balance Update Statistics ==="
@@ -171,7 +201,7 @@ echo ""
 echo "=========================================="
 echo "  Cleanup"
 echo "=========================================="
-kill $ME_PID $SETTLE_PID $GATEWAY_PID $TRANSFER_PID 2>/dev/null || true
+kill $UBSCORE_PID $ME_PID $SETTLE_PID $GATEWAY_PID 2>/dev/null || true
 
 echo ""
 echo "✅ E2E Test Complete!"
