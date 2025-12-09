@@ -349,6 +349,19 @@ async fn create_order(
                 "[LATENCY] order_id={} convert={}µs aeron={}µs total={}µs",
                 order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
             );
+
+            // Publish validated order to Kafka for Matching Engine
+            let json_payload = serde_json::to_vec(&internal_order).map_err(|e| {
+                (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize order: {}", e))
+            })?;
+
+            state.producer
+                .publish(state.kafka_topic.clone(), user_id.to_string(), json_payload)
+                .await
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to publish to Kafka: {}", e)))?;
+
+            log::info!("[CREATE_ORDER] Published to Kafka topic={} order_id={}", state.kafka_topic, order_id);
+
             Ok(Json(ApiResponse::success(OrderResponseData {
                 order_id: order_id.to_string(),
                 order_status: OrderStatus::Accepted,
