@@ -16,7 +16,6 @@ use fetcher::matching_engine_base::MatchingEngine;
 use fetcher::models::client_order::calculate_checksum;
 use fetcher::models::{BalanceRequest, OrderRequest, OrderType, Side};
 use fetcher::symbol_manager::SymbolManager;
-use fetcher::zmq_publisher::ZmqPublisher;
 use fetcher::logging::setup_async_file_logging;
 
 /// Event structure for the Disruptor ring buffer
@@ -133,12 +132,16 @@ async fn main() {
 
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
-    // Initialize ZMQ Publisher
-    let zmq_config = config.zeromq.as_ref().expect("ZMQ config missing");
-    let zmq_publisher = std::sync::Arc::new(
-        ZmqPublisher::new(zmq_config.settlement_port, zmq_config.market_data_port)
-            .expect("Failed to bind ZMQ sockets"),
-    );
+    // Initialize Kafka Producer for EngineOutput (replaces ZMQ)
+    tracing::info!("📤 Initializing Kafka producer for engine outputs...");
+    let engine_output_producer: FutureProducer = ClientConfig::new()
+        .set("bootstrap.servers", &config.kafka.broker)
+        .set("linger.ms", "0")  // Immediate send for low latency
+        .set("compression.type", "lz4")  // Fast compression
+        .create()
+        .expect("Failed to create Kafka producer for engine outputs");
+    let engine_output_producer = std::sync::Arc::new(engine_output_producer);
+    tracing::info!("✅ Kafka producer ready for engine.outputs topic");
 
     // Snapshot directory for engine state persistence
     let snap_dir_str = std::env::var("APP_SNAP_DIR").unwrap_or_else(|_| "me_snapshots".to_string());
@@ -215,32 +218,10 @@ async fn main() {
     println!("  Consumer Group:    {}", config.kafka.group_id);
     println!("  Snapshot Dir:      {:?}", snap_dir);
     println!("--------------------------------------------------");
-    println!(">>> Matching Engine Server Started (EngineOutput Mode)");
+    println!(">>> Matching Engine Server Started (Kafka Output Mode)");
 
-    // === Wait for Settlement Service to be ready ===
-    println!(">>> Waiting for Settlement Service READY signal...");
-    let zmq_ctx = zmq::Context::new();
-    let sync_req = zmq_ctx.socket(zmq::REQ).expect("Failed to create REQ socket");
-    let sync_port = config.zeromq.as_ref().unwrap().settlement_port + 2;
-    sync_req
-        .connect(&format!("tcp://localhost:{}", sync_port))
-        .expect("Failed to connect to sync port");
-    sync_req.send(&b"PING"[..], 0).expect("Failed to send PING");
-
-    match sync_req.recv_bytes(0) {
-        Ok(msg) if msg == b"READY" => {
-            println!(">>> ✅ Settlement Service is READY");
-        }
-        Ok(_) => {
-            eprintln!("Unexpected response from Settlement Service");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("Failed to receive READY from Settlement: {}", e);
-            std::process::exit(1);
-        }
-    }
-    drop(sync_req); // Close sync socket
+    // No sync needed with Kafka - Settlement will start consuming when ready
+    tracing::info!("📡 Publishing engine outputs to Kafka topic: engine.outputs");
 
     let mut total_orders = 0;
     let mut last_report = std::time::Instant::now();
@@ -337,44 +318,57 @@ async fn main() {
         }
     };
 
-    // === Consumer 2: ZMQ Publisher + Offset Committer (AFTER Matcher) ===
+    // === Consumer 2: Kafka Publisher + Offset Committer (AFTER Matcher) ===
     // CRITICAL: Offset must be committed AFTER processing to prevent message loss
-    let zmq_pub_clone = zmq_publisher.clone();
+    let kafka_pub_clone = engine_output_producer.clone();
     let consumer_for_commit = consumer.clone();
 
-    // Profiling counters for ZMQ output
-    let zmq_output_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let zmq_trade_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let zmq_start_time = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
-    let zmq_last_report = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    // Profiling counters for Kafka output
+    let kafka_output_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let kafka_trade_count = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let kafka_start_time = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+    let kafka_last_report = std::sync::Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
 
-    let zmq_out_cnt = zmq_output_count.clone();
-    let zmq_trd_cnt = zmq_trade_count.clone();
-    let zmq_start = zmq_start_time.clone();
-    let zmq_last = zmq_last_report.clone();
+    let kafka_out_cnt = kafka_output_count.clone();
+    let kafka_trd_cnt = kafka_trade_count.clone();
+    let kafka_start = kafka_start_time.clone();
+    let kafka_last = kafka_last_report.clone();
 
-    let zmq_and_commit = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
-        // 1. Publish EngineOutput bundles
+    let kafka_and_commit = move |event: &OrderEvent, _sequence: Sequence, end_of_batch: bool| {
+        // 1. Publish EngineOutput bundles to Kafka
         let outputs_arc = { event.engine_outputs.lock().unwrap().as_ref().cloned() };
         if let Some(outputs) = outputs_arc {
             for output in outputs.iter() {
-                // Publish market data (trades) from EngineOutput
-                for trade in &output.trades {
-                    if let Ok(data) = serde_json::to_vec(trade) {
-                        let _ = zmq_pub_clone.publish_market_data(&data);
-                    }
-                }
+                // Serialize and publish EngineOutput to Kafka
+                match bincode::serialize(output) {
+                    Ok(output_bytes) => {
+                        let producer_clone = kafka_pub_clone.clone();
+                        let key = format!("{}", output.output_seq);
+                        let record = FutureRecord::to("engine.outputs")
+                            .payload(&output_bytes)
+                            .key(&key);
 
-                // Publish EngineOutput bundle to Settlement
-                if let Err(e) = zmq_pub_clone.publish_engine_output(output) {
-                    eprintln!("[ZMQ ERROR] Failed to publish EngineOutput: {}", e);
-                } else {
-                    // Update counters
-                    zmq_out_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    zmq_trd_cnt.fetch_add(
-                        output.trades.len() as u64,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                        // Send asynchronously
+                        let send_future = producer_clone.send(record, std::time::Duration::from_secs(0));
+
+                        // Block on send to ensure delivery (compromise for now)
+                        match tokio::runtime::Runtime::new().unwrap().block_on(send_future) {
+                            Ok(_) => {
+                                // Update counters
+                                kafka_out_cnt.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                kafka_trd_cnt.fetch_add(
+                                    output.trades.len() as u64,
+                                    std::sync::atomic::Ordering::Relaxed,
+                                );
+                            }
+                            Err((e, _)) => {
+                                eprintln!("[KAFKA ERROR] Failed to publish EngineOutput: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[SERIALIZE ERROR] Failed to serialize EngineOutput: {}", e);
+                    }
                 }
             }
         }
@@ -389,16 +383,16 @@ async fn main() {
                 }
             }
 
-            // Report ZMQ output throughput every second
-            let mut last = zmq_last.lock().unwrap();
+            // Report Kafka output throughput every second
+            let mut last = kafka_last.lock().unwrap();
             if last.elapsed() >= std::time::Duration::from_secs(1) {
-                let total_outputs = zmq_out_cnt.load(std::sync::atomic::Ordering::Relaxed);
-                let total_trades = zmq_trd_cnt.load(std::sync::atomic::Ordering::Relaxed);
-                let elapsed = zmq_start.lock().unwrap().elapsed().as_secs_f64();
+                let total_outputs = kafka_out_cnt.load(std::sync::atomic::Ordering::Relaxed);
+                let total_trades = kafka_trd_cnt.load(std::sync::atomic::Ordering::Relaxed);
+                let elapsed = kafka_start.lock().unwrap().elapsed().as_secs_f64();
                 let ops = if elapsed > 0.0 { total_outputs as f64 / elapsed } else { 0.0 };
 
                 println!(
-                    "[ME-OUTPUT] outputs={} trades={} | {:.0} outputs/s",
+                    "[ME-OUTPUT] outputs={} trades={} | {:.0} outputs/s (Kafka)",
                     total_outputs, total_trades, ops
                 );
                 *last = std::time::Instant::now();
@@ -408,16 +402,16 @@ async fn main() {
 
     // Build disruptor with 2-Stage Pipeline
     // Stage 1: Matcher processes orders
-    // Stage 2: ZMQ Publisher + Offset Commit (AFTER Matcher - safe ordering)
+    // Stage 2: Kafka Publisher + Offset Commit (AFTER Matcher - safe ordering)
     let mut producer = build_single_producer(8192, factory, BusySpin)
         .handle_events_with(matcher)
         .and_then()
-        .handle_events_with(zmq_and_commit)
+        .handle_events_with(kafka_and_commit)
         .build();
 
     println!(">>> Disruptor initialized with 2-STAGE PIPELINE:");
     println!(">>> 1. Matcher (processes orders)");
-    println!(">>> 2. ZMQ Publisher + Offset Commit (after Matcher)");
+    println!(">>> 2. Kafka Publisher + Offset Commit (after Matcher)");
     println!(">>> Ring buffer size: 8192, Wait strategy: BusySpin");
 
     // Main Poll Thread (publishes to disruptor)
