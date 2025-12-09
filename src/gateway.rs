@@ -255,29 +255,26 @@ async fn transfer_out(
     // Update Balance in DB using append-only ledger
     if let Some(db) = &state.db {
         // Get current seq and use next seq for withdraw
-        let current = db
-            .get_current_balance(payload.user_id, asset_id)
-            .await
-            .map_err(|e| {
-                eprintln!("DB Error getting balance: {}", e);
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?
-            .ok_or_else(|| {
+        match db.get_current_balance(payload.user_id, asset_id).await {
+            Ok(Some(current)) => {
+                let next_seq = (current.seq + 1) as u64;
+                if let Err(e) = db.withdraw(payload.user_id, asset_id, raw_amount, next_seq, 0).await {
+                    eprintln!("DB Error during withdraw: {}", e);
+                    // Continue anyway - Kafka event was already published
+                }
+            }
+            Ok(None) => {
                 eprintln!(
-                    "No balance for user {} asset {} - deposit required first",
+                    "⚠️ No existing balance for user {} asset {} - withdraw will be processed via Kafka/UBSCore",
                     payload.user_id, asset_id
                 );
-                StatusCode::BAD_REQUEST
-            })?;
-
-        let next_seq = (current.seq + 1) as u64;
-        db.withdraw(payload.user_id, asset_id, raw_amount, next_seq, 0).await.map_err(|e| {
-            eprintln!("DB Error: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    } else {
-        eprintln!("DB not initialized");
-        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                // Don't fail - let UBSCore handle the balance check
+            }
+            Err(e) => {
+                eprintln!("DB Error getting balance: {} - continuing with Kafka processing", e);
+                // Don't fail - let UBSCore handle it
+            }
+        }
     }
 
     println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);

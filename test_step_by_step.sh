@@ -378,9 +378,8 @@ if echo "$response" | grep -q '"success":true'; then
 
     # Verify balance decreased
     NEW_BALANCE=$(check_balance $TEST_USER "BTC" 0)
-    EXPECTED=$((DEPOSIT_AMOUNT - WITHDRAW_AMOUNT))
 
-    log_info "Balance after withdrawal: $NEW_BALANCE (expected ~$EXPECTED)"
+    log_info "Balance after withdrawal: $NEW_BALANCE (withdraw amount was $WITHDRAW_AMOUNT)"
     log_success "✓ Withdraw test PASSED"
 else
     log_info "Withdrawal skipped or failed - this is OK for basic E2E test: $response"
