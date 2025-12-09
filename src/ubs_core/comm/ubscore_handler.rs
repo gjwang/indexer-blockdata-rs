@@ -48,10 +48,16 @@ impl<'a> UbsCoreHandler<'a> {
     /// 2. Single flush for all
     /// 3. Forward all to Kafka, return responses
     pub fn process_batch(&mut self, items: &[(u64, Vec<u8>)]) -> Vec<(u64, Vec<u8>)> {
-        let mut results: Vec<(u64, ProcessResult)> = Vec::with_capacity(items.len());
+        use std::time::Instant;
+
+        let batch_start = Instant::now();
+        let batch_size = items.len();
+
+        let mut results: Vec<(u64, ProcessResult)> = Vec::with_capacity(batch_size);
         let mut pending_count = 0;
 
-        // Phase 1: Process all messages (append WAL, no flush)
+        // Phase 1: Validate + Append (no flush)
+        let phase1_start = Instant::now();
         for (correlation_id, payload) in items {
             let result = self.process_no_flush(payload);
             if matches!(result, ProcessResult::Pending(_)) {
@@ -59,15 +65,19 @@ impl<'a> UbsCoreHandler<'a> {
             }
             results.push((*correlation_id, result));
         }
+        let phase1_us = phase1_start.elapsed().as_micros();
 
-        // Phase 2: Single flush if any pending orders
+        // Phase 2: Single flush
+        let phase2_start = Instant::now();
         if pending_count > 0 {
             if let Err(e) = self.wal.flush() {
                 log::error!("[UBSC] Batch WAL flush failed: {:?}", e);
             }
         }
+        let phase2_us = phase2_start.elapsed().as_micros();
 
-        // Phase 3: Forward to Kafka and build responses
+        // Phase 3: Forward to Kafka + build responses
+        let phase3_start = Instant::now();
         let mut responses = Vec::with_capacity(results.len());
         for (correlation_id, result) in results {
             let response = match result {
@@ -78,6 +88,22 @@ impl<'a> UbsCoreHandler<'a> {
                 ProcessResult::Immediate(response) => response,
             };
             responses.push((correlation_id, response));
+        }
+        let phase3_us = phase3_start.elapsed().as_micros();
+
+        let total_us = batch_start.elapsed().as_micros();
+
+        // Profile log (file only, not stdout)
+        if batch_size > 0 {
+            let ops = if total_us > 0 {
+                (batch_size as u128 * 1_000_000) / total_us
+            } else {
+                0
+            };
+            log::info!(
+                "[PROFILE] batch={} pending={} validate_append={}µs flush={}µs kafka={}µs total={}µs ops={}",
+                batch_size, pending_count, phase1_us, phase2_us, phase3_us, total_us, ops
+            );
         }
 
         responses
