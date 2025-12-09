@@ -256,12 +256,26 @@ fn run_aeron_service() {
                                 info!("📥 Balance request: {:?}", req);
                                 let mut state = business_state.borrow_mut();
                                 match req {
-                                    BalanceRequest::TransferIn { user_id, asset_id, amount, .. } => {
+                                    BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
+                                        // Generate unique event ID
+                                        let event_id = format!("deposit_{}_{}_{}", user_id, asset_id, timestamp);
+
+                                        info!("[DEPOSIT_CONSUMED] event_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
+                                            event_id, user_id, asset_id, amount);
+
+                                        // Get balance before
+                                        let balance_before = state.ubs_core.get_balance_full(user_id, asset_id)
+                                            .map(|(a, _)| a).unwrap_or(0);
+
+                                        // Process deposit
                                         state.ubs_core.on_deposit(user_id, asset_id, amount);
 
                                         // Get updated balance (returns Option<(avail, frozen)>)
                                         let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
                                             .unwrap_or((amount, 0));
+
+                                        info!("[DEPOSIT_VALIDATED] event_id={} balance_before={} balance_after={} delta={} | UBSCore updated balance",
+                                            event_id, balance_before, avail, amount);
 
                                         // Publish balance event to Kafka for Settlement
                                         if let Some(ref producer) = state.kafka_producer {
@@ -293,16 +307,31 @@ fn run_aeron_service() {
                                             let send_future = producer.send(record, Duration::from_secs(1));
                                             let rt = tokio::runtime::Runtime::new().unwrap();
                                             let _ = rt.block_on(send_future);
+
+                                            info!("[DEPOSIT_TO_SETTLEMENT] event_id={} topic=balance.events seq={} | Published to Settlement",
+                                                event_id, seq);
                                         }
 
-                                        info!("✅ Deposit processed & event published: user={}, asset={}, amount={}",
-                                            user_id, asset_id, amount);
+                                        info!("[DEPOSIT_EXIT] event_id={} | UBSCore completed deposit processing", event_id);
                                     }
-                                    BalanceRequest::TransferOut { user_id, asset_id, amount, .. } => {
+                                    BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
+                                        // Generate unique event ID
+                                        let event_id = format!("withdraw_{}_{}_{}", user_id, asset_id, timestamp);
+
+                                        info!("[WITHDRAW_CONSUMED] event_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
+                                            event_id, user_id, asset_id, amount);
+
+                                        // Get balance before
+                                        let balance_before = state.ubs_core.get_balance_full(user_id, asset_id)
+                                            .map(|(a, _)| a).unwrap_or(0);
+
                                         if state.ubs_core.on_withdraw(user_id, asset_id, amount) {
                                             // Get updated balance
                                             let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
                                                 .unwrap_or((0, 0));
+
+                                            info!("[WITHDRAW_VALIDATED] event_id={} balance_before={} balance_after={} delta=-{} | UBSCore updated balance",
+                                                event_id, balance_before, avail, amount);
 
                                             // Publish balance event to Kafka for Settlement
                                             if let Some(ref producer) = state.kafka_producer {
@@ -333,12 +362,14 @@ fn run_aeron_service() {
                                                 let send_future = producer.send(record, Duration::from_secs(1));
                                                 let rt = tokio::runtime::Runtime::new().unwrap();
                                                 let _ = rt.block_on(send_future);
+
+                                                info!("[WITHDRAW_TO_SETTLEMENT] event_id={} topic=balance.events seq={} | Published to Settlement",
+                                                    event_id, seq);
                                             }
 
-                                            info!("✅ Withdrawal processed & event published: user={}, asset={}, amount={}",
-                                                user_id, asset_id, amount);
+                                            info!("[WITHDRAW_EXIT] event_id={} | UBSCore completed withdrawal processing", event_id);
                                         } else {
-                                            error!("❌ Withdrawal failed: insufficient funds");
+                                            info!("[WITHDRAW_FAILED] event_id={} | Insufficient balance", event_id);
                                         }
                                     }
                                 }

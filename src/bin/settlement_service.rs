@@ -109,13 +109,22 @@ async fn main() {
                         if let Some(payload) = message.payload() {
                             match serde_json::from_slice::<BalanceEvent>(payload) {
                                 Ok(event) => {
+                                    // Generate event_id for tracking
+                                    let event_id = format!("{}_{}_{}_{}",
+                                        event.event_type, event.user_id, event.asset_id, event.seq);
+
                                     log::info!(target: LOG_TARGET,
-                                        "📥 Balance event: user={} asset={} type={} delta_avail={}",
-                                        event.user_id, event.asset_id, event.event_type, event.delta_avail);
+                                        "[{}_CONSUMED] event_id={} user={} asset={} delta={} avail={} | Settlement consumed from Kafka",
+                                        event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
+                                        event.delta_avail, event.avail);
 
                                     // Send to balance writer (same path as ME trades)
                                     let shard = event.user_id as usize % NUM_BALANCE_WRITERS;
-                                    let _ = balance_tx_clone[shard].try_send(vec![event]);
+                                    let _ = balance_tx_clone[shard].try_send(vec![event.clone()]);
+
+                                    log::info!(target: LOG_TARGET,
+                                        "[{}_TO_WRITER] event_id={} shard={} | Sent to balance writer",
+                                        event.event_type.to_uppercase(), event_id, shard);
                                 }
                                 Err(e) => {
                                     log::error!(target: LOG_TARGET, "Failed to parse BalanceEvent: {}", e);

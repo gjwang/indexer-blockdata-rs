@@ -873,7 +873,6 @@ impl SettlementDb {
                     e.event_type.clone(),
                     e.ref_id as i64,
                     now as i64,
-                )
             })
             .collect();
 
@@ -883,6 +882,16 @@ impl SettlementDb {
             .context("Failed to batch insert balance_ledger")?;
 
         let total_time = t_start.elapsed();
+
+        // Log each event persistence with event_id for traceability
+        for event in events {
+            let event_id = format!("{}_{}_{}_{}", event.event_type, event.user_id, event.asset_id, event.seq);
+            log::info!(
+                "[{}_PERSISTED] event_id={} user={} asset={} delta={} avail={} table=balance_ledger | Written to ScyllaDB",
+                event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
+                event.delta_avail, event.avail
+            );
+        }
 
         // NOTE: user_balances snapshot write is DISABLED for performance
         // User balances are now queried directly from balance_ledger
