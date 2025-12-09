@@ -36,37 +36,10 @@ impl OrderMessage {
             order_id: order.order_id,
             user_id: order.user_id,
             symbol_id: order.symbol_id,
-            side: match order.side {
-                Side::Buy => 0,
-                Side::Sell => 1,
-            },
-            order_type: match order.order_type {
-                OrderType::Limit => 0,
-                OrderType::Market => 1,
-            },
+            side: order.side as u8,
+            order_type: order.order_type as u8,
             price: order.price,
             qty: order.qty,
-        }
-    }
-
-    /// Convert to bytes for transmission
-    pub fn to_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-
-    /// Parse from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != std::mem::size_of::<Self>() {
-            return None;
-        }
-        unsafe {
-            let ptr = bytes.as_ptr() as *const Self;
-            Some(ptr.read())
         }
     }
 
@@ -89,6 +62,9 @@ impl OrderMessage {
         })
     }
 }
+
+// Use trait for to_bytes/from_bytes
+impl super::WireMessage for OrderMessage {}
 
 /// Order receiver using Aeron subscription
 pub struct OrderReceiver {

@@ -2,8 +2,6 @@
 //!
 //! Sent on responses channel after order validation.
 
-use serde::{Deserialize, Serialize};
-
 /// Response message from UBSCore to Gateway
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -12,6 +10,9 @@ pub struct ResponseMessage {
     pub accepted: u8,      // 1 = accepted, 0 = rejected
     pub reason_code: u8,   // Rejection reason code (0 if accepted)
 }
+
+// Use trait for to_bytes/from_bytes
+impl super::WireMessage for ResponseMessage {}
 
 impl ResponseMessage {
     /// Create accept response
@@ -29,27 +30,6 @@ impl ResponseMessage {
             order_id,
             accepted: 0,
             reason_code,
-        }
-    }
-
-    /// Convert to bytes for transmission
-    pub fn to_bytes(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(
-                self as *const Self as *const u8,
-                std::mem::size_of::<Self>(),
-            )
-        }
-    }
-
-    /// Parse from bytes
-    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < std::mem::size_of::<Self>() {
-            return None;
-        }
-        unsafe {
-            let ptr = bytes.as_ptr() as *const Self;
-            Some(ptr.read())
         }
     }
 

@@ -11,6 +11,7 @@ use super::aeron_config::AeronConfig;
 use super::order_receiver::OrderMessage;
 use super::order_sender::SendError;
 use super::response::ResponseMessage;
+use super::WireMessage;  // For to_bytes/from_bytes
 use crate::ubs_core::order::InternalOrder;
 
 /// Gateway client for UBSCore communication

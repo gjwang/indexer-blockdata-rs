@@ -10,6 +10,7 @@ use rusteron_client::*;
 
 use super::aeron_config::AeronConfig;
 use super::order_receiver::OrderMessage;
+use super::WireMessage;  // For to_bytes
 use crate::ubs_core::order::InternalOrder;
 
 /// Order sender using Aeron publication

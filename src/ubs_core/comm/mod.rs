@@ -19,6 +19,33 @@
 //!    │                                    │
 //! ```
 
+/// Trait for #[repr(C)] messages that can be converted to/from bytes
+///
+/// Implement this for zero-copy wire message serialization.
+/// Safety: Only safe for #[repr(C)] structs with no padding issues.
+pub trait WireMessage: Sized + Copy {
+    /// Convert to byte slice (zero-copy)
+    fn to_bytes(&self) -> &[u8] {
+        unsafe {
+            std::slice::from_raw_parts(
+                self as *const Self as *const u8,
+                std::mem::size_of::<Self>(),
+            )
+        }
+    }
+
+    /// Parse from bytes
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < std::mem::size_of::<Self>() {
+            return None;
+        }
+        unsafe {
+            let ptr = bytes.as_ptr() as *const Self;
+            Some(ptr.read())
+        }
+    }
+}
+
 pub mod aeron_channel;
 pub mod aeron_config;
 pub mod driver;
