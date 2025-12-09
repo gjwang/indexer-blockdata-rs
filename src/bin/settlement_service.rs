@@ -17,7 +17,6 @@ use fetcher::configure;
 use fetcher::db::{OrderHistoryDb, SettlementDb};
 use fetcher::engine_output::{EngineOutput, InputData, GENESIS_HASH};
 use fetcher::ledger::{OrderStatus, OrderUpdate};
-use fetcher::logger::setup_logger;
 use fetcher::logging::setup_async_file_logging;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 use futures_util::future::join_all;
@@ -47,11 +46,6 @@ async fn main() {
     // --- Configuration ---
     let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
-
-    if let Err(e) = setup_logger(&config) {
-        eprintln!("Failed to initialize logger: {}", e);
-        return;
-    }
 
     let zmq_config = config.zeromq.expect("ZMQ config missing");
     let scylla_config = config.scylladb.expect("ScyllaDB config missing");
