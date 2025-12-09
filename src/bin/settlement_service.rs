@@ -79,6 +79,63 @@ async fn main() {
     let (balance_tx, trades_tx, order_tx, starrocks_tx) =
         spawn_derived_writers(settlement_db.clone(), order_history_db.clone(), starrocks_client);
 
+    // --- Kafka Consumer for UBSCore Balance Events ---
+    use rdkafka::config::ClientConfig;
+    use rdkafka::consumer::{BaseConsumer, Consumer};
+    use rdkafka::Message;
+
+    if let Ok(kafka_config) = configure::load_config() {
+        let balance_consumer: BaseConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &kafka_config.kafka.broker)
+            .set("group.id", "settlement-balance-consumer")
+            .set("enable.auto.commit", "true")
+            .set("auto.offset.reset", "earliest")
+            .create()
+            .expect("Failed to create balance consumer");
+
+        balance_consumer.subscribe(&["balance.events"])
+            .expect("Failed to subscribe to balance.events");
+
+        log::info!(target: LOG_TARGET, "✅ Subscribed to Kafka balance.events topic");
+
+        // Spawn background thread for balance event processing
+        let settlement_db_clone = settlement_db.clone();
+        let balance_tx_clone = balance_tx.clone();
+        std::thread::spawn(move || {
+            log::info!(target: LOG_TARGET, "🔄 Balance event consumer thread started");
+            loop {
+                match balance_consumer.poll(std::time::Duration::from_millis(100)) {
+                    Some(Ok(message)) => {
+                        if let Some(payload) = message.payload() {
+                            match serde_json::from_slice::<BalanceEvent>(payload) {
+                                Ok(event) => {
+                                    log::info!(target: LOG_TARGET,
+                                        "📥 Balance event: user={} asset={} type={} delta_avail={}",
+                                        event.user_id, event.asset_id, event.event_type, event.delta_avail);
+
+                                    // Send to balance writer (same path as ME trades)
+                                    let shard = event.user_id as usize % NUM_BALANCE_WRITERS;
+                                    let _ = balance_tx_clone[shard].try_send(vec![event]);
+                                }
+                                Err(e) => {
+                                    log::error!(target: LOG_TARGET, "Failed to parse BalanceEvent: {}", e);
+                                }
+                            }
+                        }
+                    }
+                    Some(Err(e)) => {
+                        log::error!(target: LOG_TARGET, "Kafka consumer error: {}", e);
+                    }
+                    None => {
+                        // No message, continue
+                    }
+                }
+            }
+        });
+    } else {
+        log::warn!(target: LOG_TARGET, "⚠️  Kafka config not found, balance events from UBSCore won't be processed");
+    }
+
     log::info!(target: LOG_TARGET, "✅ Settlement Service Ready");
 
     // --- Main Processing Loop ---
