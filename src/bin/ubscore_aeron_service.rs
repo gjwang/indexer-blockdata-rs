@@ -38,7 +38,7 @@ macro_rules! warn  { ($($arg:tt)*) => { log::warn!(target: TARGET, $($arg)*) } }
 macro_rules! error { ($($arg:tt)*) => { log::error!(target: TARGET, $($arg)*) } }
 
 // Tuning constants
-const POLL_LIMIT: usize = 10;            // Max fragments per poll
+const POLL_LIMIT: usize = 100;           // Max fragments per poll (batch size)
 const HEARTBEAT_INTERVAL_SECS: u64 = 10; // Heartbeat log interval
 const POLL_SLEEP_US: u64 = 100;          // Sleep between polls to avoid busy-spin
 
