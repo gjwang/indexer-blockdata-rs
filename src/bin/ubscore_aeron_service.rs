@@ -289,7 +289,10 @@ fn run_aeron_service() {
                                             let record = FutureRecord::to("balance.events")
                                                 .key(&key)
                                                 .payload(&event_json);
-                                            let _ = producer.send(record, Duration::from_secs(0));
+                                            // Block until message is sent to Kafka
+                                            let send_future = producer.send(record, Duration::from_secs(1));
+                                            let rt = tokio::runtime::Runtime::new().unwrap();
+                                            let _ = rt.block_on(send_future);
                                         }
 
                                         info!("✅ Deposit processed & event published: user={}, asset={}, amount={}",
@@ -326,7 +329,10 @@ fn run_aeron_service() {
                                                 let record = FutureRecord::to("balance.events")
                                                     .key(&key)
                                                     .payload(&event_json);
-                                                let _ = producer.send(record, Duration::from_secs(0));
+                                                // Block until message is sent to Kafka
+                                                let send_future = producer.send(record, Duration::from_secs(1));
+                                                let rt = tokio::runtime::Runtime::new().unwrap();
+                                                let _ = rt.block_on(send_future);
                                             }
 
                                             info!("✅ Withdrawal processed & event published: user={}, asset={}, amount={}",
