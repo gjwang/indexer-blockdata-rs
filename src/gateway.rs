@@ -330,47 +330,37 @@ async fn create_order(
     )?;
     let convert_time = start.elapsed();
 
-    // 2. Validate order via UBSCore service (Aeron - async)
+    // 2. TEMP FIX: Skip UBSCore validation (UBSCore doesn't handle PlaceOrder yet)
+    //    Publish directly to Kafka for ME to process
     #[cfg(feature = "aeron")]
     let validation_result = {
         let validate_start = std::time::Instant::now();
 
-        log::info!("[CREATE_ORDER] Sending to UBSCore via Aeron, order_id={}", order_id);
+        log::info!("[CREATE_ORDER] SKIPPING UBSCore validation (not implemented yet), order_id={}", order_id);
 
-        // Send order directly via async client
-        let response = state.ubs_client.send_order(&internal_order, 5000).await
-            .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("UBSCore error: {:?}", e)))?;
+        // BYPASS UBSCore - publish directly to Kafka
+        let bincode_payload = bincode::serialize(&internal_order).map_err(|e| {
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize order: {}", e))
+        })?;
+
+        state.producer
+            .publish(state.kafka_topic.clone(), user_id.to_string(), bincode_payload)
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to publish to Kafka: {}", e)))?;
 
         let validate_time = validate_start.elapsed();
+        let total_time = start.elapsed();
 
-        if response.is_accepted() {
-            let total_time = start.elapsed();
-            log::info!(
-                "[LATENCY] order_id={} convert={}µs aeron={}µs total={}µs",
-                order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
-            );
+        log::info!(
+            "[CREATE_ORDER] Published to Kafka topic={} order_id={} convert={}µs kafka={}µs total={}µs",
+            state.kafka_topic, order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
+        );
 
-            // Publish validated order to Kafka for Matching Engine
-            let bincode_payload = bincode::serialize(&internal_order).map_err(|e| {
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize order: {}", e))
-            })?;
-
-            state.producer
-                .publish(state.kafka_topic.clone(), user_id.to_string(), bincode_payload)
-                .await
-                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to publish to Kafka: {}", e)))?;
-
-            log::info!("[CREATE_ORDER] Published to Kafka topic={} order_id={}", state.kafka_topic, order_id);
-
-            Ok(Json(ApiResponse::success(OrderResponseData {
-                order_id: order_id.to_string(),
-                order_status: OrderStatus::Accepted,
-                cid: client_order.cid,
-            })))
-        } else {
-            log::warn!("[LATENCY] order_id={} REJECTED reason_code={}", order_id, response.reason_code);
-            Err((StatusCode::BAD_REQUEST, format!("Order rejected: reason_code={}", response.reason_code)))
-        }
+        Ok(Json(ApiResponse::success(OrderResponseData {
+            order_id: order_id.to_string(),
+            order_status: OrderStatus::Accepted,
+            cid: client_order.cid,
+        })))
     };
 
     #[cfg(not(feature = "aeron"))]

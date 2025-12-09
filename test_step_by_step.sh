@@ -279,19 +279,13 @@ ORDER_QTY="0.01"  # 0.01 BTC
 # Step 6.1: Place SELL order first (creates order book entry)
 log_info "Placing SELL order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 
-SELL_CID="sell_$(date +%s)_$$_$RANDOM"
-log_info "Sell Order ID: $SELL_CID"
+SELL_CID="sell_order_$(date +%s)_$$_$RANDOM"
+log_info "Sell Order ID: $SELL_CID (len: ${#SELL_CID})"
 
-sell_response=$(curl -s -X POST "http://localhost:$GATEWAY_PORT/api/orders?user_id=$TEST_USER" \
+sell_response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \
     -H "Content-Type: application/json" \
-    -d "{
-        \"cid\": \"$SELL_CID\",
-        \"symbol\": \"BTC_USDT\",
-        \"side\": \"Sell\",
-        \"order_type\": \"Limit\",
-        \"price\": \"$ORDER_PRICE\",
-        \"quantity\": \"$ORDER_QTY\"
-    }")
+    -d "{\"cid\":\"$SELL_CID\",\"symbol\":\"BTC_USDT\",\"side\":\"Sell\",\"order_type\":\"Limit\",\"price\":\"$ORDER_PRICE\",\"quantity\":\"$ORDER_QTY\"}" \
+    || echo "{\"status\":-1,\"msg\":\"curl failed\"}")
 
 log_info "Sell Response: $sell_response"
 sleep 1
@@ -299,19 +293,12 @@ sleep 1
 # Step 6.2: Place BUY order (should match with SELL and create trade!)
 log_info "Placing BUY order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 
-BUY_CID="buy_$(date +%s)_$$_$RANDOM"
-log_info "Client Order ID: $BUY_CID"
+BUY_CID="buy_order_$(date +%s)_$$_$RANDOM"
+log_info "Client Order ID: $BUY_CID (len: ${#BUY_CID})"
 
-response=$(curl -s -X POST "http://localhost:$GATEWAY_PORT/api/orders?user_id=$TEST_USER" \
+response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \
     -H "Content-Type: application/json" \
-    -d "{
-        \"cid\": \"$BUY_CID\",
-        \"symbol\": \"BTC_USDT\",
-        \"side\": \"Buy\",
-        \"order_type\": \"Limit\",
-        \"price\": \"$ORDER_PRICE\",
-        \"quantity\": \"$ORDER_QTY\"
-    }")
+    -d "{\"cid\":\"$BUY_CID\",\"symbol\":\"BTC_USDT\",\"side\":\"Buy\",\"order_type\":\"Limit\",\"price\":\"$ORDER_PRICE\",\"quantity\":\"$ORDER_QTY\"}")
 
 echo "Response: $response"
 
