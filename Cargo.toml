@@ -77,6 +77,16 @@ indexmap = "2.12.1"
 rusteron-client = { version = "0.1", features = ["static"], optional = true }
 rusteron-media-driver = { version = "0.1", features = ["static"], optional = true }
 
+# Phase 3 Logging - Async structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+tracing-appender = "0.2"
+hostname = "0.4"
+
+# Metrics
+metrics = "0.21"
+metrics-exporter-prometheus = "0.12"
+
 [features]
 default = ["aeron"]
 aeron = ["rusteron-client", "rusteron-media-driver"]

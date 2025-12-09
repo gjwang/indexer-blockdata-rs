@@ -873,6 +873,7 @@ impl SettlementDb {
                     e.event_type.clone(),
                     e.ref_id as i64,
                     now as i64,
+                )
             })
             .collect();
 
