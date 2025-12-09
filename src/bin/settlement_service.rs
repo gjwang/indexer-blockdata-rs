@@ -18,6 +18,7 @@ use fetcher::db::{OrderHistoryDb, SettlementDb};
 use fetcher::engine_output::{EngineOutput, InputData, GENESIS_HASH};
 use fetcher::ledger::{OrderStatus, OrderUpdate};
 use fetcher::logger::setup_logger;
+use fetcher::logging::setup_async_file_logging;
 use fetcher::starrocks_client::{StarRocksClient, StarRocksTrade};
 use futures_util::future::join_all;
 use std::sync::Arc;
@@ -38,7 +39,11 @@ const DERIVED_WRITER_BUFFER: usize = 10_000;
 // ============================================================================
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Phase 3: Async logging with JSON + daily rotation
+    let _guard = setup_async_file_logging("settlement", "logs");
+
+    tracing::info!("🔧 Settlement Service starting with async JSON logging");
     // --- Configuration ---
     let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
@@ -160,6 +165,8 @@ async fn main() {
         starrocks_tx,
     )
     .await;
+
+    Ok(())
 }
 
 // ============================================================================
