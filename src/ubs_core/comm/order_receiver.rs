@@ -72,17 +72,11 @@ impl OrderMessage {
 
     /// Convert to InternalOrder
     pub fn to_internal_order(&self) -> Result<InternalOrder, RejectReason> {
-        let side = match self.side {
-            0 => Side::Buy,
-            1 => Side::Sell,
-            _ => return Err(RejectReason::InvalidSymbol),
-        };
+        let side = Side::try_from(self.side)
+            .map_err(|_| RejectReason::InvalidSymbol)?;
 
-        let order_type = match self.order_type {
-            0 => OrderType::Limit,
-            1 => OrderType::Market,
-            _ => return Err(RejectReason::InvalidSymbol),
-        };
+        let order_type = OrderType::try_from(self.order_type)
+            .map_err(|_| RejectReason::InvalidSymbol)?;
 
         Ok(InternalOrder {
             order_id: self.order_id,

@@ -6,16 +6,42 @@ use serde::{Deserialize, Serialize};
 
 /// Order side
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum Side {
-    Buy,
-    Sell,
+    Buy = 0,
+    Sell = 1,
+}
+
+impl TryFrom<u8> for Side {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Side::Buy),
+            1 => Ok(Side::Sell),
+            _ => Err(()),
+        }
+    }
 }
 
 /// Order type
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
 pub enum OrderType {
-    Limit,
-    Market,
+    Limit = 0,
+    Market = 1,
+}
+
+impl TryFrom<u8> for OrderType {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(OrderType::Limit),
+            1 => Ok(OrderType::Market),
+            _ => Err(()),
+        }
+    }
 }
 
 /// Internal order used by UBSCore
