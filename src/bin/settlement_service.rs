@@ -38,10 +38,11 @@ const DERIVED_WRITER_BUFFER: usize = 10_000;
 
 #[tokio::main]
 async fn main() {
-    // Phase 3: Async logging with JSON + daily rotation
-    let _guard = setup_async_file_logging("settlement", "logs");
+    // TEMP: Async logging hangs - use simple logger for debugging
+    // let _guard = setup_async_file_logging("settlement", "logs");
+    env_logger::init();
 
-    tracing::info!("🔧 Settlement Service starting with async JSON logging");
+    log::info!(target: LOG_TARGET, "🔧 Settlement Service starting (env_logger)");
     // --- Configuration ---
     let config = configure::load_service_config("settlement_config")
         .expect("Failed to load settlement configuration");
