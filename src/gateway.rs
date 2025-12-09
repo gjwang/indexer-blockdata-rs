@@ -351,12 +351,12 @@ async fn create_order(
             );
 
             // Publish validated order to Kafka for Matching Engine
-            let json_payload = serde_json::to_vec(&internal_order).map_err(|e| {
+            let bincode_payload = bincode::serialize(&internal_order).map_err(|e| {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize order: {}", e))
             })?;
 
             state.producer
-                .publish(state.kafka_topic.clone(), user_id.to_string(), json_payload)
+                .publish(state.kafka_topic.clone(), user_id.to_string(), bincode_payload)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to publish to Kafka: {}", e)))?;
 
