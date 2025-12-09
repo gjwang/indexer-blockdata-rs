@@ -47,7 +47,7 @@ async fn main() {
         .expect("Failed to load settlement configuration");
 
     let scylla_config = config.scylladb.expect("ScyllaDB config missing");
-    let kafka_broker = config.kafka.map(|k| k.broker).expect("Kafka config missing");
+    let kafka_broker = config.kafka.broker;
 
     // --- Database Connections ---
     let settlement_db = connect_settlement_db(&scylla_config).await;
