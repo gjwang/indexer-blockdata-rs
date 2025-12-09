@@ -86,12 +86,17 @@ fn run_aeron_service() {
     // --- Initialize UBSCore ---
     let mut ubs_core = UBSCore::new(SpotRiskModel);
 
-    // Seed test accounts
-    for user_id in 1001..=1010 {
-        ubs_core.on_deposit(user_id, 1, 100_00000000);      // 100 BTC
-        ubs_core.on_deposit(user_id, 2, 10_000_000_00000000); // 10M USDT
+    // Seed test accounts (optional - can be done via Deposit messages from Gateway)
+    // Set SEED_TEST_ACCOUNTS=0 to disable
+    if std::env::var("SEED_TEST_ACCOUNTS").unwrap_or("1".into()) != "0" {
+        for user_id in 1001..=1010 {
+            ubs_core.on_deposit(user_id, 1, 100_00000000);      // 100 BTC
+            ubs_core.on_deposit(user_id, 2, 10_000_000_00000000); // 10M USDT
+        }
+        info!("✅ Seeded test accounts 1001-1010 (disable with SEED_TEST_ACCOUNTS=0)");
+    } else {
+        info!("ℹ️ Test account seeding disabled - use Deposit messages");
     }
-    info!("✅ Seeded test accounts 1001-1010");
 
     // --- Launch Embedded Media Driver (for development) ---
     let _driver = fetcher::ubs_core::comm::EmbeddedDriver::launch()

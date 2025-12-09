@@ -309,6 +309,22 @@ impl<R: RiskModel> UBSCore<R> {
         }
     }
 
+    /// Withdraw funds - returns false if insufficient balance
+    pub fn on_withdraw(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) -> bool {
+        let account = match self.accounts.get_mut(&user_id) {
+            Some(a) => a,
+            None => return false,
+        };
+
+        let balance = account.get_balance_mut(asset_id);
+        if balance.avail >= amount {
+            balance.avail -= amount;
+            true
+        } else {
+            false
+        }
+    }
+
     /// Calculate fee (simple: always quote asset)
     pub fn calculate_fee(&self, user_id: UserId, trade_value: u64, is_maker: bool) -> u64 {
         let vip_level = self.vip_configs.get(&user_id).copied().unwrap_or(0);

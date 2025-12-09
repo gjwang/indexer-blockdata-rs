@@ -16,7 +16,7 @@ use crate::ubs_core::{
     WalEntry, WalEntryType,
 };
 use crate::ubs_core::comm::{
-    OrderMessage, ResponseMessage, reason_codes, WireMessage,
+    OrderMessage, DepositMessage, WithdrawMessage, ResponseMessage, reason_codes, WireMessage,
 };
 use super::message::{MsgType, parse_message, build_message};
 
@@ -83,6 +83,8 @@ impl<'a> UbsCoreHandler<'a> {
             MsgType::Order => self.handle_order(body),
             MsgType::Cancel => self.handle_cancel(body),
             MsgType::Query => self.handle_query(body),
+            MsgType::Deposit => self.handle_deposit(body),
+            MsgType::Withdraw => self.handle_withdraw(body),
             MsgType::Response => {
                 log::warn!("[UBSC] Unexpected response message");
                 self.error_response(0, reason_codes::INTERNAL_ERROR)
@@ -191,6 +193,44 @@ impl<'a> UbsCoreHandler<'a> {
         // TODO: Implement query
         log::warn!("[UBSC] Query not implemented yet");
         self.error_response(0, reason_codes::INTERNAL_ERROR)
+    }
+
+    /// Handle DEPOSIT message
+    fn handle_deposit(&mut self, body: &[u8]) -> Vec<u8> {
+        let msg = match DepositMessage::from_bytes(body) {
+            Some(m) => m,
+            None => {
+                log::warn!("[UBSC] Invalid deposit message");
+                return self.error_response(0, reason_codes::INTERNAL_ERROR);
+            }
+        };
+
+        // Apply deposit to UBSCore
+        self.ubs_core.on_deposit(msg.user_id, msg.asset_id, msg.amount);
+        log::info!("[UBSC] Deposit: user={} asset={} amount={}", msg.user_id, msg.asset_id, msg.amount);
+
+        // Return success (use user_id as "order_id" for response)
+        self.accept_response(msg.user_id)
+    }
+
+    /// Handle WITHDRAW message
+    fn handle_withdraw(&mut self, body: &[u8]) -> Vec<u8> {
+        let msg = match WithdrawMessage::from_bytes(body) {
+            Some(m) => m,
+            None => {
+                log::warn!("[UBSC] Invalid withdraw message");
+                return self.error_response(0, reason_codes::INTERNAL_ERROR);
+            }
+        };
+
+        // Apply withdraw to UBSCore
+        if self.ubs_core.on_withdraw(msg.user_id, msg.asset_id, msg.amount) {
+            log::info!("[UBSC] Withdraw: user={} asset={} amount={}", msg.user_id, msg.asset_id, msg.amount);
+            self.accept_response(msg.user_id)
+        } else {
+            log::warn!("[UBSC] Withdraw failed: insufficient balance");
+            self.reject_response(msg.user_id, reason_codes::INSUFFICIENT_BALANCE)
+        }
     }
 
     // --- Response builders ---

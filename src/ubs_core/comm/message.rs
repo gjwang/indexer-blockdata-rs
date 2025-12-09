@@ -37,6 +37,8 @@ define_msg_type! {
         Order = 1,
         Cancel = 2,
         Query = 3,
+        Deposit = 4,
+        Withdraw = 5,
         Response = 128,
     }
 }

@@ -66,6 +66,28 @@ impl OrderMessage {
 // Use trait for to_bytes/from_bytes
 impl super::WireMessage for OrderMessage {}
 
+/// Message format for deposit requests (wire format)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct DepositMessage {
+    pub user_id: u64,
+    pub asset_id: u32,
+    pub amount: u64,
+}
+
+impl super::WireMessage for DepositMessage {}
+
+/// Message format for withdraw requests (wire format)
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct WithdrawMessage {
+    pub user_id: u64,
+    pub asset_id: u32,
+    pub amount: u64,
+}
+
+impl super::WireMessage for WithdrawMessage {}
+
 /// Order receiver using Aeron subscription
 pub struct OrderReceiver {
     config: AeronConfig,

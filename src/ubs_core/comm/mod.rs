@@ -65,7 +65,7 @@ pub use driver::{EmbeddedDriver, AERON_DIR};
 pub use fill_receiver::{FillMessage, FillReceiver};
 pub use gateway_client::UbsGatewayClient;
 pub use message::{MsgType, parse_message, build_message};
-pub use order_receiver::{OrderMessage, OrderReceiver};
+pub use order_receiver::{OrderMessage, OrderReceiver, DepositMessage, WithdrawMessage};
 pub use order_sender::{OrderSender, SendError};
 pub use response::{ResponseMessage, reason_codes};
 pub use ubscore_handler::{UbsCoreHandler, HandlerStats};
