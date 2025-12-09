@@ -59,7 +59,8 @@ async fn main() {
                 // ---- SELL order ------------------------------------------------
                 // 1. Send three small SELL orders
                 for _ in 0..3 {
-                    let quantity = rng().random_range(1..100) as f64 * 0.02;
+                    let quantity_raw = rng().random_range(1..100) as f64 * 0.02;
+                    let quantity = format!("{:.2}", quantity_raw); // Round to 2 decimal places
 
                     let sell_cid = {
                         let mut gen = cid_gen.lock().unwrap();
@@ -103,7 +104,8 @@ async fn main() {
 
                 // ---- BUY order -------------------------------------------------
                 // Generate a quantity that can match multiple opposite orders (1.0 .. 5.0)
-                let quantity = rng().random_range(1..100) as f64 * 0.1;
+                let quantity_raw = rng().random_range(1..100) as f64 * 0.1;
+                let quantity = format!("{:.2}", quantity_raw); // Round to 2 decimal places
 
                 let buy_cid = {
                     let mut gen = cid_gen.lock().unwrap();
