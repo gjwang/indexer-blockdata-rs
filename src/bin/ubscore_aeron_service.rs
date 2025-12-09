@@ -258,15 +258,79 @@ fn run_aeron_service() {
                                 match req {
                                     BalanceRequest::TransferIn { user_id, asset_id, amount, .. } => {
                                         state.ubs_core.on_deposit(user_id, asset_id, amount);
-                                        info!("✅ Deposit processed: user={}, asset={}, amount={}",
+
+                                        // Get updated balance (returns Option<(avail, frozen)>)
+                                        let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
+                                            .unwrap_or((amount, 0));
+
+                                        // Publish balance event to Kafka for Settlement
+                                        if let Some(ref producer) = state.kafka_producer {
+                                            use fetcher::engine_output::BalanceEvent;
+                                            // Use timestamp as seq since UBSCore doesn't track per-asset versions
+                                            let seq = std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap()
+                                                .as_millis() as u64;
+
+                                            let event = BalanceEvent {
+                                                user_id,
+                                                asset_id,
+                                                seq,
+                                                delta_avail: amount as i64,
+                                                delta_frozen: 0,
+                                                avail: avail as i64,
+                                                frozen: frozen as i64,
+                                                event_type: "deposit".to_string(),
+                                                ref_id: 0,
+                                            };
+
+                                            let event_json = serde_json::to_string(&event).unwrap();
+                                            let key = user_id.to_string();
+                                            let record = FutureRecord::to("balance.events")
+                                                .key(&key)
+                                                .payload(&event_json);
+                                            let _ = producer.send(record, Duration::from_secs(0));
+                                        }
+
+                                        info!("✅ Deposit processed & event published: user={}, asset={}, amount={}",
                                             user_id, asset_id, amount);
-                                        // TODO: Emit balance event to Settlement via Kafka
                                     }
                                     BalanceRequest::TransferOut { user_id, asset_id, amount, .. } => {
                                         if state.ubs_core.on_withdraw(user_id, asset_id, amount) {
-                                            info!("✅ Withdrawal processed: user={}, asset={}, amount={}",
+                                            // Get updated balance
+                                            let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
+                                                .unwrap_or((0, 0));
+
+                                            // Publish balance event to Kafka for Settlement
+                                            if let Some(ref producer) = state.kafka_producer {
+                                                use fetcher::engine_output::BalanceEvent;
+                                                let seq = std::time::SystemTime::now()
+                                                    .duration_since(std::time::UNIX_EPOCH)
+                                                    .unwrap()
+                                                    .as_millis() as u64;
+
+                                                let event = BalanceEvent {
+                                                    user_id,
+                                                    asset_id,
+                                                    seq,
+                                                    delta_avail: -(amount as i64),
+                                                    delta_frozen: 0,
+                                                    avail: avail as i64,
+                                                    frozen: frozen as i64,
+                                                    event_type: "withdraw".to_string(),
+                                                    ref_id: 0,
+                                                };
+
+                                                let event_json = serde_json::to_string(&event).unwrap();
+                                                let key = user_id.to_string();
+                                                let record = FutureRecord::to("balance.events")
+                                                    .key(&key)
+                                                    .payload(&event_json);
+                                                let _ = producer.send(record, Duration::from_secs(0));
+                                            }
+
+                                            info!("✅ Withdrawal processed & event published: user={}, asset={}, amount={}",
                                                 user_id, asset_id, amount);
-                                            // TODO: Emit balance event to Settlement via Kafka
                                         } else {
                                             error!("❌ Withdrawal failed: insufficient funds");
                                         }
