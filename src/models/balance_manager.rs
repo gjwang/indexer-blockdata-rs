@@ -13,6 +13,20 @@ pub struct ClientBalance {
     pub frozen: Decimal,
 }
 
+impl ClientBalance {
+    /// Get available balance (enforced API)
+    #[inline(always)]
+    pub fn avail(&self) -> Decimal {
+        self.avail
+    }
+
+    /// Get frozen balance (enforced API)
+    #[inline(always)]
+    pub fn frozen(&self) -> Decimal {
+        self.frozen
+    }
+}
+
 #[derive(Debug)]
 pub struct InternalBalance {
     pub asset_id: u32,

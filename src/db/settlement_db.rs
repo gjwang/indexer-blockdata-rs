@@ -198,6 +198,20 @@ pub struct CurrentBalance {
     pub updated_at: i64,
 }
 
+impl CurrentBalance {
+    /// Get available balance (enforced API)
+    #[inline(always)]
+    pub fn avail(&self) -> i64 {
+        self.avail
+    }
+
+    /// Get frozen balance (enforced API)
+    #[inline(always)]
+    pub fn frozen(&self) -> i64 {
+        self.frozen
+    }
+}
+
 /// Settlement database client for ScyllaDB
 ///
 /// Provides a clean abstraction for storing and querying settled trades.
@@ -1132,6 +1146,20 @@ pub struct UserBalance {
     pub frozen: u64,
     pub version: u64,
     pub updated_at: u64,
+}
+
+impl UserBalance {
+    /// Get available balance (enforced API)
+    #[inline(always)]
+    pub fn avail(&self) -> u64 {
+        self.avail
+    }
+
+    /// Get frozen balance (enforced API)
+    #[inline(always)]
+    pub fn frozen(&self) -> u64 {
+        self.frozen
+    }
 }
 
 #[cfg(test)]

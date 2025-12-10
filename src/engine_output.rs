@@ -146,6 +146,20 @@ pub struct BalanceEvent {
     pub ref_id: u64,           // Order ID or Trade ID
 }
 
+impl BalanceEvent {
+    /// Get available balance (enforced API)
+    #[inline(always)]
+    pub fn avail(&self) -> Option<u64> {
+        self.avail
+    }
+
+    /// Get frozen balance (enforced API)
+    #[inline(always)]
+    pub fn frozen(&self) -> Option<u64> {
+        self.frozen
+    }
+}
+
 /// Order status update
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderUpdate {
