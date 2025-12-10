@@ -206,6 +206,10 @@ impl OrderBook {
         }
     }
 
+    pub fn has_order(&self, order_id: u64) -> bool {
+        self.active_order_ids.contains(&order_id)
+    }
+
     pub fn remove_order(&mut self, order_id: u64) -> Result<Order, OrderError> {
         if let Some((side, price)) = self.order_index.remove(&order_id) {
             self.active_order_ids.remove(&order_id);
@@ -1298,17 +1302,34 @@ impl MatchingEngine {
         symbol_id: u32,
         order_id: u64,
     ) -> Result<Vec<LedgerCommand>, OrderError> {
+        // If symbol_id is 0 (placeholder), try to find the order across all books
+        let actual_symbol_id = if symbol_id == 0 {
+            // Search for order in all books
+            let mut found_symbol = None;
+            for (sid, opt_book) in self.order_books.iter().enumerate() {
+                if let Some(book) = opt_book {
+                    if book.has_order(order_id) {
+                        found_symbol = Some(sid as u32);
+                        break;
+                    }
+                }
+            }
+            found_symbol.ok_or(OrderError::OrderNotFound { order_id })?
+        } else {
+            symbol_id
+        };
+
         // 1. Write to WAL
         if let Some(wal) = &mut self.order_wal {
             wal.log_cancel_order(order_id).map_err(|e| OrderError::Other(e.to_string()))?;
         }
 
         // 2. Process Logic
-        let commands = self.process_cancel(symbol_id, order_id)?;
+        let commands = self.process_cancel(actual_symbol_id, order_id)?;
 
         // Update State Hash
         let mut hash_data = Vec::with_capacity(16);
-        hash_data.extend_from_slice(&symbol_id.to_le_bytes());
+        hash_data.extend_from_slice(&actual_symbol_id.to_le_bytes());
         hash_data.extend_from_slice(&order_id.to_le_bytes());
         hash_data.push(0xFF); // Marker for Cancel
         self.update_hash(&hash_data);
@@ -1317,6 +1338,17 @@ impl MatchingEngine {
     }
 
     /// Internal Logic: Process Cancel (No Input WAL write)
+    /// Find symbol_id for an order across all books (for cancel without symbol_id)
+    fn find_order_symbol(&self, order_id: u64) -> Option<u32> {
+        for (symbol_id, opt_book) in self.order_books.iter().enumerate() {
+            if let Some(book) = opt_book {
+                if book.has_order(order_id) {
+                    return Some(symbol_id as u32);
+                }
+            }
+        }
+        None
+    }
     /// Returns Vec<LedgerCommand> with unlock and OrderUpdate(Cancelled)
     fn process_cancel(
         &mut self,
