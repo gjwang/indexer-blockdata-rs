@@ -1034,7 +1034,7 @@ impl MatchingEngine {
             }
         };
 
-        log::info!("★★★ BEFORE add_order_placement: order_id={} user_id={} symbol_id={}", order_id, user_id, symbol_id);
+        eprintln!("🔥🔥🔥 TRACE-001: BEFORE add_order_placement order_id={} user_id={} symbol_id={}", order_id, user_id, symbol_id);
 
         // ★ Emit OrderPlacement event (order successfully added to book)
         builder.add_order_placement(crate::engine_output::OrderPlacement {
@@ -1048,7 +1048,7 @@ impl MatchingEngine {
             created_at: timestamp,
         });
 
-        log::info!("★★★ AFTER add_order_placement - placements count should be 1+");
+        eprintln!("🔥🔥🔥 TRACE-002: AFTER add_order_placement - order_id={}", order_id);
 
         let mut total_filled = 0u64;
         let mut total_cost = 0u64;

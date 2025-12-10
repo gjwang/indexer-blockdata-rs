@@ -316,16 +316,24 @@ fn spawn_derived_writers(
     let db_active = settlement_db.clone(); // For active_orders
     tokio::spawn(async move {
         while let Some(outputs) = order_rx.recv().await {
+            eprintln!("🔥🔥🔥 TRACE-100: Settlement received {} outputs", outputs.len());
+
             // ★ Process ACTIVE ORDERS (insertions and completions)
             for output in &outputs {
+                eprintln!("🔥🔥🔥 TRACE-101: Processing output with {} placements, {} completions",
+                    output.order_placements.len(), output.order_completions.len());
+
                 // Insert new orders
                 for placement in &output.order_placements {
+                    eprintln!("🔥🔥🔥 TRACE-102: Inserting active order_id={}", placement.order_id);
                     if let Err(e) = db_active.insert_active_order(placement).await {
                         tracing::error!(target: LOG_TARGET, "Failed to insert active_order: {}", e);
+                        eprintln!("🔥🔥🔥 TRACE-103: INSERT FAILED: {}", e);
                     } else {
                         tracing::info!(target: LOG_TARGET,
                             "✅ Active order inserted: order_id={} user_id={} symbol_id={}",
                             placement.order_id, placement.user_id, placement.symbol_id);
+                        eprintln!("🔥🔥🔥 TRACE-104: INSERT SUCCESS order_id={}", placement.order_id);
                     }
                 }
 
