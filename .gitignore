@@ -38,3 +38,6 @@ test_snap_*
 trades*.txt
 me_wal_*/
 data/
+logs/
+*.log
+*.log.*
