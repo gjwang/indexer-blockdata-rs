@@ -126,16 +126,22 @@ pub struct TradeOutput {
     pub settled_at: u64,
 }
 
-/// Balance event (unified format for all balance changes)
+/// Balance event (ledger entry)
+///
+/// Design Notes:
+/// - delta_avail/delta_frozen are i64 because they're SIGNED changes (can be negative)
+/// - avail/frozen are i64 for consistency, but represent unsigned balances
+/// - Special value: -1 means "not tracked" (ME doesn't track balances, only deltas)
+/// - Settlement/UBSCore reconstruct actual balances from deltas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceEvent {
     pub user_id: u64,
     pub asset_id: u32,
     pub seq: u64,           // Balance sequence (version)
-    pub delta_avail: i64,   // Change to available
-    pub delta_frozen: i64,  // Change to frozen
-    pub avail: i64,         // Balance after
-    pub frozen: i64,        // Frozen after
+    pub delta_avail: i64,   // Change to available (SIGNED: can be negative)
+    pub delta_frozen: i64,  // Change to frozen (SIGNED: can be negative)
+    pub avail: i64,         // Balance after (-1 = not tracked by ME)
+    pub frozen: i64,        // Frozen after (-1 = not tracked by ME)
     pub event_type: String, // "deposit", "lock", "unlock", "withdraw", "trade_credit", "trade_debit"
     pub ref_id: u64,        // Order ID or Trade ID
 }
