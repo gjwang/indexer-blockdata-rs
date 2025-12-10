@@ -12,13 +12,13 @@
 ```
 POST /api/v1/order/create      - Create new order
 POST /api/v1/order/cancel      - Cancel existing order
+GET  /api/v1/order/trades      - Get trade history
+GET  /api/v1/order/history     - Get order history
 ```
 
 ### **User Operations**
 ```
 GET  /api/v1/user/balance      - Get user balances (all assets)
-GET  /api/v1/user/trades       - Get user trade history
-GET  /api/v1/user/orders       - Get user order history
 POST /api/v1/user/transfer_in  - Deposit funds
 POST /api/v1/user/transfer_out - Withdraw funds
 ```
@@ -126,8 +126,8 @@ All E2E tests updated and passing with new routes:
 | `/api/orders` | `/api/v1/order/create` |
 | `/api/orders/cancel` | `/api/v1/order/cancel` |
 | `/api/user/balance` | `/api/v1/user/balance` |
-| `/api/user/trade_history` | `/api/v1/user/trades` |
-| `/api/user/order_history` | `/api/v1/user/orders` |
+| `/api/user/trade_history` | `/api/v1/order/trades` |
+| `/api/user/order_history` | `/api/v1/order/history` |
 | `/api/v1/transfer_in` | `/api/v1/user/transfer_in` |
 | `/api/v1/transfer_out` | `/api/v1/user/transfer_out` |
 
@@ -144,11 +144,11 @@ All E2E tests updated and passing with new routes:
 Gateway API (/api/v1/)
 ├── order/
 │   ├── create  → UBSCore → Kafka → ME
-│   └── cancel  → UBSCore → Kafka → ME
+│   ├── cancel  → UBSCore → Kafka → ME
+│   ├── trades  → ScyllaDB
+│   └── history → ScyllaDB
 └── user/
     ├── balance       → ScyllaDB (MV)
-    ├── trades        → ScyllaDB
-    ├── orders        → ScyllaDB
     ├── transfer_in   → UBSCore → Settlement
     └── transfer_out  → UBSCore → Settlement
 ```
