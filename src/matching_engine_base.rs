@@ -957,8 +957,8 @@ impl MatchingEngine {
             seq: new_ver,
             delta_avail: -(lock_amount as i64),
             delta_frozen: lock_amount as i64,
-            avail: balance_after as i64,
-            frozen: (current_frozen + lock_amount) as i64,
+            avail: Some(balance_after),
+            frozen: Some(current_frozen + lock_amount),
             event_type: "lock".into(),
             ref_id: order_id,
         });
@@ -1105,8 +1105,8 @@ impl MatchingEngine {
                     seq: buyer_quote_version + 1,
                     delta_avail: buyer_refund as i64,
                     delta_frozen: -(trade_cost as i64 + buyer_refund as i64),
-                    avail: -1, // ME doesn't track balances
-                    frozen: -1, // ME doesn't track balances
+                    avail: None, // ME doesn't track balances
+                    frozen: None, // ME doesn't track balances
                     event_type: "trade_refund".into(),
                     ref_id: trade.trade_id,
                 });
@@ -1117,8 +1117,8 @@ impl MatchingEngine {
                     seq: buyer_quote_version + 1,
                     delta_avail: 0,
                     delta_frozen: -(trade_cost as i64),
-                    avail: -1, // ME doesn't track balances
-                    frozen: -1, // ME doesn't track balances
+                    avail: None, // ME doesn't track balances
+                    frozen: None, // ME doesn't track balances
                     event_type: "trade_debit".into(),
                     ref_id: trade.trade_id,
                 });
@@ -1130,8 +1130,8 @@ impl MatchingEngine {
                 seq: buyer_base_version + 1,
                 delta_avail: trade.quantity as i64,
                 delta_frozen: 0,
-                avail: -1, // ME doesn't track balances
-                frozen: -1, // ME doesn't track balances
+                avail: None, // ME doesn't track balances
+                frozen: None, // ME doesn't track balances
                 event_type: "trade_credit".into(),
                 ref_id: trade.trade_id,
             });
@@ -1143,8 +1143,8 @@ impl MatchingEngine {
                 seq: seller_base_version + 1,
                 delta_avail: 0,
                 delta_frozen: -(trade.quantity as i64),
-                avail: -1, // ME doesn't track balances
-                frozen: -1, // ME doesn't track balances
+                avail: None, // ME doesn't track balances
+                frozen: None, // ME doesn't track balances
                 event_type: "trade_debit".into(),
                 ref_id: trade.trade_id,
             });
@@ -1155,8 +1155,8 @@ impl MatchingEngine {
                 seq: seller_quote_version + 1,
                 delta_avail: trade_cost as i64,
                 delta_frozen: 0,
-                avail: -1, // ME doesn't track balances
-                frozen: -1, // ME doesn't track balances
+                avail: None, // ME doesn't track balances
+                frozen: None, // ME doesn't track balances
                 event_type: "trade_credit".into(),
                 ref_id: trade.trade_id,
             });

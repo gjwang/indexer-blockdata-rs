@@ -284,8 +284,8 @@ fn run_aeron_service() {
                                                 seq,
                                                 delta_avail: amount as i64,
                                                 delta_frozen: 0,
-                                                avail: avail as i64,
-                                                frozen: frozen as i64,
+                                                avail: Some(avail),
+                                                frozen: Some(frozen),
                                                 event_type: "deposit".to_string(),
                                                 ref_id: 0,
                                             };
@@ -339,8 +339,8 @@ fn run_aeron_service() {
                                                     seq,
                                                     delta_avail: -(amount as i64),
                                                     delta_frozen: 0,
-                                                    avail: avail as i64,
-                                                    frozen: frozen as i64,
+                                                    avail: Some(avail),
+                                                    frozen: Some(frozen),
                                                     event_type: "withdraw".to_string(),
                                                     ref_id: 0,
                                                 };

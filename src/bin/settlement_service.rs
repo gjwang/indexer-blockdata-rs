@@ -124,7 +124,7 @@ async fn main() {
                                         event.event_type, event.user_id, event.asset_id, event.seq);
 
                                     log::info!(target: LOG_TARGET,
-                                        "[{}_CONSUMED] event_id={} user={} asset={} delta={} avail={} | Settlement consumed from Kafka",
+                                        "[{}_CONSUMED] event_id={} user={} asset={} delta={} avail={:?} | Settlement consumed from Kafka",
                                         event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
                                         event.delta_avail, event.avail);
 

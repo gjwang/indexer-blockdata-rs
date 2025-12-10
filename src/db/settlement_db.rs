@@ -868,8 +868,8 @@ impl SettlementDb {
                     e.seq as i64,
                     e.delta_avail,
                     e.delta_frozen,
-                    e.avail,
-                    e.frozen,
+                    e.avail.map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
+                    e.frozen.map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
                     e.event_type.clone(),
                     e.ref_id as i64,
                     now as i64,
@@ -888,7 +888,7 @@ impl SettlementDb {
         for event in events {
             let event_id = format!("{}_{}_{}_{}", event.event_type, event.user_id, event.asset_id, event.seq);
             log::info!(
-                "[{}_PERSISTED] event_id={} user={} asset={} delta={} avail={} table=balance_ledger | Written to ScyllaDB",
+                "[{}_PERSISTED] event_id={} user={} asset={} delta={} avail={:?} table=balance_ledger | Written to ScyllaDB",
                 event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
                 event.delta_avail, event.avail
             );

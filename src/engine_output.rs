@@ -130,20 +130,20 @@ pub struct TradeOutput {
 ///
 /// Design Notes:
 /// - delta_avail/delta_frozen are i64 because they're SIGNED changes (can be negative)
-/// - avail/frozen are i64 for consistency, but represent unsigned balances
-/// - Special value: -1 means "not tracked" (ME doesn't track balances, only deltas)
+/// - avail/frozen are Option<u64> because balances are UNSIGNED (never negative)
+/// - None means "not tracked" (ME doesn't track balances, only generates deltas)
 /// - Settlement/UBSCore reconstruct actual balances from deltas
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BalanceEvent {
     pub user_id: u64,
     pub asset_id: u32,
-    pub seq: u64,           // Balance sequence (version)
-    pub delta_avail: i64,   // Change to available (SIGNED: can be negative)
-    pub delta_frozen: i64,  // Change to frozen (SIGNED: can be negative)
-    pub avail: i64,         // Balance after (-1 = not tracked by ME)
-    pub frozen: i64,        // Frozen after (-1 = not tracked by ME)
-    pub event_type: String, // "deposit", "lock", "unlock", "withdraw", "trade_credit", "trade_debit"
-    pub ref_id: u64,        // Order ID or Trade ID
+    pub seq: u64,              // Balance sequence (version)
+    pub delta_avail: i64,      // Change to available (SIGNED: can be negative for debits)
+    pub delta_frozen: i64,     // Change to frozen (SIGNED: can be negative for unlocks)
+    pub avail: Option<u64>,    // Balance after (None = not tracked by ME)
+    pub frozen: Option<u64>,   // Frozen after (None = not tracked by ME)
+    pub event_type: String,    // "deposit", "lock", "unlock", "withdraw", "trade_credit", "trade_debit"
+    pub ref_id: u64,           // Order ID or Trade ID
 }
 
 /// Order status update
@@ -240,8 +240,8 @@ impl EngineOutput {
             data.extend_from_slice(&event.seq.to_le_bytes());
             data.extend_from_slice(&event.delta_avail.to_le_bytes());
             data.extend_from_slice(&event.delta_frozen.to_le_bytes());
-            data.extend_from_slice(&event.avail.to_le_bytes());
-            data.extend_from_slice(&event.frozen.to_le_bytes());
+            data.extend_from_slice(&event.avail.unwrap_or(0).to_le_bytes());
+            data.extend_from_slice(&event.frozen.unwrap_or(0).to_le_bytes());
             data.extend_from_slice(event.event_type.as_bytes());
             data.extend_from_slice(&event.ref_id.to_le_bytes());
         }
