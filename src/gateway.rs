@@ -135,6 +135,8 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/order/cancel", post(cancel_order))
         .route("/api/v1/order/trades", axum::routing::get(get_trade_history))
         .route("/api/v1/order/history", axum::routing::get(get_order_history))
+        .route("/api/v1/order/active", axum::routing::get(get_active_orders))
+
 
         .route("/api/v1/user/transfer_in", post(transfer_in))
         .route("/api/v1/user/transfer_out", post(transfer_out))
@@ -654,4 +656,19 @@ async fn get_order_history(
     } else {
         Ok(Json(ApiResponse::success(vec![])))
     }
+}
+
+/// Get active (open) orders for a user
+/// TODO: This requires querying the Matching Engine for open orders
+async fn get_active_orders(
+    Extension(_state): Extension<Arc<AppState>>,
+    Query(params): Query<HistoryParams>,
+) -> Result<Json<ApiResponse<Vec<OrderHistoryResponse>>>, (StatusCode, String)> {
+    let _user_id = params.user_id;
+    let _symbol = params.symbol;
+    
+    // TODO: Query Matching Engine for active orders
+    // Requires ME to expose query API
+    log::warn!("Active orders endpoint - not yet implemented");
+    Ok(Json(ApiResponse::success(vec![])))
 }

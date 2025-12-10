@@ -13,7 +13,8 @@
 POST /api/v1/order/create      - Create new order
 POST /api/v1/order/cancel      - Cancel existing order
 GET  /api/v1/order/trades      - Get trade history
-GET  /api/v1/order/history     - Get order history
+GET  /api/v1/order/history     - Get order history (filled)
+GET  /api/v1/order/active      - Get active/open orders (TODO: ME integration)
 ```
 
 ### **User Operations**
