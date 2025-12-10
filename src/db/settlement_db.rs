@@ -155,6 +155,38 @@ const SELECT_USER_TRADES_CQL: &str = "
     LIMIT ?
 ";
 
+// === ACTIVE ORDERS TRACKING ===
+const INSERT_ACTIVE_ORDER_CQL: &str = "
+    INSERT INTO active_orders (
+        user_id, symbol_id, created_at, order_id,
+        side, order_type, price, quantity, filled_qty,
+        status, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+";
+
+const INSERT_ORDER_LOOKUP_CQL: &str = "
+    INSERT INTO order_lookup (order_id, user_id, symbol_id, created_at)
+    VALUES (?, ?, ?, ?)
+";
+
+const UPDATE_ORDER_STATUS_CQL: &str = "
+    UPDATE active_orders
+    SET status = ?, updated_at = ?
+    WHERE user_id = ? AND symbol_id = ?
+      AND created_at = ? AND order_id = ?
+";
+
+const SELECT_ACTIVE_ORDERS_CQL: &str = "
+    SELECT
+        user_id, symbol_id, created_at, order_id,
+        side, order_type, price, quantity, filled_qty,
+        status, updated_at
+    FROM active_orders
+    WHERE user_id = ? AND symbol_id = ?
+      AND status IN (0, 1)
+    LIMIT ?
+";
+
 // === APPEND-ONLY BALANCE LEDGER ===
 // Each row is immutable - insert only, never update
 // Current balance = latest row with highest seq
@@ -805,6 +837,170 @@ impl SettlementDb {
         }
     }
 
+    // === ACTIVE ORDERS FUNCTIONS ===
+
+    /// Insert new active order
+    pub async fn insert_active_order(
+        &self,
+        placement: &crate::engine_output::OrderPlacement,
+    ) -> Result<()> {
+        // Insert into active_orders
+        self.session
+            .query(
+                INSERT_ACTIVE_ORDER_CQL,
+                (
+                    placement.user_id as i64,
+                    placement.symbol_id as i32,
+                    placement.created_at as i64,
+                    placement.order_id as i64,
+                    placement.side as i8,
+                    placement.order_type as i8,
+                    placement.price as i64,
+                    placement.quantity as i64,
+                    0_i64, // filled_qty starts at 0
+                    0_i8, // status = New
+                    placement.created_at as i64, // updated_at = created_at initially
+                ),
+            )
+            .await
+            .context("Failed to insert active_order")?;
+
+        // Insert into lookup table
+        self.session
+            .query(
+                INSERT_ORDER_LOOKUP_CQL,
+                (
+                    placement.order_id as i64,
+                    placement.user_id as i64,
+                    placement.symbol_id as i32,
+                    placement.created_at as i64,
+                ),
+            )
+            .await
+            .context("Failed to insert order_lookup")?;
+
+        log::info!(
+            "Inserted active_order: order_id={} user_id={} symbol_id={} side={} price={} qty={}",
+            placement.order_id,
+            placement.user_id,
+            placement.symbol_id,
+            placement.side,
+            placement.price,
+            placement.quantity
+        );
+
+        Ok(())
+    }
+
+    /// Mark order as completed (filled or cancelled)
+    pub async fn mark_order_complete(
+        &self,
+        order_id: u64,
+        reason: &crate::engine_output::CompletionReason,
+        completed_at: u64,
+    ) -> Result<()> {
+        // Get partition key from lookup
+        let lookup_result = self
+            .session
+            .query(
+                "SELECT user_id, symbol_id, created_at FROM order_lookup WHERE order_id = ?",
+                (order_id as i64,),
+            )
+            .await
+            .context("Failed to lookup order partition key")?;
+
+        if let Some(rows) = lookup_result.rows {
+            if let Some(row) = rows.into_iter().next() {
+                let (user_id, symbol_id, created_at): (i64, i32, i64) =
+                    row.into_typed().context("Failed to parse lookup row")?;
+
+                let status: i8 = match reason {
+                    crate::engine_output::CompletionReason::Filled => 2, // Filled
+                    crate::engine_output::CompletionReason::Cancelled => 3, // Cancelled
+                };
+
+                self.session
+                    .query(
+                        UPDATE_ORDER_STATUS_CQL,
+                        (status, completed_at as i64, user_id, symbol_id, created_at, order_id as i64),
+                    )
+                    .await
+                    .context("Failed to update order status")?;
+
+                log::info!(
+                    "Marked order complete: order_id={} reason={:?} status={}",
+                    order_id,
+                    reason,
+                    status
+                );
+            } else {
+                log::warn!("Order not found in lookup: order_id={}", order_id);
+            }
+        } else {
+            log::warn!("No rows returned for order_id={}", order_id);
+        }
+
+        Ok(())
+    }
+
+    /// Get active orders for a user+symbol
+    pub async fn get_active_orders(
+        &self,
+        user_id: u64,
+        symbol_id: u32,
+        limit: i32,
+    ) -> Result<Vec<ActiveOrder>> {
+        let result = self
+            .session
+            .query(
+                SELECT_ACTIVE_ORDERS_CQL,
+                (user_id as i64, symbol_id as i32, limit),
+            )
+            .await
+            .context("Failed to query active_orders")?;
+
+        let mut orders = Vec::new();
+        if let Some(rows) = result.rows {
+            for row in rows {
+                orders.push(Self::parse_active_order_row(row)?);
+            }
+        }
+
+        Ok(orders)
+    }
+
+    /// Helper: Parse active_order row
+    fn parse_active_order_row(row: scylla::frame::response::result::Row) -> Result<ActiveOrder> {
+        let (
+            user_id,
+            symbol_id,
+            created_at,
+            order_id,
+            side,
+            order_type,
+            price,
+            quantity,
+            filled_qty,
+            status,
+            updated_at,
+        ): (i64, i32, i64, i64, i8, i8, i64, i64, i64, i8, i64) =
+            row.into_typed().context("Failed to parse active_order row")?;
+
+        Ok(ActiveOrder {
+            user_id: user_id as u64,
+            symbol_id: symbol_id as u32,
+            created_at,
+            order_id: order_id as u64,
+            side: side as u8,
+            order_type: order_type as u8,
+            price: price as u64,
+            quantity: quantity as u64,
+            filled_qty: filled_qty as u64,
+            status: status as u8,
+            updated_at,
+        })
+    }
+
     /// Health check - verify database connectivity
     ///
     /// # Returns
@@ -1364,6 +1560,22 @@ pub struct UserTrade {
     pub quote_asset_id: u32,
     pub output_sequence: u64,
     pub match_seq: u64,
+}
+
+/// Active Order (for active_orders table)
+#[derive(Debug, Clone)]
+pub struct ActiveOrder {
+    pub user_id: u64,
+    pub symbol_id: u32,
+    pub created_at: i64,
+    pub order_id: u64,
+    pub side: u8,       // 0=Buy, 1=Sell
+    pub order_type: u8, // 0=Market, 1=Limit
+    pub price: u64,
+    pub quantity: u64,
+    pub filled_qty: u64,
+    pub status: u8,     // 0=New, 1=PartialFill, 2=Filled, 3=Cancelled
+    pub updated_at: i64,
 }
 
 #[cfg(test)]
