@@ -6,6 +6,50 @@
 
 ---
 
+## Design Principles
+
+### Performance-First Schema Design
+
+**Rule: Prefer integers over strings for all internal data**
+
+**Rationale:**
+- **Storage**: `tinyint` = 1 byte, `text` = N bytes + overhead
+- **Comparison**: Integer equality (`==`) is faster than string comparison
+- **Indexing**: Smaller indexes, faster lookups
+- **Network**: Less data transmitted
+- **Compression**: Better compression ratios
+
+**Examples:**
+```sql
+-- ❌ BAD: String types for enums/codes
+event_type text         -- "DEPOSIT", "WITHDRAW" (7+ bytes)
+status text             -- "PENDING", "COMPLETED" (9+ bytes)
+
+-- ✅ GOOD: Integer enums
+event_type tinyint      -- 1, 2, 3 (1 byte)
+status tinyint          -- 1, 2, 3 (1 byte)
+```
+
+**Exceptions (when strings ARE acceptable):**
+1. **User-facing error messages** - Must be readable
+   ```sql
+   error_message text  -- "Insufficient balance: need 100, have 50"
+   ```
+
+2. **External identifiers** - From third parties
+   ```sql
+   external_tx_id text  -- "0x7d3a2bc541..." (blockchain tx hash)
+   ```
+
+3. **Free-form user input** - No enum possible
+   ```sql
+   user_note text  -- "Payment for invoice #12345"
+   ```
+
+**Rule of thumb**: If it can be an enum, make it an int!
+
+---
+
 ## Problem Statement
 
 ### The Challenge
@@ -18,9 +62,19 @@ CREATE TABLE trading.balance_ledger (
     seq bigint,  -- Event sequence number
     avail bigint,
     frozen bigint,
-    event_type text,
+    event_type tinyint,  -- Event type enum (1=deposit, 2=withdraw, 3=trade, etc.)
     PRIMARY KEY ((user_id, asset_id), seq)
 ) WITH CLUSTERING ORDER BY (seq DESC);
+
+-- Event type enum mapping:
+-- 1 = DEPOSIT
+-- 2 = WITHDRAW
+-- 3 = TRADE_BUY
+-- 4 = TRADE_SELL
+-- 5 = FREEZE
+-- 6 = UNFREEZE
+-- 7 = TRANSFER_IN
+-- 8 = TRANSFER_OUT
 ```
 
 **Query requirement**: Get all current balances for a user (all assets)
