@@ -299,8 +299,13 @@ fn spawn_derived_writers(
                     Err(_) => break,
                 }
             }
-            if let Err(e) = db.insert_trades_batch(&all_trades, last_seq).await {
-                tracing::error!(target: LOG_TARGET, "Trades write failed: {}", e);
+
+            // Write to OPTIMIZED user_trades table
+            let settled_at = fetcher::common_utils::get_current_timestamp_ms();
+            for trade in &all_trades {
+                if let Err(e) = db.write_user_trades(trade, settled_at).await {
+                    tracing::error!(target: LOG_TARGET, "Failed to write user_trade: {}", e);
+                }
             }
         }
     });

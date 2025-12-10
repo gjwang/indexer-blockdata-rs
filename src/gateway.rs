@@ -495,39 +495,37 @@ async fn get_trade_history(
     let user_id = params.user_id;
     let limit = params.limit.unwrap_or(100);
 
-    // Validate symbol
-    if state.symbol_manager.get_symbol_id(&params.symbol).is_none() {
-        return Ok(Json(ApiResponse::success(vec![])));
-    }
+    // Validate symbol and get symbol_id
+    let symbol_id = match state.symbol_manager.get_symbol_id(&params.symbol) {
+        Some(id) => id,
+        None => return Ok(Json(ApiResponse::success(vec![]))),
+    };
 
     if let Some(db) = &state.db {
-        let trades = db
-            .get_trades_by_user(user_id, limit as i32)
+        // OPTIMIZED: Single O(1) query by (user_id, symbol_id)
+        let user_trades = db
+            .get_user_trades(user_id, symbol_id, limit as i32)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let response: Vec<DisplayTradeHistoryResponse> = trades
+        // Convert UserTrade -> DisplayTradeHistoryResponse
+        let response: Vec<DisplayTradeHistoryResponse> = user_trades
             .into_iter()
             .filter_map(|t| {
-                // Filter by symbol (client side filtering as DB query is by user)
-                let pair_id = state.symbol_manager.get_symbol_id(&params.symbol)?;
-                let info = state.symbol_manager.get_symbol_info_by_id(pair_id)?;
-                let base = info.base_asset_id;
-                let quote = info.quote_asset_id;
+                let role = if t.role == 0 { "BUYER" } else { "SELLER" };
 
-                if t.base_asset_id == base && t.quote_asset_id == quote {
-                    let role = if t.buyer_user_id == user_id { "BUYER" } else { "SELLER" };
+                // Use BalanceManager to convert to client format
+                let price_decimal = state.balance_manager.to_client_price(&params.symbol, t.price)?;
+                let qty_decimal = state.balance_manager.to_client_amount(t.base_asset_id, t.quantity)?;
 
-                    DisplayTradeHistoryResponse::new(
-                        &t,
-                        &params.symbol,
-                        role,
-                        &state.balance_manager,
-                        base,
-                    )
-                } else {
-                    None
-                }
+                Some(DisplayTradeHistoryResponse {
+                    trade_id: t.trade_id.to_string(),
+                    symbol: params.symbol.clone(),
+                    price: price_decimal,
+                    quantity: qty_decimal,
+                    role: role.to_string(),
+                    time: t.settled_at as u64,
+                })
             })
             .collect();
 
