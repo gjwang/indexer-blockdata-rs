@@ -198,6 +198,14 @@ pub struct CurrentBalance {
     pub updated_at: i64,
 }
 
+/// MV health status
+#[derive(Debug, Clone)]
+pub enum MvStatus {
+    Healthy,
+    Missing,
+}
+
+
 impl CurrentBalance {
     /// Get available balance (enforced API)
     #[inline(always)]
@@ -644,6 +652,24 @@ impl SettlementDb {
 
         Ok(true)
     }
+
+    /// Check if MV (user_balances_by_user) exists and is healthy
+    pub async fn check_mv_health(&self) -> Result<MvStatus> {
+        // Query system tables to check MV existence
+        let result = self.session.query(
+            "SELECT view_name FROM system_schema.views
+             WHERE keyspace_name = 'trading'
+               AND view_name = 'user_balances_by_user'",
+            ()
+        ).await?;
+
+        if result.rows.is_none() || result.rows.as_ref().unwrap().is_empty() {
+            return Ok(MvStatus::Missing);
+        }
+
+        Ok(MvStatus::Healthy)
+    }
+
 
     /// Helper to parse a ScyllaDB row into MatchExecData
     fn parse_trade_row(row: scylla::frame::response::result::Row) -> Result<MatchExecData> {

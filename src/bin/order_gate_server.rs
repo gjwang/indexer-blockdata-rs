@@ -68,6 +68,21 @@ async fn main() {
         match fetcher::db::SettlementDb::connect(scylla_config).await {
             Ok(db) => {
                 println!("✅ Connected to ScyllaDB");
+
+                // Check MV health
+                match db.check_mv_health().await {
+                    Ok(fetcher::db::MvStatus::Healthy) => {
+                        println!("✅ MV (user_balances_by_user) is healthy");
+                    }
+                    Ok(fetcher::db::MvStatus::Missing) => {
+                        eprintln!("⚠️ Warning: MV (user_balances_by_user) is missing!");
+                        eprintln!("   Run: cat schema/add_balance_mv.cql | docker exec -i scylla cqlsh");
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️ Warning: MV health check failed: {}", e);
+                    }
+                }
+
                 Some(Arc::new(db))
             }
             Err(e) => {
