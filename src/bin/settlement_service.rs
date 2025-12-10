@@ -312,13 +312,43 @@ fn spawn_derived_writers(
 
     // Order History Writer - BATCH + PARALLEL
     let (order_tx, mut order_rx) = mpsc::channel::<Vec<EngineOutput>>(DERIVED_WRITER_BUFFER);
-    let db = order_history_db;
+    let db_orders = order_history_db;
+    let db_active = settlement_db.clone(); // For active_orders
     tokio::spawn(async move {
         while let Some(outputs) = order_rx.recv().await {
+            // ★ Process ACTIVE ORDERS (insertions and completions)
+            for output in &outputs {
+                // Insert new orders
+                for placement in &output.order_placements {
+                    if let Err(e) = db_active.insert_active_order(placement).await {
+                        tracing::error!(target: LOG_TARGET, "Failed to insert active_order: {}", e);
+                    } else {
+                        tracing::info!(target: LOG_TARGET,
+                            "✅ Active order inserted: order_id={} user_id={} symbol_id={}",
+                            placement.order_id, placement.user_id, placement.symbol_id);
+                    }
+                }
+
+                // Mark completed orders
+                for completion in &output.order_completions {
+                    if let Err(e) = db_active.mark_order_complete(
+                        completion.order_id,
+                        &completion.reason,
+                        completion.completed_at,
+                    ).await {
+                        tracing::error!(target: LOG_TARGET, "Failed to mark order complete: {}", e);
+                    } else {
+                        tracing::info!(target: LOG_TARGET,
+                            "✅ Order completed: order_id={} reason={:?}",
+                            completion.order_id, completion.reason);
+                    }
+                }
+            }
+
             // Process all order updates in parallel
             let futures: Vec<_> = outputs
                 .iter()
-                .map(|output| process_engine_order_update_fast(&db, output))
+                .map(|output| process_engine_order_update_fast(&db_orders, output))
                 .collect();
             join_all(futures).await;
         }
