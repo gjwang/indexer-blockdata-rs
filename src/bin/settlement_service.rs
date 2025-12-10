@@ -365,7 +365,10 @@ async fn run_processing_loop(
 
     loop {
         // --- Step 1: Receive Batch from Kafka ---
+        log::debug!(target: LOG_TARGET, "[LOOP] Polling Kafka for batch (max_size={})...", MAX_BATCH_SIZE);
         let batch = receive_batch_kafka(&consumer, MAX_BATCH_SIZE).await;
+        log::debug!(target: LOG_TARGET, "[LOOP] Received {} messages from Kafka", batch.len());
+
         if batch.is_empty() {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
             continue;
@@ -448,13 +451,35 @@ async fn receive_batch_kafka(
 
     let mut batch = Vec::with_capacity(max_size);
 
-    // Poll messages with timeout
-    let timeout = tokio::time::Duration::from_millis(100);
-    let deadline = tokio::time::Instant::now() + timeout;
+    // Batch timeout: collect messages for up to 100ms
+    let batch_deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(100);
 
-    while batch.len() < max_size && tokio::time::Instant::now() < deadline {
+    // 1. Block for at least one message (like ME does)
+    match consumer.recv().await {
+        Ok(message) => {
+            log::debug!(target: LOG_TARGET, "[RECV] Got message from Kafka, partition={} offset={}",
+                message.partition(), message.offset());
+            if let Some(payload) = message.payload() {
+                match bincode::deserialize::<EngineOutput>(payload) {
+                    Ok(output) => {
+                        batch.push(output);
+                    }
+                    Err(e) => {
+                        log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            log::error!(target: LOG_TARGET, "[RECV] Kafka recv error: {}", e);
+            return batch;
+        }
+    }
+
+    // 2. Drain whatever else is available (non-blocking) until batch is full or timeout
+    while batch.len() < max_size && tokio::time::Instant::now() < batch_deadline {
         match tokio::time::timeout(
-            tokio::time::Duration::from_millis(10),
+            tokio::time::Duration::from_millis(1),
             consumer.recv()
         ).await {
             Ok(Ok(message)) => {
@@ -462,25 +487,25 @@ async fn receive_batch_kafka(
                     match bincode::deserialize::<EngineOutput>(payload) {
                         Ok(output) => {
                             batch.push(output);
-                            // Note: Offsets committed after batch processing in main loop
                         }
                         Err(e) => {
-                            log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput from Kafka: {}", e);
+                            log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
                         }
                     }
                 }
             }
             Ok(Err(e)) => {
-                log::error!(target: LOG_TARGET, "Kafka poll error: {}", e);
+                log::error!(target: LOG_TARGET, "[RECV] Kafka poll error: {}", e);
                 break;
             }
             Err(_) => {
-                // Timeout - no more messages
+                // Timeout - no more messages in buffer
                 break;
             }
         }
     }
 
+    log::debug!(target: LOG_TARGET, "[RECV] Batch complete: {} messages", batch.len());
     batch
 }
 
