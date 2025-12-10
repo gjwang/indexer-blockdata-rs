@@ -128,12 +128,14 @@ async fn main() {
     // Phase 3: Async logging with JSON + daily rotation
     let _guard = setup_async_file_logging("matching_engine", "logs");
 
-    tracing::info!("⚡ Matching Engine starting with async JSON logging");
+    const LOG_TARGET: &str = "matching_engine";
+    tracing::info!(target: LOG_TARGET, "⚡ Matching Engine starting with async JSON logging - VERSION DEBUG 001");
+    println!("⚡ Matching Engine starting with async JSON logging - VERSION DEBUG 001");
 
     let config = fetcher::configure::load_config().expect("Failed to load config");
 
     // Initialize Kafka Producer for EngineOutput (replaces ZMQ)
-    tracing::info!("📤 Initializing Kafka producer for engine outputs...");
+    tracing::info!(target: LOG_TARGET, "📤 Initializing Kafka producer for engine outputs...");
     let engine_output_producer: FutureProducer = ClientConfig::new()
         .set("bootstrap.servers", &config.kafka.broker)
         .set("linger.ms", "0")  // Immediate send for low latency
@@ -207,7 +209,7 @@ async fn main() {
     // let mut balance_processor = BalanceProcessor::new();
 
     consumer
-        .subscribe(&["validated_orders"]) // UBSCore publishes validated orders here
+        .subscribe(&[&config.kafka.topics.orders]) // UBSCore publishes validated orders here
         .expect("Subscription failed");
 
     println!("--------------------------------------------------");
@@ -280,6 +282,7 @@ async fn main() {
                         msg_dedup.mark_processed(msg_id, msg_ts);
 
                         input_seq += 1;
+                        eprintln!("🔥🔥🔥 SERVER TRACE: Calling add_order_and_build_output for order_id={}", order_id);
                         if let Ok((_, output)) = engine.add_order_and_build_output(
                             input_seq,
                             *symbol_id,
@@ -467,7 +470,7 @@ async fn main() {
 
             if let Some(payload) = m.payload() {
                 // UBSCore publishes InternalOrder via bincode to validated_orders topic
-                if topic == "validated_orders" {
+                if topic == config.kafka.topics.orders {
                     if let Ok(internal_order) = bincode::deserialize::<fetcher::ubs_core::InternalOrder>(payload) {
                         use fetcher::ubs_core::Side as UbsCoreSide;
                         use fetcher::ubs_core::OrderType as UbsCoreOrderType;

@@ -658,17 +658,119 @@ async fn get_order_history(
     }
 }
 
+// Response struct for active orders
+#[derive(Debug, serde::Serialize)]
+struct ActiveOrderResponse {
+    order_id: String,
+    symbol: String,
+    side: String,
+    order_type: String,
+    price: f64,
+    quantity: f64,
+    filled_quantity: f64,
+    status: String,
+    created_at: i64,
+    updated_at: i64,
+}
+
 /// Get active (open) orders for a user
-/// TODO: This requires querying the Matching Engine for open orders
+#[derive(serde::Deserialize)]
+struct ActiveOrderParams {
+    user_id: u64,
+    symbol: Option<String>,
+    limit: Option<usize>,
+}
+
+/// Get active (open) orders for a user
 async fn get_active_orders(
-    Extension(_state): Extension<Arc<AppState>>,
-    Query(params): Query<HistoryParams>,
-) -> Result<Json<ApiResponse<Vec<OrderHistoryResponse>>>, (StatusCode, String)> {
-    let _user_id = params.user_id;
-    let _symbol = params.symbol;
-    
-    // TODO: Query Matching Engine for active orders
-    // Requires ME to expose query API
-    log::warn!("Active orders endpoint - not yet implemented");
-    Ok(Json(ApiResponse::success(vec![])))
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<ActiveOrderParams>,
+) -> Result<Json<ApiResponse<Vec<ActiveOrderResponse>>>, (StatusCode, String)> {
+    let user_id = params.user_id;
+
+    // Resolve symbol_ids
+    let symbol_ids: Vec<u32> = if let Some(ref symbol_str) = params.symbol {
+        if let Some(id) = state.symbol_manager.get_symbol_id(symbol_str) {
+            vec![id]
+        } else {
+            return Ok(Json(ApiResponse::success(vec![])));
+        }
+    } else {
+        // Query all symbols (since table is partitioned by user_id, symbol_id)
+        state.symbol_manager.id_to_symbol.keys().cloned().collect()
+    };
+
+    let limit = params.limit.unwrap_or(100) as i32;
+
+    if let Some(db) = &state.db {
+        let mut all_orders = Vec::new();
+
+        for symbol_id in symbol_ids {
+             let orders_result = db
+                .get_active_orders(user_id, symbol_id, limit)
+                .await;
+
+            if let Ok(orders) = orders_result {
+                all_orders.extend(orders);
+            }
+        }
+
+        let mut response = Vec::new();
+
+        for order in all_orders {
+            let symbol_string = state.symbol_manager.get_symbol(order.symbol_id)
+                .cloned()
+                .unwrap_or_else(|| "UNKNOWN".to_string());
+
+            if let Some(symbol_info) = state.symbol_manager.get_symbol_info(&symbol_string) {
+                let (base, _) = match symbol_string.as_str() {
+                    "BTC_USDT" => (1, 2),
+                    "ETH_USDT" => (3, 2),
+                    _ => (100, 2),
+                };
+                let qty_decimals = state.symbol_manager.get_asset_decimal(base).unwrap_or(8);
+                let price_decimals = symbol_info.price_decimal;
+
+                let side_str = match order.side {
+                    0 => "Buy",
+                    1 => "Sell",
+                    _ => "Unknown",
+                };
+
+                let type_str = match order.order_type {
+                    0 => "Market",
+                    1 => "Limit",
+                    _ => "Unknown",
+                };
+
+                let status_str = match order.status {
+                    0 => "New",
+                    1 => "PartialFill",
+                    2 => "Filled",
+                    3 => "Cancelled",
+                    _ => "Unknown",
+                };
+
+                response.push(ActiveOrderResponse {
+                    order_id: order.order_id.to_string(),
+                    symbol: symbol_string.clone(),
+                    side: side_str.to_string(),
+                    order_type: type_str.to_string(),
+                    price: order.price as f64 / 10u64.pow(price_decimals) as f64,
+                    quantity: order.quantity as f64 / 10u64.pow(qty_decimals) as f64,
+                    filled_quantity: order.filled_qty as f64 / 10u64.pow(qty_decimals) as f64,
+                    status: status_str.to_string(),
+                    created_at: order.created_at,
+                    updated_at: order.updated_at,
+                });
+            }
+        }
+
+        // Sort by time descending
+        response.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+
+        Ok(Json(ApiResponse::success(response)))
+    } else {
+        Err((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))
+    }
 }

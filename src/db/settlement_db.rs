@@ -185,6 +185,7 @@ const SELECT_ACTIVE_ORDERS_CQL: &str = "
     WHERE user_id = ? AND symbol_id = ?
       AND status IN (0, 1)
     LIMIT ?
+    ALLOW FILTERING
 ";
 
 // === APPEND-ONLY BALANCE LEDGER ===

@@ -7,6 +7,6 @@ centrifugo:
 kafka:
   broker: "localhost:9093"
   topics:
-    orders: "orders"
+    orders: "validated_orders"
     trades: "trade.history"
-  group_id: "matching_engine_group"
+  group_id: "matching_engine_group_debug_001"
