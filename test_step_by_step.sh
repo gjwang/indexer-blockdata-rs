@@ -355,10 +355,9 @@ log_step "7" "TEST: Cancel Order"
 if [ -n "$ORDER_ID" ] && [ "$ORDER_ID" != "unknown" ]; then
     log_info "Canceling order: $ORDER_ID..."
 
-    response=$(curl -s -X POST "$GATEWAY_URL/api/order/cancel" \
+    response=$(curl -s -X POST "$GATEWAY_URL/api/orders/cancel?user_id=$TEST_USER" \
         -H "Content-Type: application/json" \
         -d "{
-            \"user_id\": $TEST_USER,
             \"order_id\": $ORDER_ID
         }")
 
