@@ -133,11 +133,12 @@ pub fn create_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/v1/order/create", post(create_order))
         .route("/api/v1/order/cancel", post(cancel_order))
-        .route("/api/v1/user/balance", axum::routing::get(get_balance))
         .route("/api/v1/order/trades", axum::routing::get(get_trade_history))
         .route("/api/v1/order/history", axum::routing::get(get_order_history))
+
         .route("/api/v1/user/transfer_in", post(transfer_in))
         .route("/api/v1/user/transfer_out", post(transfer_out))
+        .route("/api/v1/user/balance", axum::routing::get(get_balance))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
 }
