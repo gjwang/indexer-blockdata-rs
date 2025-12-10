@@ -64,7 +64,12 @@ impl BalanceManager {
         let (asset_id, avail) = self.to_internal_amount(&client.asset, client.avail())?;
         let (_, frozen) = self.to_internal_amount(&client.asset, client.frozen())?;
 
-        Ok(InternalBalance { asset_id, balance: Balance { avail, frozen, version: 0 } })
+        let mut new_balance = Balance::default();
+        let _ = new_balance.deposit(avail);
+        if frozen > 0 {
+            let _ = new_balance.lock(frozen);
+        }
+        Ok(InternalBalance { asset_id, balance: new_balance })
     }
 
     pub fn to_client_balance(

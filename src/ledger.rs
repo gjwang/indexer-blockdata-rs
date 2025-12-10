@@ -530,7 +530,7 @@ impl<'a> Ledger for ShadowLedger<'a> {
     fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         if let Some(account) = self.delta_accounts.get(&user_id) {
             return account
-                .assets
+                .assets()
                 .iter()
                 .find(|(a, _)| *a == asset_id)
                 .map(|(_, b)| b.avail())
@@ -542,7 +542,7 @@ impl<'a> Ledger for ShadowLedger<'a> {
     fn get_frozen(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         if let Some(account) = self.delta_accounts.get(&user_id) {
             return account
-                .assets
+                .assets()
                 .iter()
                 .find(|(a, _)| *a == asset_id)
                 .map(|(_, b)| b.frozen())
@@ -554,10 +554,10 @@ impl<'a> Ledger for ShadowLedger<'a> {
     fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         if let Some(account) = self.delta_accounts.get(&user_id) {
             return account
-                .assets
+                .assets()
                 .iter()
                 .find(|(a, _)| *a == asset_id)
-                .map(|(_, b)| b.version)
+                .map(|(_, b)| b.version())
                 .unwrap_or(0);
         }
         self.real_ledger.get_balance_version(user_id, asset_id)
@@ -844,7 +844,7 @@ impl Ledger for GlobalLedger {
         self.accounts
             .get(&user_id)
             .and_then(|u| u.assets().iter().find(|(a, _)| *a == asset_id))
-            .map(|(_, b)| b.version)
+            .map(|(_, b)| b.version())
             .unwrap_or(0)
     }
 
@@ -990,7 +990,7 @@ impl GlobalLedger {
                 let spend_idx = user.assets().iter().position(|(a, _)| *a == *spend_asset_id);
 
                 if let Some(idx) = spend_idx {
-                    user.assets[idx].1.spend_frozen(*spend_amount).map_err(|_| {
+                    user.assets_mut()[idx].1.spend_frozen(*spend_amount).map_err(|_| {
                         anyhow::anyhow!(
                             "Insufficient frozen funds for settle: User {} Asset {}",
                             user_id,
@@ -1007,12 +1007,15 @@ impl GlobalLedger {
 
                 let gain_idx = user.assets().iter().position(|(a, _)| *a == *gain_asset_id);
                 if let Some(idx) = gain_idx {
-                    let _ = user.assets[idx].1.deposit(*gain_amount);
+                    let _ = user.assets_mut()[idx].1.deposit(*gain_amount);
                 } else {
-                    user.assets.push((
+                    user.assets_mut().push((
                         *gain_asset_id,
-                        Balance { avail: *gain_amount, frozen: 0, version: 1 },
+                        Balance::default(),
                     ));
+                    // Deposit to the newly created balance
+                    let last_idx = user.assets_mut().len() - 1;
+                    let _ = user.assets_mut()[last_idx].1.deposit(*gain_amount);
                 }
             }
             LedgerCommand::MatchExec(data) => {

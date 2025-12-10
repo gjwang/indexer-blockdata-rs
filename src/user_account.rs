@@ -62,6 +62,12 @@ impl UserAccount {
         &self.assets
     }
 
+    /// Get mutable access to assets (for internal ledger operations)
+    #[inline(always)]
+    pub(crate) fn assets_mut(&mut self) -> &mut Vec<(AssetId, Balance)> {
+        &mut self.assets
+    }
+
     pub fn check_buyer_balance(
         &self,
         quote_asset_id: AssetId,

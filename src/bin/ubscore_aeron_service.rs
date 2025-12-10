@@ -172,7 +172,7 @@ fn run_aeron_service() {
                 .set("bootstrap.servers", &config.kafka.broker)
                 .set("group.id", "ubscore-balance-consumer")
                 .set("enable.auto.commit", "true")
-                .set("auto.offset.reset", "latest")  // Only process new deposits
+                .set("auto.offset.reset", "earliest")  // Process all deposits from beginning
                 .create()
                 .expect("Failed to create Kafka consumer");
 

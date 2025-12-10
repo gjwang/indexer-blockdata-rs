@@ -264,12 +264,17 @@ impl<R: RiskModel> UBSCore<R> {
 
         if expected >= 0 {
             // Normal case: no debt
-            balance.avail() = expected as u64;
+            if delta >= 0 {
+                let _ = balance.deposit(delta as u64);
+            } else {
+                let _ = balance.withdraw((-delta) as u64);
+            }
             return balance.avail();
         }
 
         // Ghost money detected!
-        balance.avail() = 0;
+        // Zero out avail by withdrawing all
+        let _ = balance.withdraw(current as u64);
         let shortfall = (-expected) as u64;
 
         // Derive reason from event type (no WAL change needed!)
@@ -305,7 +310,7 @@ impl<R: RiskModel> UBSCore<R> {
         if remaining > 0 {
             let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
             let balance = account.get_balance_mut(asset_id);
-            balance.avail() += remaining;
+            let _ = balance.deposit(remaining);
         }
     }
 
@@ -317,12 +322,7 @@ impl<R: RiskModel> UBSCore<R> {
         };
 
         let balance = account.get_balance_mut(asset_id);
-        if balance.avail() >= amount {
-            balance.avail() -= amount;
-            true
-        } else {
-            false
-        }
+        balance.withdraw(amount).is_ok()
     }
 
     /// Calculate fee (simple: always quote asset)
@@ -365,7 +365,7 @@ impl<R: RiskModel> UBSCore<R> {
 
         log::debug!(
             "[LOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail(), balance.frozen
+            user_id, asset_id, amount, balance.avail(), balance.frozen()
         );
 
         Ok(balance.avail())
@@ -388,7 +388,7 @@ impl<R: RiskModel> UBSCore<R> {
 
         log::debug!(
             "[UNLOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail(), balance.frozen
+            user_id, asset_id, amount, balance.avail(), balance.frozen()
         );
 
         Ok(balance.avail())

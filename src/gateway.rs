@@ -72,9 +72,15 @@ impl SimulatedFundingAccount {
     pub fn new() -> Self {
         let mut balances = HashMap::new();
         // Initialize with large available balances
-        balances.insert(1, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // BTC
-        balances.insert(2, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // USDT
-        balances.insert(3, Balance { avail: 1_000_000_000_000_000, frozen: 0, version: 0 }); // ETH
+        let mut bal_btc = Balance::default();
+        let _ = bal_btc.deposit(1_000_000__000_000_000);
+        balances.insert(1, bal_btc);
+        let mut bal_usdt = Balance::default();
+        let _ = bal_usdt.deposit(1_000_000_000_000_000);
+        balances.insert(2, bal_usdt);
+        let mut bal_eth = Balance::default();
+        let _ = bal_eth.deposit(1_000_000_000_000_000);
+        balances.insert(3, bal_eth);
         Self { balances }
     }
 
