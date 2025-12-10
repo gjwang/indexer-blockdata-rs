@@ -39,6 +39,13 @@ pub struct EngineOutput {
     /// Balance changes (all in one place)
     pub balance_events: Vec<BalanceEvent>,
 
+    // === ORDER LIFECYCLE EVENTS (for active_orders table) ===
+    /// New orders placed (for tracking in active_orders)
+    pub order_placements: Vec<OrderPlacement>,
+
+    /// Order completions (filled or cancelled)
+    pub order_completions: Vec<OrderCompletion>,
+
     // === SELF HASH ===
     /// xxh3_64 of (output_seq || prev_hash || input || outputs)
     pub hash: u64,
@@ -172,6 +179,33 @@ pub struct OrderUpdate {
     pub updated_at: u64,
 }
 
+/// Order placement (for active_orders tracking)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderPlacement {
+    pub order_id: u64,
+    pub user_id: u64,
+    pub symbol_id: u32,
+    pub side: u8,          // 0=Buy, 1=Sell
+    pub order_type: u8,    // 0=Market, 1=Limit
+    pub price: u64,
+    pub quantity: u64,
+    pub created_at: u64,
+}
+
+/// Order completion (filled or cancelled)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrderCompletion {
+    pub order_id: u64,
+    pub reason: CompletionReason,
+    pub completed_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CompletionReason {
+    Filled,
+    Cancelled,
+}
+
 impl EngineOutput {
     /// Create a new EngineOutput with computed hash
     pub fn new(
@@ -194,6 +228,8 @@ impl EngineOutput {
             order_update,
             trades,
             balance_events,
+            order_placements: Vec::new(),
+            order_completions: Vec::new(),
             hash: 0,
         };
         output.hash = output.compute_hash();
