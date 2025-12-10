@@ -380,6 +380,8 @@ pub struct EngineOutputBuilder {
     order_update: Option<OrderUpdate>,
     trades: Vec<TradeOutput>,
     balance_events: Vec<BalanceEvent>,
+    order_placements: Vec<OrderPlacement>,
+    order_completions: Vec<OrderCompletion>,
 }
 
 impl EngineOutputBuilder {
@@ -392,6 +394,8 @@ impl EngineOutputBuilder {
             order_update: None,
             trades: Vec::new(),
             balance_events: Vec::new(),
+            order_placements: Vec::new(),
+            order_completions: Vec::new(),
         }
     }
 
@@ -427,18 +431,36 @@ impl EngineOutputBuilder {
         self.balance_events.push(event);
     }
 
+    /// Add an order placement event
+    pub fn add_order_placement(&mut self, placement: OrderPlacement) {
+        self.order_placements.push(placement);
+    }
+
+    /// Add an order completion event
+    pub fn add_order_completion(&mut self, completion: OrderCompletion) {
+        self.order_completions.push(completion);
+    }
+
     /// Build the final EngineOutput (computes hash)
     /// Returns None if input is not set
     pub fn build(self) -> Option<EngineOutput> {
         let input = self.input?;
-        Some(EngineOutput::new(
-            self.output_seq,
-            self.prev_hash,
+        let symbol_id = self.trades.first().map(|t| t.symbol_id).unwrap_or(0);
+
+        let mut output = EngineOutput {
+            output_seq: self.output_seq,
+            prev_hash: self.prev_hash,
+            symbol_id,
             input,
-            self.order_update,
-            self.trades,
-            self.balance_events,
-        ))
+            order_update: self.order_update,
+            trades: self.trades,
+            balance_events: self.balance_events,
+            order_placements: self.order_placements,
+            order_completions: self.order_completions,
+            hash: 0,
+        };
+        output.hash = output.compute_hash();
+        Some(output)
     }
 
     /// Build the final EngineOutput, panicking if input is not set
