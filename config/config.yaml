@@ -26,7 +26,7 @@ zeromq:
 scylladb:
   hosts:
     - "localhost:9042"
-  keyspace: "settlement"
+  keyspace: "trading"
   replication_factor: 1
   connection_timeout_ms: 5000
   request_timeout_ms: 3000

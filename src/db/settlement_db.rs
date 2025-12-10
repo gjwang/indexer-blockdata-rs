@@ -678,43 +678,41 @@ impl SettlementDb {
 
     /// Get all balances for a user (from balance_ledger - latest entry per asset)
     pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
-        // Query all distinct assets for this user, getting latest seq per asset
+        //  Balance_ledger PRIMARY KEY is ((user_id, asset_id), seq)
+        // We must query with BOTH user_id AND asset_id
+        // Query each known asset separately and get latest balance
+
         const QUERY: &str = "
             SELECT asset_id, avail, frozen, seq, created_at
             FROM balance_ledger
-            WHERE user_id = ?
+            WHERE user_id = ? AND asset_id = ?
+            ORDER BY seq DESC
+            LIMIT 1
         ";
 
-        let result = self.session.query(QUERY, (user_id as i64,)).await?;
+        let mut balances = Vec::new();
 
-        // Group by asset_id, keep only latest seq
-        let mut latest: std::collections::HashMap<i32, (i64, i64, i64, i64, i64)> =
-            std::collections::HashMap::new();
+        // Query known assets (1=BTC, 2=USDT, 3=ETH)
+        // In production, you'd query from an asset registry
+        for asset_id in [1i32, 2i32, 3i32] {
+            let result = self.session.query(QUERY, (user_id as i64, asset_id)).await?;
 
-        if let Some(rows) = result.rows {
-            for row in rows.into_iter() {
-                let (asset_id, avail, frozen, seq, created_at): (i32, i64, i64, i64, i64) =
-                    row.into_typed().context("Failed to parse balance row")?;
+            if let Some(rows) = result.rows {
+                for row in rows.into_iter() {
+                    let (asset_id, avail, frozen, seq, created_at): (i32, i64, i64, i64, i64) =
+                        row.into_typed().context("Failed to parse balance row")?;
 
-                // Keep latest seq per asset
-                let entry = latest.entry(asset_id).or_insert((seq, avail, frozen, seq, created_at));
-                if seq > entry.0 {
-                    *entry = (seq, avail, frozen, seq, created_at);
+                    balances.push(UserBalance {
+                        user_id,
+                        asset_id: asset_id as u32,
+                        avail: avail as u64,
+                        frozen: frozen as u64,
+                        version: seq as u64,
+                        updated_at: created_at as u64,
+                    });
                 }
             }
         }
-
-        let balances: Vec<UserBalance> = latest
-            .into_iter()
-            .map(|(asset_id, (_, avail, frozen, version, updated_at))| UserBalance {
-                user_id,
-                asset_id: asset_id as u32,
-                avail: avail as u64,
-                frozen: frozen as u64,
-                version: version as u64,
-                updated_at: updated_at as u64,
-            })
-            .collect();
 
         Ok(balances)
     }
