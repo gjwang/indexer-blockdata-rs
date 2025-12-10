@@ -132,6 +132,29 @@ const SELECT_TRADES_BY_SELLER_CQL: &str = "
     ALLOW FILTERING
 ";
 
+// === OPTIMIZED USER_TRADES TABLE ===
+// Denormalized table with (user_id, symbol_id) partition key for O(1) queries
+
+const INSERT_USER_TRADE_CQL: &str = "
+    INSERT INTO user_trades (
+        user_id, symbol_id, settled_at, trade_id,
+        role, order_id, counterparty_user_id, counterparty_order_id,
+        price, quantity, base_asset_id, quote_asset_id,
+        output_sequence, match_seq
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+";
+
+const SELECT_USER_TRADES_CQL: &str = "
+    SELECT
+        user_id, symbol_id, settled_at, trade_id,
+        role, order_id, counterparty_user_id, counterparty_order_id,
+        price, quantity, base_asset_id, quote_asset_id,
+        output_sequence, match_seq
+    FROM user_trades
+    WHERE user_id = ? AND symbol_id = ?
+    LIMIT ?
+";
+
 // === APPEND-ONLY BALANCE LEDGER ===
 // Each row is immutable - insert only, never update
 // Current balance = latest row with highest seq
@@ -638,6 +661,148 @@ impl SettlementDb {
         }
 
         Ok(trades)
+    }
+
+    /// OPTIMIZED: Write trade to user_trades table (denormalized)
+    /// Writes TWICE: once for buyer, once for seller
+    /// This enables O(1) queries by (user_id, symbol_id)
+    pub async fn write_user_trades(
+        &self,
+        trade: &crate::engine_output::TradeOutput,
+        settled_at: i64,
+    ) -> Result<()> {
+        // Calculate symbol_id from asset pair
+        let symbol_id = self.get_symbol_id_from_assets(
+            trade.base_asset_id,
+            trade.quote_asset_id
+        );
+
+        // Write for buyer
+        self.session
+            .query(
+                INSERT_USER_TRADE_CQL,
+                (
+                    trade.buyer_user_id as i64,
+                    symbol_id as i32,
+                    settled_at,
+                    trade.trade_id as i64,
+                    0_i8, // role = buyer
+                    trade.buy_order_id as i64,
+                    trade.seller_user_id as i64,
+                    trade.sell_order_id as i64,
+                    trade.price as i64,
+                    trade.quantity as i64,
+                    trade.base_asset_id as i32,
+                    trade.quote_asset_id as i32,
+                    0_i64, // output_sequence (will be added later)
+                    trade.match_seq as i64,
+                ),
+            )
+            .await
+            .context("Failed to insert buyer user_trade")?;
+
+        // Write for seller
+        self.session
+            .query(
+                INSERT_USER_TRADE_CQL,
+                (
+                    trade.seller_user_id as i64,
+                    symbol_id as i32,
+                    settled_at,
+                    trade.trade_id as i64,
+                    1_i8, // role = seller
+                    trade.sell_order_id as i64,
+                    trade.buyer_user_id as i64,
+                    trade.buy_order_id as i64,
+               trade.price as i64,
+                    trade.quantity as i64,
+                    trade.base_asset_id as i32,
+                    trade.quote_asset_id as i32,
+                    0_i64, // output_sequence
+                    trade.match_seq as i64,
+                ),
+            )
+            .await
+            .context("Failed to insert seller user_trade")?;
+
+        Ok(())
+    }
+
+    /// OPTIMIZED: Get trades for a specific user and symbol
+    /// Single O(1) query using optimal partition key (user_id, symbol_id)
+    pub async fn get_user_trades(
+        &self,
+        user_id: u64,
+        symbol_id: u32,
+        limit: i32,
+    ) -> Result<Vec<UserTrade>> {
+        let result = self
+            .session
+            .query(
+                SELECT_USER_TRADES_CQL,
+                (user_id as i64, symbol_id as i32, limit),
+            )
+            .await
+            .context("Failed to query user_trades")?;
+
+        let mut trades = Vec::new();
+
+        if let Some(rows) = result.rows {
+            for row in rows {
+                trades.push(Self::parse_user_trade_row(row)?);
+            }
+        }
+
+        Ok(trades)
+    }
+
+    /// Helper: Parse user_trade row from ScyllaDB
+    fn parse_user_trade_row(row: scylla::frame::response::result::Row) -> Result<UserTrade> {
+        let (
+            user_id,
+            symbol_id,
+            settled_at,
+            trade_id,
+            role,
+            order_id,
+            counterparty_user_id,
+            counterparty_order_id,
+            price,
+            quantity,
+            base_asset_id,
+            quote_asset_id,
+            output_sequence,
+            match_seq,
+        ): (i64, i32, i64, i64, i8, i64, i64, i64, i64, i64, i32, i32, i64, i64) =
+            row.into_typed().context("Failed to parse user_trade row")?;
+
+        Ok(UserTrade {
+            user_id: user_id as u64,
+            symbol_id: symbol_id as u32,
+            settled_at,
+            trade_id: trade_id as u64,
+            role: role as u8,
+            order_id: order_id as u64,
+            counterparty_user_id: counterparty_user_id as u64,
+            counterparty_order_id: counterparty_order_id as u64,
+            price: price as u64,
+            quantity: quantity as u64,
+            base_asset_id: base_asset_id as u32,
+            quote_asset_id: quote_asset_id as u32,
+            output_sequence: output_sequence as u64,
+            match_seq: match_seq as u64,
+        })
+    }
+
+    /// Helper: Get symbol_id from base/quote asset pair
+    /// TODO: This should be provided by SymbolManager or cached
+    fn get_symbol_id_from_assets(&self, base_asset_id: u32, quote_asset_id: u32) -> u32 {
+        // For now, simple mapping: BTC(1) + USDT(2) = symbol 1
+        // This should be replaced with proper lookup
+        match (base_asset_id, quote_asset_id) {
+            (1, 2) => 1, // BTC_USDT
+            _ => 0, // Unknown symbol
+        }
     }
 
     /// Health check - verify database connectivity
@@ -1179,6 +1344,26 @@ impl UserBalance {
     pub fn frozen(&self) -> u64 {
         self.frozen
     }
+}
+
+/// Optimized user trade from user_trades table
+/// Denormalized for O(1) queries by (user_id, symbol_id)
+#[derive(Debug, Clone)]
+pub struct UserTrade {
+    pub user_id: u64,
+    pub symbol_id: u32,
+    pub settled_at: i64,
+    pub trade_id: u64,
+    pub role: u8,  // 0=buyer, 1=seller
+    pub order_id: u64,
+    pub counterparty_user_id: u64,
+    pub counterparty_order_id: u64,
+    pub price: u64,
+    pub quantity: u64,
+    pub base_asset_id: u32,
+    pub quote_asset_id: u32,
+    pub output_sequence: u64,
+    pub match_seq: u64,
 }
 
 #[cfg(test)]
