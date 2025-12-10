@@ -222,8 +222,8 @@ mod order_lifecycle_tests {
         // Verify funds are locked
         let balances_before = engine.ledger.get_user_balances(1).unwrap();
         let usdt_before = balances_before.iter().find(|(a, _)| *a == 200).unwrap().1;
-        assert_eq!(usdt_before.frozen, 50000, "50,000 should be locked");
-        assert_eq!(usdt_before.avail, 50000, "50,000 should be available");
+        assert_eq!(usdt_before.frozen(), 50000, "50,000 should be locked");
+        assert_eq!(usdt_before.avail(), 50000, "50,000 should be available");
 
         // Cancel order
         let cancel_commands = engine.cancel_order(1, 101).expect("Cancel should succeed");
@@ -239,8 +239,8 @@ mod order_lifecycle_tests {
         // Verify funds are unlocked
         let balances_after = engine.ledger.get_user_balances(1).unwrap();
         let usdt_after = balances_after.iter().find(|(a, _)| *a == 200).unwrap().1;
-        assert_eq!(usdt_after.frozen, 0, "All funds should be unlocked");
-        assert_eq!(usdt_after.avail, 100000, "All funds should be available");
+        assert_eq!(usdt_after.frozen(), 0, "All funds should be unlocked");
+        assert_eq!(usdt_after.avail(), 100000, "All funds should be available");
     }
 
     #[test]

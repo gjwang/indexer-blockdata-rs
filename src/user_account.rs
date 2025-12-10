@@ -73,7 +73,7 @@ impl UserAccount {
         // Check if we have enough frozen funds for both the spend and the refund
         // Usually these come from the same frozen bucket.
         let required = spend_quote + refund_quote;
-        if quote_bal.frozen < required {
+        if quote_bal.frozen() < required {
             return Err("Insufficient frozen quote funds");
         }
         Ok(())
@@ -88,7 +88,7 @@ impl UserAccount {
         let base_bal = self.get_balance(base_asset_id).ok_or("Base asset not found")?;
 
         let required = spend_base + refund_base;
-        if base_bal.frozen < required {
+        if base_bal.frozen() < required {
             return Err("Insufficient frozen base funds");
         }
         Ok(())
@@ -112,7 +112,7 @@ impl UserAccount {
         // Refund Quote (Frozen -> Available)
         if refund_quote > 0 {
             let quote_bal = self.get_balance_mut(quote_asset_id);
-            quote_bal.unfrozen(refund_quote)?;
+            quote_bal.unlock(refund_quote)?;
         }
         Ok(())
     }
@@ -136,7 +136,7 @@ impl UserAccount {
         // Refund Base (Frozen -> Available)
         if refund_base > 0 {
             let base_bal = self.get_balance_mut(base_asset_id);
-            base_bal.unfrozen(refund_base)?;
+            base_bal.unlock(refund_base)?;
         }
         Ok(())
     }

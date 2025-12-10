@@ -126,7 +126,7 @@ async fn main() {
                                     log::info!(target: LOG_TARGET,
                                         "[{}_CONSUMED] event_id={} user={} asset={} delta={} avail={:?} | Settlement consumed from Kafka",
                                         event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
-                                        event.delta_avail, event.avail);
+                                        event.delta_avail, event.avail());
 
                                     // Send to balance writer (same path as ME trades)
                                     let shard = event.user_id as usize % NUM_BALANCE_WRITERS;

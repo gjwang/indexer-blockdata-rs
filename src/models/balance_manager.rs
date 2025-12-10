@@ -40,15 +40,15 @@ impl BalanceManager {
     }
 
     pub fn to_client_balance_struct(&self, internal: InternalBalance) -> Option<ClientBalance> {
-        self.to_client_balance(internal.asset_id, internal.balance.avail, internal.balance.frozen)
+        self.to_client_balance(internal.asset_id, internal.balance.avail(), internal.balance.frozen())
     }
 
     pub fn to_internal_balance_struct(
         &self,
         client: ClientBalance,
     ) -> Result<InternalBalance, String> {
-        let (asset_id, avail) = self.to_internal_amount(&client.asset, client.avail)?;
-        let (_, frozen) = self.to_internal_amount(&client.asset, client.frozen)?;
+        let (asset_id, avail) = self.to_internal_amount(&client.asset, client.avail())?;
+        let (_, frozen) = self.to_internal_amount(&client.asset, client.frozen())?;
 
         Ok(InternalBalance { asset_id, balance: Balance { avail, frozen, version: 0 } })
     }

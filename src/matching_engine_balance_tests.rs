@@ -52,12 +52,12 @@ mod balance_correctness_tests {
         let usdt_balance = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
         assert_eq!(
-            usdt_balance.avail, 50000,
+            usdt_balance.avail(), 50000,
             "Available should be 50,000 (100,000 - 50,000 locked)"
         );
-        assert_eq!(usdt_balance.frozen, 50000, "Frozen should be 50,000");
+        assert_eq!(usdt_balance.frozen(), 50000, "Frozen should be 50,000");
         assert_eq!(
-            usdt_balance.avail + usdt_balance.frozen,
+            usdt_balance.avail() + usdt_balance.frozen(),
             100000,
             "Total balance must be preserved"
         );
@@ -135,8 +135,8 @@ mod balance_correctness_tests {
         // Verify seller's BTC is locked
         let seller_btc = engine.ledger.get_user_balances(2).unwrap();
         let seller_btc_bal = seller_btc.iter().find(|(a, _)| *a == 100).unwrap().1;
-        assert_eq!(seller_btc_bal.avail, 9, "Seller should have 9 BTC available");
-        assert_eq!(seller_btc_bal.frozen, 1, "Seller should have 1 BTC frozen");
+        assert_eq!(seller_btc_bal.avail(), 9, "Seller should have 9 BTC available");
+        assert_eq!(seller_btc_bal.frozen(), 1, "Seller should have 1 BTC frozen");
 
         // Place buy order (taker) - should match
         let (_results, _commands) =
@@ -147,20 +147,20 @@ mod balance_correctness_tests {
         let buyer_usdt = buyer_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
         let buyer_btc = buyer_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(buyer_usdt.avail, 50000, "Buyer should have 50,000 USDT left");
-        assert_eq!(buyer_usdt.frozen, 0, "Buyer should have 0 USDT frozen");
-        assert_eq!(buyer_btc.avail, 1, "Buyer should have gained 1 BTC");
-        assert_eq!(buyer_btc.frozen, 0, "Buyer should have 0 BTC frozen");
+        assert_eq!(buyer_usdt.avail(), 50000, "Buyer should have 50,000 USDT left");
+        assert_eq!(buyer_usdt.frozen(), 0, "Buyer should have 0 USDT frozen");
+        assert_eq!(buyer_btc.avail(), 1, "Buyer should have gained 1 BTC");
+        assert_eq!(buyer_btc.frozen(), 0, "Buyer should have 0 BTC frozen");
 
         // Verify seller's balances after trade
         let seller_balances = engine.ledger.get_user_balances(2).unwrap();
         let seller_btc = seller_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
         let seller_usdt = seller_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(seller_btc.avail, 9, "Seller should have 9 BTC left");
-        assert_eq!(seller_btc.frozen, 0, "Seller should have 0 BTC frozen");
-        assert_eq!(seller_usdt.avail, 50000, "Seller should have gained 50,000 USDT");
-        assert_eq!(seller_usdt.frozen, 0, "Seller should have 0 USDT frozen");
+        assert_eq!(seller_btc.avail(), 9, "Seller should have 9 BTC left");
+        assert_eq!(seller_btc.frozen(), 0, "Seller should have 0 BTC frozen");
+        assert_eq!(seller_usdt.avail(), 50000, "Seller should have gained 50,000 USDT");
+        assert_eq!(seller_usdt.frozen(), 0, "Seller should have 0 USDT frozen");
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod balance_correctness_tests {
 
         let buyer_usdt = engine.ledger.get_user_balances(1).unwrap();
         let buyer_usdt_bal = buyer_usdt.iter().find(|(a, _)| *a == 200).unwrap().1;
-        assert_eq!(buyer_usdt_bal.frozen, 200000, "Should lock exactly 200,000 USDT");
+        assert_eq!(buyer_usdt_bal.frozen(), 200000, "Should lock exactly 200,000 USDT");
 
         // Seller places order for 2 BTC @ 50,000 (partial fill)
         engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 2, 2, 1001)]);
@@ -364,16 +364,16 @@ mod balance_correctness_tests {
         let buyer_usdt = buyer_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
         let buyer_btc = buyer_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(buyer_btc.avail, 2, "Buyer should have 2 BTC");
+        assert_eq!(buyer_btc.avail(), 2, "Buyer should have 2 BTC");
         assert_eq!(
-            buyer_usdt.frozen, 100000,
+            buyer_usdt.frozen(), 100000,
             "Buyer should still have 100,000 USDT locked for remaining order"
         );
-        assert_eq!(buyer_usdt.avail, 0, "Buyer should have 0 USDT available");
+        assert_eq!(buyer_usdt.avail(), 0, "Buyer should have 0 USDT available");
 
         // Total should still be 200,000
         assert_eq!(
-            buyer_usdt.avail + buyer_usdt.frozen,
+            buyer_usdt.avail() + buyer_usdt.frozen(),
             100000,
             "Buyer total USDT should be 100,000 (200,000 - 100,000 spent)"
         );
@@ -415,10 +415,10 @@ mod balance_correctness_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt_balance = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        let total = usdt_balance.avail + usdt_balance.frozen;
+        let total = usdt_balance.avail() + usdt_balance.frozen();
         assert_eq!(total, 100000, "Total balance must remain exactly 100,000. Got: {}", total);
-        assert_eq!(usdt_balance.frozen, 100000, "All funds should be locked");
-        assert_eq!(usdt_balance.avail, 0, "No funds should be available");
+        assert_eq!(usdt_balance.frozen(), 100000, "All funds should be locked");
+        assert_eq!(usdt_balance.avail(), 0, "No funds should be available");
     }
 
     #[test]
@@ -497,12 +497,12 @@ mod balance_correctness_tests {
             let usdt_balance = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
             assert_eq!(
-                usdt_balance.avail + usdt_balance.frozen,
+                usdt_balance.avail() + usdt_balance.frozen(),
                 100000,
                 "User {} total balance must be preserved",
                 user_id
             );
-            assert_eq!(usdt_balance.frozen, 50000, "User {} should have 50,000 frozen", user_id);
+            assert_eq!(usdt_balance.frozen(), 50000, "User {} should have 50,000 frozen", user_id);
         }
     }
 

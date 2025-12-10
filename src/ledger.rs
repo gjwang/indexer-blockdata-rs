@@ -533,7 +533,7 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 .assets
                 .iter()
                 .find(|(a, _)| *a == asset_id)
-                .map(|(_, b)| b.avail)
+                .map(|(_, b)| b.avail())
                 .unwrap_or(0);
         }
         self.real_ledger.get_balance(user_id, asset_id)
@@ -545,7 +545,7 @@ impl<'a> Ledger for ShadowLedger<'a> {
                 .assets
                 .iter()
                 .find(|(a, _)| *a == asset_id)
-                .map(|(_, b)| b.frozen)
+                .map(|(_, b)| b.frozen())
                 .unwrap_or(0);
         }
         self.real_ledger.get_frozen(user_id, asset_id)
@@ -808,7 +808,7 @@ impl GlobalLedger {
     }
 
     pub fn get_user_balances(&self, user_id: UserId) -> Option<Vec<(AssetId, Balance)>> {
-        self.accounts.get(&user_id).map(|u| u.assets.clone())
+        self.accounts.get(&user_id).map(|u| u.assets().to_vec())
     }
 
     pub fn get_account_copy(&self, user_id: UserId) -> UserAccount {
@@ -827,23 +827,23 @@ impl Ledger for GlobalLedger {
     fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         self.accounts
             .get(&user_id)
-            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
-            .map(|(_, b)| b.avail)
+            .and_then(|u| u.assets().iter().find(|(a, _)| *a == asset_id))
+            .map(|(_, b)| b.avail())
             .unwrap_or(0)
     }
 
     fn get_frozen(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         self.accounts
             .get(&user_id)
-            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
-            .map(|(_, b)| b.frozen)
+            .and_then(|u| u.assets().iter().find(|(a, _)| *a == asset_id))
+            .map(|(_, b)| b.frozen())
             .unwrap_or(0)
     }
 
     fn get_balance_version(&self, user_id: UserId, asset_id: AssetId) -> u64 {
         self.accounts
             .get(&user_id)
-            .and_then(|u| u.assets.iter().find(|(a, _)| *a == asset_id))
+            .and_then(|u| u.assets().iter().find(|(a, _)| *a == asset_id))
             .map(|(_, b)| b.version)
             .unwrap_or(0)
     }
@@ -958,7 +958,7 @@ impl GlobalLedger {
             LedgerCommand::Lock { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset_id);
-                bal.frozen(*amount).map_err(|_| {
+                bal.lock(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient funds for lock: User {} Asset {}",
                         user_id,
@@ -969,7 +969,7 @@ impl GlobalLedger {
             LedgerCommand::Unlock { user_id, asset_id, amount, .. } => {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
                 let bal = user.get_balance_mut(*asset_id);
-                bal.unfrozen(*amount).map_err(|_| {
+                bal.unlock(*amount).map_err(|_| {
                     anyhow::anyhow!(
                         "Insufficient frozen funds for unlock: User {} Asset {}",
                         user_id,
@@ -987,7 +987,7 @@ impl GlobalLedger {
                 let user = accounts.entry(*user_id).or_insert_with(|| UserAccount::new(*user_id));
 
                 // Use indices to avoid multiple mutable borrows
-                let spend_idx = user.assets.iter().position(|(a, _)| *a == *spend_asset_id);
+                let spend_idx = user.assets().iter().position(|(a, _)| *a == *spend_asset_id);
 
                 if let Some(idx) = spend_idx {
                     user.assets[idx].1.spend_frozen(*spend_amount).map_err(|_| {
@@ -1005,7 +1005,7 @@ impl GlobalLedger {
                     );
                 }
 
-                let gain_idx = user.assets.iter().position(|(a, _)| *a == *gain_asset_id);
+                let gain_idx = user.assets().iter().position(|(a, _)| *a == *gain_asset_id);
                 if let Some(idx) = gain_idx {
                     let _ = user.assets[idx].1.deposit(*gain_amount);
                 } else {
@@ -1609,18 +1609,18 @@ mod tests {
         let buyer_quote = buyer_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
         let buyer_base = buyer_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(buyer_quote.avail, 60000); // 40000 original + 20000 refund
-        assert_eq!(buyer_quote.frozen, 0);
-        assert_eq!(buyer_base.avail, 20); // Gained from trade
+        assert_eq!(buyer_quote.avail(), 60000); // 40000 original + 20000 refund
+        assert_eq!(buyer_quote.frozen(), 0);
+        assert_eq!(buyer_base.avail(), 20); // Gained from trade
 
         // Verify seller state
         let seller_balances = ledger.get_user_balances(2).unwrap();
         let seller_base = seller_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
         let seller_quote = seller_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(seller_base.avail, 30); // 20 original + 10 refund
-        assert_eq!(seller_base.frozen, 0);
-        assert_eq!(seller_quote.avail, 40000); // Gained from trade
+        assert_eq!(seller_base.avail(), 30); // 20 original + 10 refund
+        assert_eq!(seller_base.frozen(), 0);
+        assert_eq!(seller_quote.avail(), 40000); // Gained from trade
     }
 
     #[test]
@@ -1835,9 +1835,9 @@ mod tests {
         let b1_usdt = u1.iter().find(|(a, _)| *a == 200).unwrap().1;
         let b1_btc = u1.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(b1_usdt.frozen, 500, "Buyer USDT frozen incorrect");
-        assert_eq!(b1_usdt.avail, 0, "Buyer USDT avail incorrect"); // All 1000 was locked
-        assert_eq!(b1_btc.avail, 5, "Buyer BTC avail incorrect");
+        assert_eq!(b1_usdt.frozen(), 500, "Buyer USDT frozen incorrect");
+        assert_eq!(b1_usdt.avail(), 0, "Buyer USDT avail incorrect"); // All 1000 was locked
+        assert_eq!(b1_btc.avail(), 5, "Buyer BTC avail incorrect");
 
         // Seller (User 2):
         // BTC: 10 locked - 5 spent = 5 frozen
@@ -1846,8 +1846,8 @@ mod tests {
         let b2_btc = u2.iter().find(|(a, _)| *a == 100).unwrap().1;
         let b2_usdt = u2.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(b2_btc.frozen, 5, "Seller BTC frozen incorrect");
-        assert_eq!(b2_btc.avail, 0, "Seller BTC avail incorrect"); // All 10 was locked
-        assert_eq!(b2_usdt.avail, 500, "Seller USDT avail incorrect");
+        assert_eq!(b2_btc.frozen(), 5, "Seller BTC frozen incorrect");
+        assert_eq!(b2_btc.avail(), 0, "Seller BTC avail incorrect"); // All 10 was locked
+        assert_eq!(b2_usdt.avail(), 500, "Seller USDT avail incorrect");
     }
 }

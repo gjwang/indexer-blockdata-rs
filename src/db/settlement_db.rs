@@ -829,8 +829,8 @@ impl SettlementDb {
         //         event.seq as i64,
         //         event.delta_avail,
         //         event.delta_frozen,
-        //         event.avail,
-        //         event.frozen,
+        //         event.avail(),
+        //         event.frozen(),
         //         event.event_type.clone(),
         //         event.ref_id as i64,
         //         now as i64,
@@ -838,8 +838,8 @@ impl SettlementDb {
         //     user_values.push((
         //         event.user_id as i64,
         //         event.asset_id as i32,
-        //         event.avail,
-        //         event.frozen,
+        //         event.avail(),
+        //         event.frozen(),
         //         event.seq as i64,
         //         now as i64,
         //     ));
@@ -868,8 +868,8 @@ impl SettlementDb {
                     e.seq as i64,
                     e.delta_avail,
                     e.delta_frozen,
-                    e.avail.map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
-                    e.frozen.map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
+                    e.avail().map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
+                    e.frozen().map(|v| v as i64).unwrap_or(-1), // None → -1 in DB
                     e.event_type.clone(),
                     e.ref_id as i64,
                     now as i64,
@@ -923,8 +923,8 @@ impl SettlementDb {
 
         // Calculate new balance
         let delta_avail = amount as i64;
-        let new_avail = current.avail + delta_avail;
-        let new_frozen = current.frozen; // Deposit doesn't change frozen
+        let new_avail = current.avail() + delta_avail;
+        let new_frozen = current.frozen(); // Deposit doesn't change frozen
 
         // Append event
         self.append_balance_event(
@@ -971,8 +971,8 @@ impl SettlementDb {
 
         let delta_avail = -(amount as i64);
         let delta_frozen = amount as i64;
-        let new_avail = current.avail + delta_avail;
-        let new_frozen = current.frozen + delta_frozen;
+        let new_avail = current.avail() + delta_avail;
+        let new_frozen = current.frozen() + delta_frozen;
 
         self.append_balance_event(
             user_id,
@@ -1018,8 +1018,8 @@ impl SettlementDb {
 
         let delta_avail = amount as i64;
         let delta_frozen = -(amount as i64);
-        let new_avail = current.avail + delta_avail;
-        let new_frozen = current.frozen + delta_frozen;
+        let new_avail = current.avail() + delta_avail;
+        let new_frozen = current.frozen() + delta_frozen;
 
         self.append_balance_event(
             user_id,
@@ -1064,8 +1064,8 @@ impl SettlementDb {
         }
 
         let delta_avail = -(amount as i64);
-        let new_avail = current.avail + delta_avail;
-        let new_frozen = current.frozen;
+        let new_avail = current.avail() + delta_avail;
+        let new_frozen = current.frozen();
 
         self.append_balance_event(
             user_id,
@@ -1260,7 +1260,7 @@ impl SettlementDb {
                     asset_id
                 )
             })?;
-            let (bal, frozen, ver) = (current.avail, current.frozen, current.seq);
+            let (bal, frozen, ver) = (current.avail(), current.frozen(), current.seq);
 
             // If version matches (or is newer), we are good.
             if ver >= expected_ver {

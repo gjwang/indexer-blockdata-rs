@@ -64,7 +64,7 @@ impl Balance {
     /// Get total balance (avail + frozen)
     #[inline(always)]
     pub const fn total(&self) -> u64 {
-        self.avail.saturating_add(self.frozen)
+        self.avail().saturating_add(self.frozen())
     }
 
     /// Get version (read-only)
@@ -86,7 +86,7 @@ impl Balance {
     /// - Increases avail by amount
     /// - Increments version
     pub fn deposit(&mut self, amount: u64) -> Result<(), &'static str> {
-        self.avail = self.avail.checked_add(amount).ok_or("Deposit overflow")?;
+        self.avail() = self.avail().checked_add(amount).ok_or("Deposit overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -101,10 +101,10 @@ impl Balance {
     /// - Decreases avail by amount
     /// - Increments version
     pub fn withdraw(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.avail < amount {
+        if self.avail() < amount {
             return Err("Insufficient funds");
         }
-        self.avail = self.avail.checked_sub(amount).ok_or("Withdraw underflow")?;
+        self.avail() = self.avail().checked_sub(amount).ok_or("Withdraw underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -120,11 +120,11 @@ impl Balance {
     /// - Increases frozen by amount
     /// - Increments version
     pub fn lock(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.avail < amount {
+        if self.avail() < amount {
             return Err("Insufficient funds to lock");
         }
-        self.avail = self.avail.checked_sub(amount).ok_or("Lock avail underflow")?;
-        self.frozen = self.frozen.checked_add(amount).ok_or("Lock frozen overflow")?;
+        self.avail() = self.avail().checked_sub(amount).ok_or("Lock avail underflow")?;
+        self.frozen() = self.frozen().checked_add(amount).ok_or("Lock frozen overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -140,11 +140,11 @@ impl Balance {
     /// - Increases avail by amount
     /// - Increments version
     pub fn unlock(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.frozen < amount {
+        if self.frozen() < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Unlock frozen underflow")?;
-        self.avail = self.avail.checked_add(amount).ok_or("Unlock avail overflow")?;
+        self.frozen() = self.frozen().checked_sub(amount).ok_or("Unlock frozen underflow")?;
+        self.avail() = self.avail().checked_add(amount).ok_or("Unlock avail overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -159,10 +159,10 @@ impl Balance {
     /// - Decreases frozen by amount
     /// - Increments version
     pub fn spend_frozen(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.frozen < amount {
+        if self.frozen() < amount {
             return Err("Insufficient frozen funds");
         }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Spend frozen underflow")?;
+        self.frozen() = self.frozen().checked_sub(amount).ok_or("Spend frozen underflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -176,13 +176,13 @@ impl Balance {
     /// This is atomic - either both succeed or both fail
     pub fn refund_frozen(&mut self, spend: u64, refund: u64) -> Result<(), &'static str> {
         // Validate first
-        if self.frozen < spend {
+        if self.frozen() < spend {
             return Err("Insufficient frozen for refund");
         }
 
         // Apply atomically
-        self.frozen = self.frozen.checked_sub(spend).ok_or("Refund frozen underflow")?;
-        self.avail = self.avail.checked_add(refund).ok_or("Refund avail overflow")?;
+        self.frozen() = self.frozen().checked_sub(spend).ok_or("Refund frozen underflow")?;
+        self.avail() = self.avail().checked_add(refund).ok_or("Refund avail overflow")?;
         self.version = self.version.wrapping_add(1);
         Ok(())
     }
@@ -245,11 +245,11 @@ mod tests {
 
         bal.lock(60).unwrap();
         assert_eq!(bal.avail(), 40);
-        assert_eq!(bal.frozen(), 60);
+        assert_eq!(bal.lock(), 60);
 
         bal.unlock(20).unwrap();
         assert_eq!(bal.avail(), 60);
-        assert_eq!(bal.frozen(), 40);
+        assert_eq!(bal.lock(), 40);
     }
 
     #[test]
@@ -259,7 +259,7 @@ mod tests {
         bal.lock(60).unwrap();
 
         bal.spend_frozen(30).unwrap();
-        assert_eq!(bal.frozen(), 30);
+        assert_eq!(bal.lock(), 30);
         assert_eq!(bal.avail(), 40); // Unchanged
     }
 

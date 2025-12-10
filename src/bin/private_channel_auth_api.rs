@@ -127,9 +127,9 @@ async fn test_publish_balance(
 ) -> Result<Json<serde_json::Value>, StatusCode> {
     let balance = BalanceUpdate {
         asset: payload.asset,
-        avail: payload.avail,
+        avail: payload.avail(),
         locked: payload.locked,
-        total: payload.avail + payload.locked,
+        total: payload.avail() + payload.locked,
     };
 
     let user_update = UserUpdate::Balance(balance);

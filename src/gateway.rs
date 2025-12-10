@@ -85,7 +85,7 @@ impl SimulatedFundingAccount {
             .get_mut(&asset_id)
             .ok_or_else(|| format!("Asset {} not found in funding account", asset_id))?;
 
-        balance.frozen(amount).map_err(|e| format!("Lock failed: {}", e))
+        balance.lock(amount).map_err(|e| format!("Lock failed: {}", e))
     }
 
     /// Finalize Transfer In: Remove from locked (funds moved to Trading Engine)
@@ -389,8 +389,8 @@ async fn get_balance(
         for balance in balances {
             if let Some(client_balance) = state.balance_manager.to_client_balance(
                 balance.asset_id, // Removed incorrect 'as i32' cast
-                balance.avail,
-                balance.frozen,
+                balance.avail(),
+                balance.frozen(),
             ) {
                 response.push(client_balance);
             }

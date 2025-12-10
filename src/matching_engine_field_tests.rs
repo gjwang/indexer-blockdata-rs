@@ -34,12 +34,12 @@ mod balance_field_tests {
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
         // Verify ALL fields
-        assert_eq!(usdt.avail, 100000, "Available should be 100,000");
-        assert_eq!(usdt.frozen, 0, "Frozen should be 0");
+        assert_eq!(usdt.avail(), 100000, "Available should be 100,000");
+        assert_eq!(usdt.frozen(), 0, "Frozen should be 0");
         assert_eq!(usdt.version, 1, "Version should be 1 after first deposit");
 
         // Verify total
-        assert_eq!(usdt.avail + usdt.frozen, 100000, "Total must equal deposit");
+        assert_eq!(usdt.avail() + usdt.frozen(), 100000, "Total must equal deposit");
     }
 
     #[test]
@@ -69,12 +69,12 @@ mod balance_field_tests {
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
         // Verify ALL fields after lock
-        assert_eq!(usdt.avail, 50000, "Available should be 50,000 (100k - 50k locked)");
-        assert_eq!(usdt.frozen, 50000, "Frozen should be 50,000");
+        assert_eq!(usdt.avail(), 50000, "Available should be 50,000 (100k - 50k locked)");
+        assert_eq!(usdt.frozen(), 50000, "Frozen should be 50,000");
         assert!(usdt.version > version_before, "Version must increment on lock");
 
         // Verify total unchanged
-        assert_eq!(usdt.avail + usdt.frozen, 100000, "Total must remain 100,000");
+        assert_eq!(usdt.avail() + usdt.frozen(), 100000, "Total must remain 100,000");
     }
 
     #[test]
@@ -121,11 +121,11 @@ mod balance_field_tests {
         let buyer_balances = engine.ledger.get_user_balances(1).unwrap();
         let buyer_usdt = buyer_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(buyer_usdt.avail, 50000, "Buyer USDT available should be 50,000");
-        assert_eq!(buyer_usdt.frozen, 0, "Buyer USDT frozen should be 0");
+        assert_eq!(buyer_usdt.avail(), 50000, "Buyer USDT available should be 50,000");
+        assert_eq!(buyer_usdt.frozen(), 0, "Buyer USDT frozen should be 0");
         assert!(buyer_usdt.version > buyer_usdt_v0, "Buyer USDT version must increment");
         assert_eq!(
-            buyer_usdt.avail + buyer_usdt.frozen,
+            buyer_usdt.avail() + buyer_usdt.frozen(),
             50000,
             "Buyer USDT total should be 50,000"
         );
@@ -133,10 +133,10 @@ mod balance_field_tests {
         // Verify buyer's BTC (base asset - gained)
         let buyer_btc = buyer_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(buyer_btc.avail, 1, "Buyer BTC available should be 1");
-        assert_eq!(buyer_btc.frozen, 0, "Buyer BTC frozen should be 0");
+        assert_eq!(buyer_btc.avail(), 1, "Buyer BTC available should be 1");
+        assert_eq!(buyer_btc.frozen(), 0, "Buyer BTC frozen should be 0");
         assert!(buyer_btc.version > buyer_btc_v0, "Buyer BTC version must increment");
-        assert_eq!(buyer_btc.avail + buyer_btc.frozen, 1, "Buyer BTC total should be 1");
+        assert_eq!(buyer_btc.avail() + buyer_btc.frozen(), 1, "Buyer BTC total should be 1");
     }
 
     #[test]
@@ -181,19 +181,19 @@ mod balance_field_tests {
         let seller_balances = engine.ledger.get_user_balances(2).unwrap();
         let seller_btc = seller_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
 
-        assert_eq!(seller_btc.avail, 9, "Seller BTC available should be 9");
-        assert_eq!(seller_btc.frozen, 0, "Seller BTC frozen should be 0");
+        assert_eq!(seller_btc.avail(), 9, "Seller BTC available should be 9");
+        assert_eq!(seller_btc.frozen(), 0, "Seller BTC frozen should be 0");
         assert!(seller_btc.version > seller_btc_v0, "Seller BTC version must increment");
-        assert_eq!(seller_btc.avail + seller_btc.frozen, 9, "Seller BTC total should be 9");
+        assert_eq!(seller_btc.avail() + seller_btc.frozen(), 9, "Seller BTC total should be 9");
 
         // Verify seller's USDT (quote asset - gained)
         let seller_usdt = seller_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(seller_usdt.avail, 50000, "Seller USDT available should be 50,000");
-        assert_eq!(seller_usdt.frozen, 0, "Seller USDT frozen should be 0");
+        assert_eq!(seller_usdt.avail(), 50000, "Seller USDT available should be 50,000");
+        assert_eq!(seller_usdt.frozen(), 0, "Seller USDT frozen should be 0");
         assert!(seller_usdt.version > seller_usdt_v0, "Seller USDT version must increment");
         assert_eq!(
-            seller_usdt.avail + seller_usdt.frozen,
+            seller_usdt.avail() + seller_usdt.frozen(),
             50000,
             "Seller USDT total should be 50,000"
         );
@@ -234,9 +234,9 @@ mod balance_field_tests {
         let buyer_balances = engine.ledger.get_user_balances(1).unwrap();
         let buyer_usdt = buyer_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(buyer_usdt.avail, 0, "All USDT should be locked");
-        assert_eq!(buyer_usdt.frozen, 200000, "200,000 USDT should be frozen");
-        assert_eq!(buyer_usdt.avail + buyer_usdt.frozen, 200000, "Total should be 200,000");
+        assert_eq!(buyer_usdt.avail(), 0, "All USDT should be locked");
+        assert_eq!(buyer_usdt.frozen(), 200000, "200,000 USDT should be frozen");
+        assert_eq!(buyer_usdt.avail() + buyer_usdt.frozen(), 200000, "Total should be 200,000");
 
         // Seller sells 2 BTC (partial fill)
         engine.add_order_batch(vec![(1, 201, Side::Sell, OrderType::Limit, 50000, 2, 2, 1001)]);
@@ -249,32 +249,32 @@ mod balance_field_tests {
         // Buyer should have:
         // - Spent 100,000 USDT (2 BTC * 50,000)
         // - Still have 100,000 USDT locked (for remaining 2 BTC order)
-        assert_eq!(buyer_usdt.avail, 0, "Buyer USDT available should be 0");
-        assert_eq!(buyer_usdt.frozen, 100000, "Buyer should still have 100,000 USDT locked");
+        assert_eq!(buyer_usdt.avail(), 0, "Buyer USDT available should be 0");
+        assert_eq!(buyer_usdt.frozen(), 100000, "Buyer should still have 100,000 USDT locked");
         assert_eq!(
-            buyer_usdt.avail + buyer_usdt.frozen,
+            buyer_usdt.avail() + buyer_usdt.frozen(),
             100000,
             "Buyer USDT total should be 100,000"
         );
 
         // Buyer should have gained 2 BTC
-        assert_eq!(buyer_btc.avail, 2, "Buyer should have 2 BTC");
-        assert_eq!(buyer_btc.frozen, 0, "Buyer BTC frozen should be 0");
-        assert_eq!(buyer_btc.avail + buyer_btc.frozen, 2, "Buyer BTC total should be 2");
+        assert_eq!(buyer_btc.avail(), 2, "Buyer should have 2 BTC");
+        assert_eq!(buyer_btc.frozen(), 0, "Buyer BTC frozen should be 0");
+        assert_eq!(buyer_btc.avail() + buyer_btc.frozen(), 2, "Buyer BTC total should be 2");
 
         // Verify seller's state
         let seller_balances = engine.ledger.get_user_balances(2).unwrap();
         let seller_btc = seller_balances.iter().find(|(a, _)| *a == 100).unwrap().1;
         let seller_usdt = seller_balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(seller_btc.avail, 8, "Seller should have 8 BTC left");
-        assert_eq!(seller_btc.frozen, 0, "Seller BTC frozen should be 0");
-        assert_eq!(seller_btc.avail + seller_btc.frozen, 8, "Seller BTC total should be 8");
+        assert_eq!(seller_btc.avail(), 8, "Seller should have 8 BTC left");
+        assert_eq!(seller_btc.frozen(), 0, "Seller BTC frozen should be 0");
+        assert_eq!(seller_btc.avail() + seller_btc.frozen(), 8, "Seller BTC total should be 8");
 
-        assert_eq!(seller_usdt.avail, 100000, "Seller should have gained 100,000 USDT");
-        assert_eq!(seller_usdt.frozen, 0, "Seller USDT frozen should be 0");
+        assert_eq!(seller_usdt.avail(), 100000, "Seller should have gained 100,000 USDT");
+        assert_eq!(seller_usdt.frozen(), 0, "Seller USDT frozen should be 0");
         assert_eq!(
-            seller_usdt.avail + seller_usdt.frozen,
+            seller_usdt.avail() + seller_usdt.frozen(),
             100000,
             "Seller USDT total should be 100,000"
         );
@@ -316,8 +316,8 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 50000, "First deposit: available should be 50,000");
-        assert_eq!(usdt.frozen, 0, "First deposit: frozen should be 0");
+        assert_eq!(usdt.avail(), 50000, "First deposit: available should be 50,000");
+        assert_eq!(usdt.frozen(), 0, "First deposit: frozen should be 0");
         let version_1 = usdt.version;
 
         // Second deposit
@@ -335,8 +335,8 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 80000, "Second deposit: available should be 80,000");
-        assert_eq!(usdt.frozen, 0, "Second deposit: frozen should be 0");
+        assert_eq!(usdt.avail(), 80000, "Second deposit: available should be 80,000");
+        assert_eq!(usdt.frozen(), 0, "Second deposit: frozen should be 0");
         assert!(usdt.version > version_1, "Version must increment on second deposit");
 
         // Third deposit
@@ -354,9 +354,9 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 100000, "Third deposit: available should be 100,000");
-        assert_eq!(usdt.frozen, 0, "Third deposit: frozen should be 0");
-        assert_eq!(usdt.avail + usdt.frozen, 100000, "Total should be 100,000");
+        assert_eq!(usdt.avail(), 100000, "Third deposit: available should be 100,000");
+        assert_eq!(usdt.frozen(), 0, "Third deposit: frozen should be 0");
+        assert_eq!(usdt.avail() + usdt.frozen(), 100000, "Total should be 100,000");
     }
 
     #[test]
@@ -383,8 +383,8 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 70000, "After first order: available should be 70,000");
-        assert_eq!(usdt.frozen, 30000, "After first order: frozen should be 30,000");
+        assert_eq!(usdt.avail(), 70000, "After first order: available should be 70,000");
+        assert_eq!(usdt.frozen(), 30000, "After first order: frozen should be 30,000");
 
         // Place second order (locks 40,000 more)
         engine.add_order_batch(vec![(1, 102, Side::Buy, OrderType::Limit, 40000, 1, 1, 1001)]);
@@ -392,8 +392,8 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 30000, "After second order: available should be 30,000");
-        assert_eq!(usdt.frozen, 70000, "After second order: frozen should be 70,000");
+        assert_eq!(usdt.avail(), 30000, "After second order: available should be 30,000");
+        assert_eq!(usdt.frozen(), 70000, "After second order: frozen should be 70,000");
 
         // Place third order (locks remaining 30,000)
         engine.add_order_batch(vec![(1, 103, Side::Buy, OrderType::Limit, 30000, 1, 1, 1002)]);
@@ -401,8 +401,8 @@ mod balance_field_tests {
         let balances = engine.ledger.get_user_balances(1).unwrap();
         let usdt = balances.iter().find(|(a, _)| *a == 200).unwrap().1;
 
-        assert_eq!(usdt.avail, 0, "After third order: available should be 0");
-        assert_eq!(usdt.frozen, 100000, "After third order: frozen should be 100,000");
-        assert_eq!(usdt.avail + usdt.frozen, 100000, "Total must remain 100,000");
+        assert_eq!(usdt.avail(), 0, "After third order: available should be 0");
+        assert_eq!(usdt.frozen(), 100000, "After third order: frozen should be 100,000");
+        assert_eq!(usdt.avail() + usdt.frozen(), 100000, "Total must remain 100,000");
     }
 }

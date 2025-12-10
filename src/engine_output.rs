@@ -240,8 +240,8 @@ impl EngineOutput {
             data.extend_from_slice(&event.seq.to_le_bytes());
             data.extend_from_slice(&event.delta_avail.to_le_bytes());
             data.extend_from_slice(&event.delta_frozen.to_le_bytes());
-            data.extend_from_slice(&event.avail.unwrap_or(0).to_le_bytes());
-            data.extend_from_slice(&event.frozen.unwrap_or(0).to_le_bytes());
+            data.extend_from_slice(&event.avail().unwrap_or(0).to_le_bytes());
+            data.extend_from_slice(&event.frozen().unwrap_or(0).to_le_bytes());
             data.extend_from_slice(event.event_type.as_bytes());
             data.extend_from_slice(&event.ref_id.to_le_bytes());
         }

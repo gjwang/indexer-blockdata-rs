@@ -239,7 +239,7 @@ impl<R: RiskModel> UBSCore<R> {
         // 2. Check balance
         if let Some(account) = self.accounts.get(&user_id) {
             if let Some(balance) = account.get_balance(asset_id) {
-                return balance.avail >= amount;
+                return balance.avail() >= amount;
             }
         }
 
@@ -259,17 +259,17 @@ impl<R: RiskModel> UBSCore<R> {
 
         let balance = account.get_balance_mut(asset_id);
 
-        let current = balance.avail as i64;
+        let current = balance.avail() as i64;
         let expected = current + delta;
 
         if expected >= 0 {
             // Normal case: no debt
-            balance.avail = expected as u64;
-            return balance.avail;
+            balance.avail() = expected as u64;
+            return balance.avail();
         }
 
         // Ghost money detected!
-        balance.avail = 0;
+        balance.avail() = 0;
         let shortfall = (-expected) as u64;
 
         // Derive reason from event type (no WAL change needed!)
@@ -305,7 +305,7 @@ impl<R: RiskModel> UBSCore<R> {
         if remaining > 0 {
             let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
             let balance = account.get_balance_mut(asset_id);
-            balance.avail += remaining;
+            balance.avail() += remaining;
         }
     }
 
@@ -317,8 +317,8 @@ impl<R: RiskModel> UBSCore<R> {
         };
 
         let balance = account.get_balance_mut(asset_id);
-        if balance.avail >= amount {
-            balance.avail -= amount;
+        if balance.avail() >= amount {
+            balance.avail() -= amount;
             true
         } else {
             false
@@ -334,7 +334,7 @@ impl<R: RiskModel> UBSCore<R> {
 
     /// Get balance (for testing)
     pub fn get_balance(&self, user_id: UserId, asset_id: AssetId) -> Option<u64> {
-        self.accounts.get(&user_id)?.get_balance(asset_id).map(|b| b.avail)
+        self.accounts.get(&user_id)?.get_balance(asset_id).map(|b| b.avail())
     }
 
     /// Check if user has debt
@@ -360,15 +360,15 @@ impl<R: RiskModel> UBSCore<R> {
             .ok_or(RejectReason::AccountNotFound)?;
 
         let balance = account.get_balance_mut(asset_id);
-        balance.frozen(amount)
+        balance.lock(amount)
             .map_err(|_| RejectReason::InsufficientFunds)?;
 
         log::debug!(
             "[LOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail, balance.frozen
+            user_id, asset_id, amount, balance.avail(), balance.frozen
         );
 
-        Ok(balance.avail)
+        Ok(balance.avail())
     }
 
     /// Unlock funds (move from frozen back to avail)
@@ -383,15 +383,15 @@ impl<R: RiskModel> UBSCore<R> {
             .ok_or(RejectReason::AccountNotFound)?;
 
         let balance = account.get_balance_mut(asset_id);
-        balance.unfrozen(amount)
+        balance.unlock(amount)
             .map_err(|_| RejectReason::InsufficientFrozen)?;
 
         log::debug!(
             "[UNLOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail, balance.frozen
+            user_id, asset_id, amount, balance.avail(), balance.frozen
         );
 
-        Ok(balance.avail)
+        Ok(balance.avail())
     }
 
     /// Settle a trade between buyer and seller
@@ -430,7 +430,7 @@ impl<R: RiskModel> UBSCore<R> {
         // Refund excess quote (frozen -> avail)
         if buyer_refund > 0 {
             buyer.get_balance_mut(quote_asset)
-                .unfrozen(buyer_refund)
+                .unlock(buyer_refund)
                 .map_err(|_| RejectReason::InsufficientFrozen)?;
         }
 
@@ -460,7 +460,7 @@ impl<R: RiskModel> UBSCore<R> {
     pub fn get_balance_full(&self, user_id: UserId, asset_id: AssetId) -> Option<(u64, u64)> {
         self.accounts.get(&user_id)?
             .get_balance(asset_id)
-            .map(|b| (b.avail, b.frozen))
+            .map(|b| (b.avail(), b.frozen()))
     }
 
     /// Get all accounts (for ME to query balances)
