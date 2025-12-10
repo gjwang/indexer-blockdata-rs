@@ -1,105 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+// Import the ENFORCED Balance type
+pub use crate::enforced_balance::Balance;
+
 pub type AssetId = u32;
 pub type UserId = u64;
 
-/// Balance represents a user's balance for a single asset.
-///
-/// # Invariants (enforced by private fields):
-/// 1. avail and frozen are NEVER negative (u64)
-/// 2. No overflow: all operations use checked arithmetic
-/// 3. version increments on every mutation (audit trail)
-/// 4. Can only be modified through validated methods
-///
-/// ## Why Private Fields?
-/// Making fields private ENFORCES that all mutations go through
-/// validation methods. This prevents:
-/// - Direct field access bypassing checks
-/// - Forgetting to increment version
-/// - Silent overflows
-/// - Breaking invariants
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-#[repr(C)]
-pub struct Balance {
-    avail: u64,      // PRIVATE - use deposit()/withdraw()
-    frozen: u64,     // PRIVATE - use frozen()/unfrozen()
-    version: u64,    // PRIVATE - auto-incremented
-}
-
-impl Balance {
-    /// Read-only access to available balance
-    #[inline(always)]
-    pub fn get_avail(&self) -> u64 {
-        self.avail
-    }
-
-    /// Read-only access to frozen balance
-    #[inline(always)]
-    pub fn get_frozen(&self) -> u64 {
-        self.frozen
-    }
-
-    /// Read-only access to version
-    #[inline(always)]
-    pub fn get_version(&self) -> u64 {
-        self.version
-    }
-
-    /// Deposit funds to available balance
-    /// Checks for overflow, increments version
-    pub fn deposit(&mut self, amount: u64) -> Result<(), &'static str> {
-        self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
-        self.version = self.version.wrapping_add(1);
-        Ok(())
-    }
-
-    /// Withdraw funds from available balance
-    /// Checks for sufficient funds and underflow, increments version
-    pub fn withdraw(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.avail < amount {
-            return Err("Insufficient funds");
-        }
-        self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
-        self.version = self.version.wrapping_add(1);
-        Ok(())
-    }
-
-    /// Lock funds (move from available to frozen)
-    /// Checks for sufficient funds, increments version
-    pub fn frozen(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.avail < amount {
-            return Err("Insufficient funds");
-        }
-        self.avail = self.avail.checked_sub(amount).ok_or("Balance underflow")?;
-        self.frozen = self.frozen.checked_add(amount).ok_or("Frozen balance overflow")?;
-        self.version = self.version.wrapping_add(1);
-        Ok(())
-    }
-
-    /// Unlock funds (move from frozen to available)
-    /// Checks for sufficient frozen funds, increments version
-    pub fn unfrozen(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.frozen < amount {
-            return Err("Insufficient frozen funds");
-        }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
-        self.avail = self.avail.checked_add(amount).ok_or("Balance overflow")?;
-        self.version = self.version.wrapping_add(1);
-        Ok(())
-    }
-
-    /// Spend frozen funds (remove from frozen, don't add to available)
-    /// Used for trade settlement
-    /// Checks for sufficient frozen funds, increments version
-    pub fn spend_frozen(&mut self, amount: u64) -> Result<(), &'static str> {
-        if self.frozen < amount {
-            return Err("Insufficient frozen funds");
-        }
-        self.frozen = self.frozen.checked_sub(amount).ok_or("Frozen balance underflow")?;
-        self.version = self.version.wrapping_add(1);
-        Ok(())
-    }
-}
+// Balance is now imported from enforced_balance module
+// All fields are private, all operations enforced
 
 /// UserAccount represents a user's account with balances across multiple assets.
 ///
