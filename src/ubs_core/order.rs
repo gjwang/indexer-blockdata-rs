@@ -134,3 +134,10 @@ mod tests {
         assert_eq!(order.machine_id(), 1);
     }
 }
+
+/// Cancel order request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelRequest {
+    pub user_id: UserId,
+    pub order_id: u64,
+}

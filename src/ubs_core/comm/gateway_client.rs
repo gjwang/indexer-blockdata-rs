@@ -72,6 +72,34 @@ impl UbsGatewayClient {
             .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
     }
 
+    /// Send cancel order and wait for response
+    pub async fn send_cancel(
+        &self,
+        cancel_req: crate::ubs_core::CancelRequest,
+        timeout_ms: u64,
+    ) -> Result<ResponseMessage, SendError> {
+        use super::message::{MsgType, parse_message};
+
+        // TODO: Implement proper cancel message format
+        // For now, reuse order message format with order_id
+        let mut payload = Vec::with_capacity(17); // 1 (type) + 16 (minimal)
+        payload.push(MsgType::Cancel as u8);
+        payload.extend_from_slice(&cancel_req.user_id.to_le_bytes());
+        payload.extend_from_slice(&cancel_req.order_id.to_le_bytes());
+
+        log::debug!("[UBS_CLIENT] Sending cancel order_id={}", cancel_req.order_id);
+
+        // Send via channel
+        let response_bytes = self.channel.send_and_receive(&payload, timeout_ms).await?;
+
+        // Parse response
+        let (_resp_type, resp_body) = parse_message(&response_bytes)
+            .ok_or_else(|| SendError::AeronError("Empty response".into()))?;
+
+        ResponseMessage::from_bytes(resp_body)
+            .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
+    }
+
     /// Check if connected
     pub fn is_connected(&self) -> bool {
         self.channel.is_connected()

@@ -30,6 +30,6 @@ pub use error::RejectReason;
 pub use fee::VipFeeTable;
 pub use health::{HealthChecker, HealthStatus};
 pub use metrics::{LatencyTimer, MetricsSnapshot, OrderMetrics};
-pub use order::{InternalOrder, OrderType, Side};
+pub use order::{InternalOrder, OrderType, Side, CancelRequest};
 pub use risk::{RiskModel, SpotRiskModel};
 pub use wal::{GroupCommitConfig, GroupCommitWal, MmapWal, WalEntry, WalEntryType, WalReplay, install_sigbus_handler};

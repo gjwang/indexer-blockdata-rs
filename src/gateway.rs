@@ -130,6 +130,7 @@ pub struct AppState {
 pub fn create_app(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/orders", post(create_order))
+        .route("/api/orders/cancel", post(cancel_order))
         .route("/api/user/balance", axum::routing::get(get_balance))
         .route("/api/user/trade_history", axum::routing::get(get_trade_history))
         .route("/api/user/order_history", axum::routing::get(get_order_history))
@@ -298,12 +299,53 @@ async fn transfer_out(
 
     Ok(Json(TransferResponse {
         success: true,
-        message: format!(
+    message: format!(
             "Transfer Out request submitted & settled: {} units of asset {} transferred from user {} to funding account",
             payload.amount, payload.asset, payload.user_id
         ),
         request_id: Some(payload.request_id),
     }))
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct CancelOrderRequest {
+    order_id: u64,
+}
+
+async fn cancel_order(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<CreateOrderParams>,
+    Json(cancel_req): Json<CancelOrderRequest>,
+) -> Result<Json<ApiResponse<OrderResponseData>>, (StatusCode, String)> {
+    let user_id = params.user_id;
+    let order_id = cancel_req.order_id;
+
+    #[cfg(feature = "aeron")]
+    {
+        use crate::ubs_core::CancelRequest;
+
+        // Create cancel request for UBSCore
+        let cancel_request = CancelRequest { user_id, order_id };
+
+        // Send to UBSCore for validation
+        state
+            .ubs_client
+            .send_cancel(cancel_request, 5000) // 5 second timeout
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("UBSCore error: {}", e)))?;
+
+        Ok(Json(ApiResponse::success(OrderResponseData {
+            order_id: order_id.to_string(),
+            order_status: OrderStatus::Cancelled,
+            cid: None,
+        })))
+    }
+
+    #[cfg(not(feature = "aeron"))]
+    {
+        let _ = (user_id, order_id); // Suppress warnings
+        Err((StatusCode::SERVICE_UNAVAILABLE, "Aeron feature not enabled".to_string()))
+    }
 }
 
 #[derive(Debug, serde::Serialize)]
