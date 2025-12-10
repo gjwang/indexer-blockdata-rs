@@ -71,7 +71,7 @@ async fn main() {
 
     // --- File Writers ---
     let data_dir = configure::prepare_data_dir(&config.data_dir).unwrap_or_else(|e| {
-        tracing::error!(target: LOG_TARGET, "Data dir error: {}", e);
+        log::error!(target: LOG_TARGET, "Data dir error: {}", e);
         "./data".to_string()
     });
     let backup_csv_path =
@@ -106,13 +106,13 @@ async fn main() {
         balance_consumer.subscribe(&["balance.events"])
             .expect("Failed to subscribe to balance.events");
 
-        tracing::info!(target: LOG_TARGET, "✅ Subscribed to Kafka balance.events topic");
+        log::info!(target: LOG_TARGET, "✅ Subscribed to Kafka balance.events topic");
 
         // Spawn background thread for balance event processing
         let settlement_db_clone = settlement_db.clone();
         let balance_tx_clone = balance_tx.clone();
         std::thread::spawn(move || {
-            tracing::info!(target: LOG_TARGET, "🔄 Balance event consumer thread started");
+            log::info!(target: LOG_TARGET, "🔄 Balance event consumer thread started");
             loop {
                 match balance_consumer.poll(std::time::Duration::from_millis(100)) {
                     Some(Ok(message)) => {
@@ -123,7 +123,7 @@ async fn main() {
                                     let event_id = format!("{}_{}_{}_{}",
                                         event.event_type, event.user_id, event.asset_id, event.seq);
 
-                                    tracing::info!(target: LOG_TARGET,
+                                    log::info!(target: LOG_TARGET,
                                         "[{}_CONSUMED] event_id={} user={} asset={} delta={} avail={:?} | Settlement consumed from Kafka",
                                         event.event_type.to_uppercase(), event_id, event.user_id, event.asset_id,
                                         event.delta_avail, event.avail());
@@ -132,18 +132,18 @@ async fn main() {
                                     let shard = event.user_id as usize % NUM_BALANCE_WRITERS;
                                     let _ = balance_tx_clone[shard].try_send(vec![event.clone()]);
 
-                                    tracing::info!(target: LOG_TARGET,
+                                    log::info!(target: LOG_TARGET,
                                         "[{}_TO_WRITER] event_id={} shard={} | Sent to balance writer",
                                         event.event_type.to_uppercase(), event_id, shard);
                                 }
                                 Err(e) => {
-                                    tracing::error!(target: LOG_TARGET, "Failed to parse BalanceEvent: {}", e);
+                                    log::error!(target: LOG_TARGET, "Failed to parse BalanceEvent: {}", e);
                                 }
                             }
                         }
                     }
                     Some(Err(e)) => {
-                        tracing::error!(target: LOG_TARGET, "Kafka consumer error: {}", e);
+                        log::error!(target: LOG_TARGET, "Kafka consumer error: {}", e);
                     }
                     None => {
                         // No message, continue
@@ -152,10 +152,10 @@ async fn main() {
             }
         });
     } else {
-        tracing::warn!(target: LOG_TARGET, "⚠️  Kafka config not found, balance events from UBSCore won't be processed");
+        log::warn!(target: LOG_TARGET, "⚠️  Kafka config not found, balance events from UBSCore won't be processed");
     }
 
-    tracing::info!(target: LOG_TARGET, "✅ Settlement Service Ready");
+    log::info!(target: LOG_TARGET, "✅ Settlement Service Ready");
 
     // --- Main Processing Loop ---
     run_processing_loop(
@@ -177,14 +177,14 @@ async fn main() {
 // ============================================================================
 
 async fn connect_settlement_db(config: &fetcher::configure::ScyllaDbConfig) -> Arc<SettlementDb> {
-    tracing::info!(target: LOG_TARGET, "Connecting to ScyllaDB (Settlement)...");
+    log::info!(target: LOG_TARGET, "Connecting to ScyllaDB (Settlement)...");
     match SettlementDb::connect(config).await {
         Ok(db) => {
-            tracing::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (Settlement)");
+            log::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (Settlement)");
             Arc::new(db)
         }
         Err(e) => {
-            tracing::error!(target: LOG_TARGET, "❌ Failed to connect to Settlement DB: {}", e);
+            log::error!(target: LOG_TARGET, "❌ Failed to connect to Settlement DB: {}", e);
             std::process::exit(1);
         }
     }
@@ -193,14 +193,14 @@ async fn connect_settlement_db(config: &fetcher::configure::ScyllaDbConfig) -> A
 async fn connect_order_history_db(
     config: &fetcher::configure::ScyllaDbConfig,
 ) -> Arc<OrderHistoryDb> {
-    tracing::info!(target: LOG_TARGET, "Connecting to ScyllaDB (OrderHistory)...");
+    log::info!(target: LOG_TARGET, "Connecting to ScyllaDB (OrderHistory)...");
     match OrderHistoryDb::connect(config).await {
         Ok(db) => {
-            tracing::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (OrderHistory)");
+            log::info!(target: LOG_TARGET, "✅ Connected to ScyllaDB (OrderHistory)");
             Arc::new(db)
         }
         Err(e) => {
-            tracing::error!(target: LOG_TARGET, "❌ Failed to connect to OrderHistory DB: {}", e);
+            log::error!(target: LOG_TARGET, "❌ Failed to connect to OrderHistory DB: {}", e);
             std::process::exit(1);
         }
     }
@@ -213,7 +213,7 @@ fn create_csv_writer(path: &std::path::Path) -> csv::Writer<std::fs::File> {
         .append(true)
         .open(path)
         .expect("Failed to open backup CSV file");
-    tracing::info!(target: LOG_TARGET, "📂 CSV backup: {}", path.display());
+    log::info!(target: LOG_TARGET, "📂 CSV backup: {}", path.display());
     csv::WriterBuilder::new().has_headers(false).from_writer(file)
 }
 
@@ -221,12 +221,12 @@ async fn load_chain_state(db: &SettlementDb) -> (u64, u64) {
     match db.get_chain_state().await {
         Ok((seq, hash)) => {
             if seq > 0 {
-                tracing::info!(target: LOG_TARGET, "🔄 Recovered: seq={} hash={}", seq, hash);
+                log::info!(target: LOG_TARGET, "🔄 Recovered: seq={} hash={}", seq, hash);
             }
             (seq, hash)
         }
         Err(e) => {
-            tracing::warn!(target: LOG_TARGET, "⚠️ Chain state load failed: {}", e);
+            log::warn!(target: LOG_TARGET, "⚠️ Chain state load failed: {}", e);
             (0, GENESIS_HASH)
         }
     }
@@ -275,7 +275,7 @@ fn spawn_derived_writers(
                 }
                 // Single batch write for ALL drained events
                 if let Err(e) = db.append_balance_events_batch(&all_events).await {
-                    tracing::error!(target: LOG_TARGET, "Balance writer shard {} failed: {}", shard_id, e);
+                    log::error!(target: LOG_TARGET, "Balance writer shard {} failed: {}", shard_id, e);
                 }
             }
         });
@@ -300,7 +300,7 @@ fn spawn_derived_writers(
                 }
             }
             if let Err(e) = db.insert_trades_batch(&all_trades, last_seq).await {
-                tracing::error!(target: LOG_TARGET, "Trades write failed: {}", e);
+                log::error!(target: LOG_TARGET, "Trades write failed: {}", e);
             }
         }
     });
@@ -332,7 +332,7 @@ fn spawn_derived_writers(
                     let client = sr_client.clone();
                     async move {
                         if let Err(e) = client.load_trade(trade).await {
-                            tracing::error!(target: "settlement", "StarRocks write failed: {}", e);
+                            log::error!(target: "settlement", "StarRocks write failed: {}", e);
                         }
                     }
                 })
@@ -341,7 +341,7 @@ fn spawn_derived_writers(
         }
     });
 
-    tracing::info!(target: LOG_TARGET, "✅ Derived writers spawned: {} balance writers, buffer={}", NUM_BALANCE_WRITERS, DERIVED_WRITER_BUFFER);
+    log::info!(target: LOG_TARGET, "✅ Derived writers spawned: {} balance writers, buffer={}", NUM_BALANCE_WRITERS, DERIVED_WRITER_BUFFER);
     (balance_channels, trades_tx, order_tx, starrocks_tx)
 }
 // ============================================================================
@@ -365,9 +365,9 @@ async fn run_processing_loop(
 
     loop {
         // --- Step 1: Receive Batch from Kafka ---
-        tracing::debug!(target: LOG_TARGET, "[LOOP] Polling Kafka for batch (max_size={})...", MAX_BATCH_SIZE);
+        log::debug!(target: LOG_TARGET, "[LOOP] Polling Kafka for batch (max_size={})...", MAX_BATCH_SIZE);
         let batch = receive_batch_kafka(&consumer, MAX_BATCH_SIZE).await;
-        tracing::debug!(target: LOG_TARGET, "[LOOP] Received {} messages from Kafka", batch.len());
+        log::debug!(target: LOG_TARGET, "[LOOP] Received {} messages from Kafka", batch.len());
 
         if batch.is_empty() {
             tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -404,7 +404,7 @@ async fn run_processing_loop(
 
         // Check SOT result - if failed, we have a problem but derived writes are in flight
         if let Err(e) = sot_result {
-            tracing::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
+            log::error!(target: LOG_TARGET, "❌ SOT write FAILED: {}", e);
             // TODO: Implement halt/recovery strategy
             continue;
         }
@@ -427,7 +427,7 @@ async fn run_processing_loop(
         let ord_cap = order_tx.capacity();
         let sr_cap = starrocks_tx.capacity();
 
-        tracing::info!(target: LOG_TARGET,
+        log::info!(target: LOG_TARGET,
             "[PROGRESS] seq={} msgs={} trades={} | batch: n={} {:.0}op/s writes={:?} | total: {:.0}msg/s | buf: bal={} trd={} ord={} sr={}",
             last_seq, total_msgs, total_trades,
             batch_size, batch_ops, d_writes,
@@ -457,7 +457,7 @@ async fn receive_batch_kafka(
     // 1. Block for at least one message (like ME does)
     match consumer.recv().await {
         Ok(message) => {
-            tracing::debug!(target: LOG_TARGET, "[RECV] Got message from Kafka, partition={} offset={}",
+            log::debug!(target: LOG_TARGET, "[RECV] Got message from Kafka, partition={} offset={}",
                 message.partition(), message.offset());
             if let Some(payload) = message.payload() {
                 match bincode::deserialize::<EngineOutput>(payload) {
@@ -465,13 +465,13 @@ async fn receive_batch_kafka(
                         batch.push(output);
                     }
                     Err(e) => {
-                        tracing::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
+                        log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
                     }
                 }
             }
         }
         Err(e) => {
-            tracing::error!(target: LOG_TARGET, "[RECV] Kafka recv error: {}", e);
+            log::error!(target: LOG_TARGET, "[RECV] Kafka recv error: {}", e);
             return batch;
         }
     }
@@ -489,13 +489,13 @@ async fn receive_batch_kafka(
                             batch.push(output);
                         }
                         Err(e) => {
-                            tracing::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
+                            log::error!(target: LOG_TARGET, "Failed to deserialize EngineOutput: {}", e);
                         }
                     }
                 }
             }
             Ok(Err(e)) => {
-                tracing::error!(target: LOG_TARGET, "[RECV] Kafka poll error: {}", e);
+                log::error!(target: LOG_TARGET, "[RECV] Kafka poll error: {}", e);
                 break;
             }
             Err(_) => {
@@ -505,7 +505,7 @@ async fn receive_batch_kafka(
         }
     }
 
-    tracing::debug!(target: LOG_TARGET, "[RECV] Batch complete: {} messages", batch.len());
+    log::debug!(target: LOG_TARGET, "[RECV] Batch complete: {} messages", batch.len());
     batch
 }
 
@@ -529,7 +529,7 @@ fn verify_batch(
 
         // PRODUCTION FIX: Allow sequence gaps (e.g., from test environment resets or chain reset)
         if seq > expected {
-            tracing::warn!(target: LOG_TARGET,
+            log::warn!(target: LOG_TARGET,
                 "⚠️  Sequence gap detected: expected {} got {} (gap of {}). Resetting chain to continue processing.",
                 expected, seq, seq - expected);
             // Reset chain state to accept this message
@@ -539,13 +539,13 @@ fn verify_batch(
 
         // Hash chain verification (skip if we just reset due to gap)
         if seq == expected && !output.verify_prev_hash(*last_hash) {
-            tracing::error!(target: LOG_TARGET, "Hash chain broken at seq={}", seq);
+            log::error!(target: LOG_TARGET, "Hash chain broken at seq={}", seq);
             continue;
         }
 
         // Output integrity
         if !output.verify() {
-            tracing::error!(target: LOG_TARGET, "Output hash invalid at seq={}", seq);
+            log::error!(target: LOG_TARGET, "Output hash invalid at seq={}", seq);
             continue;
         }
 
@@ -583,7 +583,7 @@ async fn write_sot_parallel(
                 let count = shard_outputs.len();
                 let t_start = std::time::Instant::now();
                 let result = db.write_engine_outputs_batch(&shard_outputs).await;
-                tracing::info!(target: LOG_TARGET, "[SOT symbol={}] wrote {} outputs in {:?}",
+                log::info!(target: LOG_TARGET, "[SOT symbol={}] wrote {} outputs in {:?}",
                     symbol_id, count, t_start.elapsed());
                 result
             }
@@ -674,7 +674,7 @@ async fn process_order_update_parallel(
                 )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() || r5.is_err() {
-                tracing::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
             }
         }
         OrderStatus::PartiallyFilled => {
@@ -685,7 +685,7 @@ async fn process_order_update_parallel(
                 db.insert_order_update_stream(order_update, event_id)
             );
             if r1.is_err() || r2.is_err() || r3.is_err() {
-                tracing::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
             }
         }
         OrderStatus::Filled | OrderStatus::Cancelled | OrderStatus::Expired => {
@@ -701,7 +701,7 @@ async fn process_order_update_parallel(
                 )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() || r4.is_err() {
-                tracing::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
             }
         }
         OrderStatus::Rejected => {
@@ -716,7 +716,7 @@ async fn process_order_update_parallel(
                 )
             );
             if r1.is_err() || r2.is_err() || r3.is_err() {
-                tracing::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
+                log::warn!(target: LOG_TARGET, "Order update partial failure for order {}", order_update.order_id);
             }
         }
     }
