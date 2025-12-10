@@ -258,9 +258,46 @@ impl<'a> UbsCoreHandler<'a> {
         self.accept_response(order.order_id)
     }
 
-    fn handle_cancel(&mut self, _body: &[u8]) -> Vec<u8> {
-        log::warn!("[UBSC] Cancel not implemented yet");
-        self.error_response(0, reason_codes::INTERNAL_ERROR)
+    fn handle_cancel(&mut self, body: &[u8]) -> Vec<u8> {
+        // Parse cancel message: [user_id: 8 bytes][order_id: 8 bytes]
+        if body.len() < 16 {
+            log::warn!("[UBSC] Invalid cancel message length: {}", body.len());
+            return self.error_response(0, reason_codes::INTERNAL_ERROR);
+        }
+
+        let user_id = u64::from_le_bytes(body[0..8].try_into().unwrap());
+        let order_id = u64::from_le_bytes(body[8..16].try_into().unwrap());
+
+        log::info!("[UBSC] Cancel request: user={} order={}", user_id, order_id);
+
+        // Forward cancel to ME via Kafka
+        if let Some(producer) = self.kafka_producer {
+            use crate::models::OrderRequest;
+
+            // Note: symbol_id and checksum are not used by ME for cancel
+            // but required by the OrderRequest enum structure
+            let cancel_request = OrderRequest::CancelOrder {
+                user_id,
+                order_id,
+                symbol_id: 0, // Placeholder - ME ignores this for cancel
+                checksum: 0,  // Placeholder - ME ignores this for cancel
+            };
+
+            if let Ok(payload) = bincode::serialize(&cancel_request) {
+                let key = order_id.to_string();
+                let record = FutureRecord::to("validated_orders")
+                    .payload(&payload)
+                    .key(&key);
+
+                // Send async (fire and forget)
+                let _ = producer.send(record, Duration::from_secs(0));
+                log::info!("[UBSC] Cancel forwarded to ME: order={}", order_id);
+                return self.accept_response(order_id);
+            }
+        }
+
+        log::warn!("[UBSC] No Kafka producer for cancel");
+        self.error_response(order_id, reason_codes::INTERNAL_ERROR)
     }
 
     fn handle_query(&mut self, _body: &[u8]) -> Vec<u8> {
