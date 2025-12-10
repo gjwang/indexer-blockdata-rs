@@ -700,9 +700,10 @@ impl MatchingEngine {
         // Track temporary version increments within the batch
         let mut temp_versions: std::collections::HashMap<(u64, u32), u64> =
             std::collections::HashMap::new();
-        // Track temporary balance snapshots within the batch
+        // Legacy: temp_balances still used in old process_order_logic path
         let mut temp_balances: std::collections::HashMap<(u64, u32), u64> =
             std::collections::HashMap::new();
+
 
         for trade in trades {
             // Calculate refund early to determine version increment
@@ -1065,26 +1066,9 @@ impl MatchingEngine {
                 v
             };
 
-            // Helper to get and update balance (avail, frozen)
-            let mut get_and_update_balance =
-                |uid: u64, asset_id: u32, delta_avail: i64, delta_frozen: i64| -> (u64, u64) {
-                    let entry = temp_balances.entry((uid, asset_id)).or_insert_with(|| {
-                        (ledger.get_balance(uid, asset_id), ledger.get_frozen(uid, asset_id))
-                    });
-                    if delta_avail >= 0 {
-                        entry.0 = entry.0.saturating_add(delta_avail as u64);
-                    } else {
-                        let abs_d = (-delta_avail) as u64;
-                        entry.0 = entry.0.saturating_sub(abs_d);
-                    }
-                    if delta_frozen >= 0 {
-                        entry.1 = entry.1.saturating_add(delta_frozen as u64);
-                    } else {
-                        let abs_d = (-delta_frozen) as u64;
-                        entry.1 = entry.1.saturating_sub(abs_d);
-                    }
-                    *entry
-                };
+            // ME DOES NOT TRACK BALANCES - Only generates deltas
+            // Actual balance state is owned by UBSCore
+            // avail/frozen fields in balance events set to -1 (not tracked)
 
             let buyer_quote_version =
                 get_and_add_version(trade.buy_user_id, quote_asset_id, buyer_quote_inc);
@@ -1092,28 +1076,8 @@ impl MatchingEngine {
             let seller_base_version = get_and_add_version(trade.sell_user_id, base_asset_id, 1);
             let seller_quote_version = get_and_add_version(trade.sell_user_id, quote_asset_id, 1);
 
-            // Calculate balance changes
+            // Calculate balance changes (DELTAS only)
             let trade_cost = trade.price * trade.quantity;
-
-            // Buyer: quote deducted from frozen, base credited to avail
-            let (buyer_quote_avail, buyer_quote_frozen) = get_and_update_balance(
-                trade.buy_user_id,
-                quote_asset_id,
-                buyer_refund as i64,
-                -(trade_cost as i64),
-            );
-            let (buyer_base_avail, buyer_base_frozen) =
-                get_and_update_balance(trade.buy_user_id, base_asset_id, trade.quantity as i64, 0);
-
-            // Seller: base deducted from frozen, quote credited to avail
-            let (seller_base_avail, seller_base_frozen) = get_and_update_balance(
-                trade.sell_user_id,
-                base_asset_id,
-                0,
-                -(trade.quantity as i64),
-            );
-            let (seller_quote_avail, seller_quote_frozen) =
-                get_and_update_balance(trade.sell_user_id, quote_asset_id, trade_cost as i64, 0);
 
             // Add trade output
             builder.add_trade(TradeOutput {
@@ -1133,7 +1097,7 @@ impl MatchingEngine {
                 settled_at: 0,
             });
 
-            // Add balance events for buyer
+            // Add balance events for buyer (DELTAS only, avail/frozen = -1)
             if buyer_refund > 0 {
                 builder.add_balance_event(EOBalanceEvent {
                     user_id: trade.buy_user_id,
@@ -1141,8 +1105,8 @@ impl MatchingEngine {
                     seq: buyer_quote_version + 1,
                     delta_avail: buyer_refund as i64,
                     delta_frozen: -(trade_cost as i64 + buyer_refund as i64),
-                    avail: buyer_quote_avail as i64,
-                    frozen: buyer_quote_frozen as i64,
+                    avail: -1, // ME doesn't track balances
+                    frozen: -1, // ME doesn't track balances
                     event_type: "trade_refund".into(),
                     ref_id: trade.trade_id,
                 });
@@ -1153,8 +1117,8 @@ impl MatchingEngine {
                     seq: buyer_quote_version + 1,
                     delta_avail: 0,
                     delta_frozen: -(trade_cost as i64),
-                    avail: buyer_quote_avail as i64,
-                    frozen: buyer_quote_frozen as i64,
+                    avail: -1, // ME doesn't track balances
+                    frozen: -1, // ME doesn't track balances
                     event_type: "trade_debit".into(),
                     ref_id: trade.trade_id,
                 });
@@ -1166,21 +1130,21 @@ impl MatchingEngine {
                 seq: buyer_base_version + 1,
                 delta_avail: trade.quantity as i64,
                 delta_frozen: 0,
-                avail: buyer_base_avail as i64,
-                frozen: buyer_base_frozen as i64,
+                avail: -1, // ME doesn't track balances
+                frozen: -1, // ME doesn't track balances
                 event_type: "trade_credit".into(),
                 ref_id: trade.trade_id,
             });
 
-            // Add balance events for seller
+            // Add balance events for seller (DELTAS only, avail/frozen = -1)
             builder.add_balance_event(EOBalanceEvent {
                 user_id: trade.sell_user_id,
                 asset_id: base_asset_id,
                 seq: seller_base_version + 1,
                 delta_avail: 0,
                 delta_frozen: -(trade.quantity as i64),
-                avail: seller_base_avail as i64,
-                frozen: seller_base_frozen as i64,
+                avail: -1, // ME doesn't track balances
+                frozen: -1, // ME doesn't track balances
                 event_type: "trade_debit".into(),
                 ref_id: trade.trade_id,
             });
@@ -1191,8 +1155,8 @@ impl MatchingEngine {
                 seq: seller_quote_version + 1,
                 delta_avail: trade_cost as i64,
                 delta_frozen: 0,
-                avail: seller_quote_avail as i64,
-                frozen: seller_quote_frozen as i64,
+                avail: -1, // ME doesn't track balances
+                frozen: -1, // ME doesn't track balances
                 event_type: "trade_credit".into(),
                 ref_id: trade.trade_id,
             });
@@ -1217,10 +1181,10 @@ impl MatchingEngine {
                 buyer_base_version,
                 seller_base_version,
                 seller_quote_version,
-                buyer_quote_balance_after: buyer_quote_avail,
-                buyer_base_balance_after: buyer_base_avail,
-                seller_base_balance_after: seller_base_avail,
-                seller_quote_balance_after: seller_quote_avail,
+                buyer_quote_balance_after: 0, // ME doesn't track balances
+                buyer_base_balance_after: 0, // ME doesn't track balances
+                seller_base_balance_after: 0, // ME doesn't track balances
+                seller_quote_balance_after: 0, // ME doesn't track balances
             });
         }
 
