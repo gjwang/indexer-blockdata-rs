@@ -85,7 +85,7 @@ echo ""
 USER_ID=1001
 
 # Transfer In USDT for testing
-TRANSFER_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
+TRANSFER_RESPONSE=$(curl -s -X POST "$GATEWAY_URL/api/v1/user/transfer_in" \
     -H "Content-Type: application/json" \
     -d "{
         \"request_id\": \"seed_$(date +%s)\",

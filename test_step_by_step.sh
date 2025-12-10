@@ -222,7 +222,7 @@ log_info "Depositing $DEPOSIT_AMOUNT BTC to user=$TEST_USER..."
 DEPOSIT_REQUEST_ID="deposit_btc_$(date +%s)_$$_$RANDOM"
 log_info "Request ID: $DEPOSIT_REQUEST_ID"
 
-response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
+response=$(curl -s -X POST "$GATEWAY_URL/api/v1/user/transfer_in" \
     -H "Content-Type: application/json" \
     -d "{
         \"request_id\": \"$DEPOSIT_REQUEST_ID\",
@@ -263,7 +263,7 @@ log_info "Depositing $USDT_AMOUNT USDT for trading..."
 USDT_REQUEST_ID="deposit_usdt_$(date +%s)_$$_$RANDOM"
 log_info "Request ID: $USDT_REQUEST_ID"
 
-response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_in" \
+response=$(curl -s -X POST "$GATEWAY_URL/api/v1/user/transfer_in" \
     -H "Content-Type: application/json" \
     -d "{
         \"request_id\": \"$USDT_REQUEST_ID\",
@@ -294,7 +294,7 @@ log_info "Placing SELL order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 SELL_CID="s_$(date +%s)_$$_$RANDOM"
 log_info "Sell Order ID: $SELL_CID (len: ${#SELL_CID})"
 
-sell_response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \
+sell_response=$(curl -s -X POST "http://localhost:3001/api/v1/order/create?user_id=$TEST_USER" \
     -H "Content-Type: application/json" \
     -d "{\"cid\":\"$SELL_CID\",\"symbol\":\"BTC_USDT\",\"side\":\"Sell\",\"order_type\":\"Limit\",\"price\":\"$ORDER_PRICE\",\"quantity\":\"$ORDER_QTY\"}" \
     || echo "{\"status\":-1,\"msg\":\"curl failed\"}")
@@ -308,7 +308,7 @@ log_info "Placing BUY order: price=$ORDER_PRICE qty=$ORDER_QTY..."
 BUY_CID="b_$(date +%s)_$$_$RANDOM"
 log_info "Client Order ID: $BUY_CID (len: ${#BUY_CID})"
 
-response=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$TEST_USER" \
+response=$(curl -s -X POST "http://localhost:3001/api/v1/order/create?user_id=$TEST_USER" \
     -H "Content-Type: application/json" \
     -d "{\"cid\":\"$BUY_CID\",\"symbol\":\"BTC_USDT\",\"side\":\"Buy\",\"order_type\":\"Limit\",\"price\":\"$ORDER_PRICE\",\"quantity\":\"$ORDER_QTY\"}")
 
@@ -355,7 +355,7 @@ log_step "7" "TEST: Cancel Order"
 if [ -n "$ORDER_ID" ] && [ "$ORDER_ID" != "unknown" ]; then
     log_info "Canceling order: $ORDER_ID..."
 
-    response=$(curl -s -X POST "$GATEWAY_URL/api/orders/cancel?user_id=$TEST_USER" \
+    response=$(curl -s -X POST "$GATEWAY_URL/api/v1/order/cancel?user_id=$TEST_USER" \
         -H "Content-Type: application/json" \
         -d "{
             \"order_id\": $ORDER_ID
@@ -387,7 +387,7 @@ log_info "Withdrawing $WITHDRAW_AMOUNT BTC from user=$TEST_USER..."
 WITHDRAW_REQUEST_ID="withdraw_btc_$(date +%s)_$$_$RANDOM"
 log_info "Request ID: $WITHDRAW_REQUEST_ID"
 
-response=$(curl -s -X POST "$GATEWAY_URL/api/v1/transfer_out" \
+response=$(curl -s -X POST "$GATEWAY_URL/api/v1/user/transfer_out" \
     -H "Content-Type: application/json" \
     -d "{
         \"request_id\": \"$WITHDRAW_REQUEST_ID\",

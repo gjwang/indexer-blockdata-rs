@@ -125,17 +125,19 @@ pub struct AppState {
     /// UBS Gateway client for async order validation
     #[cfg(feature = "aeron")]
     pub ubs_client: Arc<crate::ubs_core::comm::UbsGatewayClient>,
+    /// UBSCore request timeout in milliseconds
+    pub ubscore_timeout_ms: u64,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/api/orders", post(create_order))
-        .route("/api/orders/cancel", post(cancel_order))
-        .route("/api/user/balance", axum::routing::get(get_balance))
-        .route("/api/user/trade_history", axum::routing::get(get_trade_history))
-        .route("/api/user/order_history", axum::routing::get(get_order_history))
-        .route("/api/v1/transfer_in", post(transfer_in))
-        .route("/api/v1/transfer_out", post(transfer_out))
+        .route("/api/v1/order/create", post(create_order))
+        .route("/api/v1/order/cancel", post(cancel_order))
+        .route("/api/v1/user/balance", axum::routing::get(get_balance))
+        .route("/api/v1/user/trades", axum::routing::get(get_trade_history))
+        .route("/api/v1/user/orders", axum::routing::get(get_order_history))
+        .route("/api/v1/user/transfer_in", post(transfer_in))
+        .route("/api/v1/user/transfer_out", post(transfer_out))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
 }
@@ -330,7 +332,7 @@ async fn cancel_order(
         // Send to UBSCore for validation
         state
             .ubs_client
-            .send_cancel(cancel_request, 5000) // 5 second timeout
+            .send_cancel(cancel_request, state.ubscore_timeout_ms)
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("UBSCore error: {}", e)))?;
 
@@ -378,30 +380,25 @@ async fn create_order(
     )?;
     let convert_time = start.elapsed();
 
-    // 2. TEMP FIX: Skip UBSCore validation (UBSCore doesn't handle PlaceOrder yet)
-    //    Publish directly to Kafka for ME to process
+    // 2. Send to UBSCore for validation via Aeron
     #[cfg(feature = "aeron")]
     let validation_result = {
         let validate_start = std::time::Instant::now();
 
-        log::info!("[CREATE_ORDER] SKIPPING UBSCore validation (not implemented yet), order_id={}", order_id);
-
-        // BYPASS UBSCore - publish directly to Kafka
-        let bincode_payload = bincode::serialize(&internal_order).map_err(|e| {
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to serialize order: {}", e))
-        })?;
-
-        state.producer
-            .publish(state.kafka_topic.clone(), user_id.to_string(), bincode_payload)
+        // Send order to UBSCore via Aeron for validation
+        // UBSCore will validate, log to WAL, and forward to ME via Kafka
+        state
+            .ubs_client
+            .send_order(&internal_order, state.ubscore_timeout_ms)
             .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("Failed to publish to Kafka: {}", e)))?;
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("UBSCore error: {}", e)))?;
 
         let validate_time = validate_start.elapsed();
         let total_time = start.elapsed();
 
         log::info!(
-            "[CREATE_ORDER] Published to Kafka topic={} order_id={} convert={}µs kafka={}µs total={}µs",
-            state.kafka_topic, order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
+            "[CREATE_ORDER] Validated via UBSCore order_id={} convert={}µs ubscore={}µs total={}µs",
+            order_id, convert_time.as_micros(), validate_time.as_micros(), total_time.as_micros()
         );
 
         Ok(Json(ApiResponse::success(OrderResponseData {

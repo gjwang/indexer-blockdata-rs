@@ -113,17 +113,17 @@ for user_id in 1001 1002 1003; do
     echo "  Transferring to user $user_id..."
 
     # BTC (asset 1)
-    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/user/transfer_in \
         -H "Content-Type: application/json" \
         -d "{\"request_id\": \"req_${user_id}_1\", \"user_id\": $user_id, \"asset\": \"BTC\", \"amount\": \"10000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 
     # USDT (asset 2)
-    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/user/transfer_in \
         -H "Content-Type: application/json" \
         -d "{\"request_id\": \"req_${user_id}_2\", \"user_id\": $user_id, \"asset\": \"USDT\", \"amount\": \"1000000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 
     # ETH (asset 3)
-    curl -v -X POST http://localhost:3001/api/v1/transfer_in \
+    curl -v -X POST http://localhost:3001/api/v1/user/transfer_in \
         -H "Content-Type: application/json" \
         -d "{\"request_id\": \"req_${user_id}_3\", \"user_id\": $user_id, \"asset\": \"ETH\", \"amount\": \"100000.0\"}" 2>&1 | grep -E "(Connected|HTTP)"
 done

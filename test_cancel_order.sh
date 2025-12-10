@@ -73,7 +73,7 @@ ORDER_PAYLOAD='{
 }'
 
 info "Placing order for user $USER_ID..."
-ORDER_RESPONSE=$(curl -s -X POST "http://localhost:3001/api/orders?user_id=$USER_ID" \
+ORDER_RESPONSE=$(curl -s -X POST "http://localhost:3001/api/v1/order/create?user_id=$USER_ID" \
   -H "Content-Type: application/json" \
   -d "$ORDER_PAYLOAD")
 
@@ -131,7 +131,7 @@ echo "========================================="
 CANCEL_PAYLOAD="{\"order_id\": $ORDER_ID}"
 
 info "Sending cancel request..."
-CANCEL_RESPONSE=$(curl -s -X POST "http://localhost:3001/api/orders/cancel?user_id=$USER_ID" \
+CANCEL_RESPONSE=$(curl -s -X POST "http://localhost:3001/api/v1/order/cancel?user_id=$USER_ID" \
   -H "Content-Type: application/json" \
   -d "$CANCEL_PAYLOAD")
 

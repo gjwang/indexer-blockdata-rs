@@ -134,6 +134,7 @@ async fn main() {
         funding_account,
         #[cfg(feature = "aeron")]
         ubs_client,
+        ubscore_timeout_ms: 5000, // 5 seconds - configurable timeout for UBSCore requests
     });
 
     let app = create_app(state);
