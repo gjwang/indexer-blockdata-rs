@@ -1034,6 +1034,18 @@ impl MatchingEngine {
             }
         };
 
+        // ★ Emit OrderPlacement event (order successfully added to book)
+        builder.add_order_placement(crate::engine_output::OrderPlacement {
+            order_id,
+            user_id,
+            symbol_id,
+            side: side.as_u8(),
+            order_type: order_type.as_u8(),
+            price,
+            quantity,
+            created_at: timestamp,
+        });
+
         let mut total_filled = 0u64;
         let mut total_cost = 0u64;
         let mut match_batch = Vec::with_capacity(trades.len());
@@ -1219,6 +1231,15 @@ impl MatchingEngine {
             avg_price,
             updated_at: timestamp,
         });
+
+        // ★ Emit OrderCompletion if order is fully filled
+        if status == 3 { // Filled
+            builder.add_order_completion(crate::engine_output::OrderCompletion {
+                order_id,
+                reason: crate::engine_output::CompletionReason::Filled,
+                completed_at: timestamp,
+            });
+        }
 
         // Build final output
         let output = builder.build_unchecked();
