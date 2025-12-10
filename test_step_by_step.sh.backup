@@ -245,8 +245,8 @@ sleep 3
 
 # Verify in logs
 log_info "Verifying deposit in logs..."
-check_event_in_logs "DEPOSIT_CONSUMED.*user=$TEST_USER.*asset=$TEST_ASSET_BTC" "$(get_log_file ubscore)"
-check_event_in_logs "DEPOSIT_PERSISTED" "$(get_log_file settlement)"
+check_event_in_logs "DEPOSIT_CONSUMED.*user=$TEST_USER.*asset=$TEST_ASSET_BTC" "logs/ubscore.log"
+check_event_in_logs "DEPOSIT_PERSISTED" "logs/settlement.log"
 
 # Verify balance
 BALANCE=$(check_balance $TEST_USER "BTC" 0)
@@ -324,7 +324,7 @@ if echo "$response" | jq -e '.status == 0' > /dev/null 2>&1; then
 
     # Check ME logs (logs are in JSON dated files)
     log_info "Verifying order in ME logs..."
-    if grep -q "ORDER_MATCHED\|PlaceOrder" $(get_log_file matching_engine)* 2>/dev/null; then
+    if grep -q "ORDER_MATCHED\|PlaceOrder" logs/matching_engine.log* 2>/dev/null; then
         log_success "Order received by Matching Engine"
     else
         log_info "Order in ME (check logs for details)"
@@ -405,8 +405,8 @@ if echo "$response" | grep -q '"success":true'; then
     sleep 3
 
     # Verify in logs
-    check_event_in_logs "WITHDRAW_CONSUMED.*user=$TEST_USER" "$(get_log_file ubscore)"
-    check_event_in_logs "WITHDRAW_PERSISTED\|withdraw_" "$(get_log_file settlement)"
+    check_event_in_logs "WITHDRAW_CONSUMED.*user=$TEST_USER" "logs/ubscore.log"
+    check_event_in_logs "WITHDRAW_PERSISTED\|withdraw_" "logs/settlement.log"
 
     # Verify balance decreased
     NEW_BALANCE=$(check_balance $TEST_USER "BTC" 0)
@@ -428,14 +428,13 @@ echo "║                    VERIFICATION SUMMARY                        ║"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-# Check log files (check dated files which have the actual data)
+# Check log files
 echo "📊 Log Files:"
-for service in gateway matching_engine settlement ubscore; do
-    logfile=$(get_log_file $service)
-    if [ -f "$logfile" ]; then
-        lines=$(wc -l < "$logfile" 2>/dev/null || echo 0)
-        size=$(du -h "$logfile" 2>/dev/null | awk '{print $1}' || echo "0B")
-        echo "  $(basename $logfile): $lines lines, $size"
+for log in logs/*.log; do
+    if [ -f "$log" ]; then
+        lines=$(wc -l < "$log")
+        size=$(du -h "$log" | awk '{print $1}')
+        echo "  $(basename $log): $lines lines, $size"
     fi
 done
 echo ""
@@ -450,9 +449,9 @@ echo ""
 
 # Event summary
 echo "📝 Events Logged:"
-echo "  Deposits:    $(grep -c "DEPOSIT_CONSUMED" $(get_log_file ubscore) 2>/dev/null || echo 0)"
-echo "  Withdrawals: $(grep -c "WITHDRAW_CONSUMED" $(get_log_file ubscore) 2>/dev/null || echo 0)"
-echo "  Persisted:   $(grep -c "_PERSISTED" $(get_log_file settlement) 2>/dev/null || echo 0)"
+echo "  Deposits:    $(grep -c "DEPOSIT_CONSUMED" logs/ubscore.log 2>/dev/null || echo 0)"
+echo "  Withdrawals: $(grep -c "WITHDRAW_CONSUMED" logs/ubscore.log 2>/dev/null || echo 0)"
+echo "  Persisted:   $(grep -c "_PERSISTED" logs/settlement.log 2>/dev/null || echo 0)"
 echo ""
 
 # ============================================================================
@@ -461,24 +460,23 @@ log_step "10" "Logging Infrastructure Verification"
 
 log_info "Checking async JSON logging..."
 
-# Check if logs are JSON (check dated files)
-for service in ubscore gateway matching_engine settlement; do
-    logfile=$(get_log_file $service)
-    if [ -f "$logfile" ]; then
-        if head -1 "$logfile" 2>/dev/null | jq . > /dev/null 2>&1; then
-            log_success "$(basename $logfile): Valid JSON format ✓"
+# Check if logs are JSON
+for log in logs/*.log; do
+    if [ -f "$log" ]; then
+        if head -1 "$log" 2>/dev/null | jq . >/dev/null 2>&1; then
+            log_success "$(basename $log): Valid JSON format ✓"
         else
-            log_info "$(basename $logfile): Text format (may be empty or legacy)"
+            log_info "$(basename $log): Text format (may be empty or legacy)"
         fi
     fi
 done
 
 # Check for event IDs
 log_info "Checking event ID tracking..."
-if grep -q "event_id=" logs/*.log.* logs/*.log 2>/dev/null; then
+if grep -q "event_id=" logs/*.log 2>/dev/null; then
     log_success "Event IDs present in logs ✓"
     echo "Sample event IDs:"
-    grep -h "event_id=" logs/*.log.* logs/*.log 2>/dev/null | head -3
+    grep -h "event_id=" logs/*.log 2>/dev/null | head -3
 else
     log_info "No event IDs found (check if events were processed)"
 fi
