@@ -678,39 +678,34 @@ impl SettlementDb {
 
     /// Get all balances for a user (from balance_ledger - latest entry per asset)
     pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
-        //  Balance_ledger PRIMARY KEY is ((user_id, asset_id), seq)
-        // We must query with BOTH user_id AND asset_id
-        // Query each known asset separately and get latest balance
+        // Query Materialized View for O(1) lookup by user_id
+        // MV automatically returns all assets for the user
+        // PER PARTITION LIMIT 1 returns latest balance per asset
 
         const QUERY: &str = "
             SELECT asset_id, avail, frozen, seq, created_at
-            FROM balance_ledger
-            WHERE user_id = ? AND asset_id = ?
-            ORDER BY seq DESC
-            LIMIT 1
+            FROM user_balances_by_user
+            WHERE user_id = ?
+            PER PARTITION LIMIT 1
         ";
+
+        let result = self.session.query(QUERY, (user_id as i64,)).await?;
 
         let mut balances = Vec::new();
 
-        // Query known assets (1=BTC, 2=USDT, 3=ETH)
-        // In production, you'd query from an asset registry
-        for asset_id in [1i32, 2i32, 3i32] {
-            let result = self.session.query(QUERY, (user_id as i64, asset_id)).await?;
+        if let Some(rows) = result.rows {
+            for row in rows.into_iter() {
+                let (asset_id, avail, frozen, seq, created_at): (i32, i64, i64, i64, i64) =
+                    row.into_typed().context("Failed to parse balance row")?;
 
-            if let Some(rows) = result.rows {
-                for row in rows.into_iter() {
-                    let (asset_id, avail, frozen, seq, created_at): (i32, i64, i64, i64, i64) =
-                        row.into_typed().context("Failed to parse balance row")?;
-
-                    balances.push(UserBalance {
-                        user_id,
-                        asset_id: asset_id as u32,
-                        avail: avail as u64,
-                        frozen: frozen as u64,
-                        version: seq as u64,
-                        updated_at: created_at as u64,
-                    });
-                }
+                balances.push(UserBalance {
+                    user_id,
+                    asset_id: asset_id as u32,
+                    avail: avail as u64,
+                    frozen: frozen as u64,
+                    version: seq as u64,
+                    updated_at: created_at as u64,
+                });
             }
         }
 
