@@ -385,6 +385,223 @@ metrics::histogram!("balance_cache_hit_latency_ms", latency);
 
 ---
 
+## Resilience & Disaster Recovery
+
+### MV is Rebuildable from Source
+
+**Key principle**: `balance_ledger` is the **source of truth**. MV is a **derived view**.
+
+If MV is dropped, corrupted, or needs recreation, it can be **fully rebuilt** from the base table.
+
+---
+
+### Rebuild Process
+
+```sql
+-- 1. Drop existing MV (if corrupted or needs recreation)
+DROP MATERIALIZED VIEW trading.user_balances_by_user;
+
+-- 2. Recreate MV with same (or updated) schema
+CREATE MATERIALIZED VIEW trading.user_balances_by_user AS
+    SELECT user_id, asset_id, seq, avail, frozen, created_at
+    FROM trading.balance_ledger
+    WHERE user_id IS NOT NULL
+      AND asset_id IS NOT NULL
+      AND seq IS NOT NULL
+    PRIMARY KEY (user_id, asset_id, seq)
+    WITH CLUSTERING ORDER BY (asset_id ASC, seq DESC);
+
+-- 3. ScyllaDB automatically backfills from balance_ledger
+--    (Background process, takes minutes to hours depending on data size)
+```
+
+**What happens during rebuild:**
+1. ScyllaDB starts background backfill automatically
+2. Reads all rows from `balance_ledger`
+3. Populates MV incrementally
+4. New writes go to both base table and MV (even during backfill)
+5. Once complete, MV is fully synchronized
+
+---
+
+### Rebuild Time Estimates
+
+| Data Size | Rows | Estimated Time | Planning |
+|-----------|------|----------------|----------|
+| 1GB | ~10M | 1-2 minutes | No downtime needed |
+| 10GB | ~100M | 10-20 minutes | Brief performance impact |
+| 100GB | ~1B | 1-2 hours | Plan during low traffic |
+| 1TB | ~10B | 6-12 hours | Maintenance window recommended |
+
+**Your system** (100K users, 5 assets, 1000 txns avg):
+- Base table: ~50GB
+- Rebuild time: **~30-60 minutes**
+- Impact: Queries slower during rebuild (use fallback)
+
+---
+
+### Fallback Query During Rebuild
+
+Implement graceful degradation while MV is unavailable:
+
+```rust
+pub async fn get_user_all_balances(&self, user_id: u64) -> Result<Vec<UserBalance>> {
+    // Try MV first (fast path)
+    match self.query_mv(user_id).await {
+        Ok(balances) if !balances.is_empty() => {
+            return Ok(balances);  // MV available ✅
+        }
+        Ok(_) | Err(_) => {
+            // MV unavailable or incomplete - use fallback
+            log::warn!("MV unavailable for user {}, using source table fallback", user_id);
+        }
+    }
+
+    // Fallback: Query source table directly (slower but reliable)
+    self.query_source_table_fallback(user_id).await
+}
+
+async fn query_source_table_fallback(&self, user_id: u64) -> Result<Vec<UserBalance>> {
+    // Get all exchange assets
+    let assets = self.get_all_asset_ids(); // [1, 2, 3, ...]
+
+    // Query each asset from base table in parallel
+    let futures = assets.iter().map(|&asset_id| async move {
+        self.session.query(
+            "SELECT avail, frozen, seq, created_at
+             FROM balance_ledger
+             WHERE user_id = ? AND asset_id = ?
+             ORDER BY seq DESC
+             LIMIT 1",
+            (user_id as i64, asset_id as i32)
+        ).await
+    });
+
+    let results = join_all(futures).await;
+
+    // Filter successful results and parse
+    results.into_iter()
+        .filter_map(|r| r.ok())
+        .filter_map(|result| parse_balance_row(result))
+        .collect()
+}
+```
+
+**Fallback performance:**
+- Latency: 5-10ms (slower than MV but acceptable)
+- Works even when MV is completely unavailable
+- Automatically resumes using MV once rebuild completes
+
+---
+
+### Monitoring MV Health
+
+```rust
+// Check MV status
+async fn check_mv_health(&self) -> Result<MvStatus> {
+    // Query system tables
+    let result = self.session.query(
+        "SELECT view_name, include_all_columns
+         FROM system_schema.views
+         WHERE keyspace_name = 'trading'
+           AND view_name = 'user_balances_by_user'",
+        ()
+    ).await?;
+
+    if result.rows.is_none() {
+        return Ok(MvStatus::Missing);
+    }
+
+    // Check if MV is up-to-date (sample check)
+    let base_count = self.count_base_table_rows().await?;
+    let mv_count = self.count_mv_rows().await?;
+
+    let completeness = (mv_count as f64 / base_count as f64) * 100.0;
+
+    if completeness < 95.0 {
+        Ok(MvStatus::Rebuilding(completeness))
+    } else {
+        Ok(MvStatus::Healthy)
+    }
+}
+
+enum MvStatus {
+    Healthy,
+    Rebuilding(f64),  // Percentage complete
+    Missing,
+}
+```
+
+**Metrics to track:**
+```rust
+metrics::gauge!("mv_health_status", match status {
+    MvStatus::Healthy => 1.0,
+    MvStatus::Rebuilding(pct) => pct / 100.0,
+    MvStatus::Missing => 0.0,
+});
+
+metrics::counter!("balance_query_fallback_count", 1); // Track fallback usage
+```
+
+---
+
+### Recovery Scenarios
+
+#### **Scenario 1: Schema Change**
+```
+Need to add new column to MV:
+1. DROP old MV
+2. CREATE new MV with updated schema
+3. Wait for backfill
+4. Use fallback queries during rebuild
+```
+
+#### **Scenario 2: Corruption Detected**
+```
+MV returns inconsistent data:
+1. Investigate (compare MV vs base table samples)
+2. DROP corrupted MV
+3. RECREATE MV
+4. ScyllaDB rebuilds from source
+5. Verify data consistency
+```
+
+#### **Scenario 3: Migration from Old System**
+```
+Old system has no MV:
+1. Ensure balance_ledger is populated
+2. CREATE MV
+3. ScyllaDB backfills automatically
+4. Update code to use MV query
+5. Deploy Gateway with MV support
+```
+
+---
+
+### Best Practices
+
+1. **Always maintain base table integrity**
+   - `balance_ledger` is source of truth
+   - Never delete from base table
+   - Use append-only pattern
+
+2. **Test fallback queries regularly**
+   - Don't wait for disaster to test fallback
+   - Periodically simulate MV unavailability
+   - Verify fallback performance
+
+3. **Monitor rebuild progress**
+   - Track MV row count vs base table
+   - Alert if rebuild takes longer than expected
+   - Log when falling back to source queries
+
+4. **Plan for maintenance windows**
+   - Large rebuilds (>100GB) during low traffic
+   - Communicate to users if queries are slower
+   - Have rollback plan
+
+---
+
 ## Summary
 
 ### Decision: Materialized View (Phase 1)
