@@ -28,7 +28,7 @@ use fetcher::configure::{self, expand_tilde, AppConfig};
 use fetcher::logger::setup_logger;
 use fetcher::ubs_core::{
     GroupCommitConfig, GroupCommitWal, HealthChecker, HealthStatus, InternalOrder, LatencyTimer,
-    OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType,
+    OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType, BalanceEvent, TigerBeetleWorker,
 };
 
 // Logging macros with target "UBSC"
@@ -61,6 +61,8 @@ struct ServiceConfig {
 
     /// Data directory for WAL and snapshots
     data_dir: String,
+    tigerbeetle_cluster: u128,
+    tigerbeetle_addresses: String,
 }
 
 impl ServiceConfig {
@@ -71,6 +73,8 @@ impl ServiceConfig {
             validated_orders_topic: "validated_orders".to_string(),
             consumer_group: config.kafka.group_id.clone(),
             data_dir: expand_tilde(&config.data_dir),
+            tigerbeetle_cluster: 0, // Default or from config if available
+            tigerbeetle_addresses: "127.0.0.1:3000".to_string(),
         }
     }
 }
@@ -83,6 +87,8 @@ impl Default for ServiceConfig {
             validated_orders_topic: "validated_orders".to_string(),
             consumer_group: "ubscore".to_string(),
             data_dir: expand_tilde("~/ubscore_data"),
+            tigerbeetle_cluster: 0,
+            tigerbeetle_addresses: "127.0.0.1:3000".to_string(),
         }
     }
 }
@@ -97,8 +103,13 @@ struct UBSCoreService {
 }
 
 impl UBSCoreService {
-    fn new(wal: GroupCommitWal) -> Self {
-        let core = UBSCore::new(SpotRiskModel);
+    fn new(wal: GroupCommitWal, event_tx: tokio::sync::mpsc::UnboundedSender<BalanceEvent>) -> Self {
+        let mut core = UBSCore::new(SpotRiskModel)
+            .with_event_listener(event_tx);
+
+        // Register default symbols (for demo)
+        // Symbol 1: BTC(1) / USDT(2)
+        core.register_symbol(1, 1, 2);
 
         Self {
             core: RwLock::new(core),
@@ -112,17 +123,89 @@ impl UBSCoreService {
     /// Seed test accounts with initial balances
     /// This is for development/testing only
     async fn seed_test_accounts(&self) {
-        let mut core = self.core.write().await;
+        log::info!("🌱 Step-by-Step Verification Mode initialized.");
+        log::info!("⏳ Waiting for triggers in './triggers/' to inject inputs...");
 
-        // Seed accounts 1001-1010 with BTC(asset 1) and USDT(asset 2)
-        for user_id in 1001..=1010 {
-            // 100 BTC (8 decimals)
-            core.on_deposit(user_id, 1, 100_00000000);
-            // 10,000,000 USDT (8 decimals)
-            core.on_deposit(user_id, 2, 10_000_000_00000000);
+        let _ = std::fs::create_dir_all("./triggers");
+        // Ensure triggers are clean
+        let _ = std::fs::remove_file("./triggers/step1");
+        let _ = std::fs::remove_file("./triggers/step2");
+        let _ = std::fs::remove_file("./triggers/step3");
+
+        // Helper to wait for external signal before injecting next input
+        // This blocks only the SEEDING task, not the UBSCore service
+        let wait_for_trigger = |step: &str| {
+            let path = format!("./triggers/{}", step);
+            log::info!("⏸️  [TEST DRIVER] Ready for '{}'. Create file to inject input...", step);
+            while !std::path::Path::new(&path).exists() {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+            }
+            log::info!("▶️  [TEST DRIVER] Injecting Input: {}", step);
+        };
+
+        let offset = 2000;
+
+        // --- STEP 1: DEPOSIT PHASE ---
+        wait_for_trigger("step1");
+        {
+            let mut core = self.core.write().await;
+            for i in 1..=2 {
+                let user_id = offset + i;
+                let tx_id = 2_000_000 + user_id;
+                log::info!("[STEP 1] Action: Deposit User {}", user_id);
+                core.on_deposit(user_id, 1, 10_000 * 100_000_000, tx_id);
+                core.on_deposit(user_id, 2, 50_000 * 100_000_000, tx_id + 1000);
+            }
+            log::info!("[STEP 1] Finished. Check logs for 'AccountCreated' and 'Deposited'.");
+        } // Drop lock
+
+        // --- STEP 2: LOCK FUNDS PHASE ---
+        wait_for_trigger("step2");
+        {
+            let mut core = self.core.write().await;
+            let buyer_id = offset + 1;
+            let order_id = 9000001;
+            log::info!("[STEP 2] Action: Lock Funds Buyer {}", buyer_id);
+            // Buyer BUYS BTC, locks USDT (Asset 2)
+            if let Err(e) = core.lock_funds(buyer_id, 2, 50_000_000_000 + 1000, order_id) {
+                log::error!("[STEP 2] Failed: {:?}", e);
+            } else {
+                log::info!("[STEP 2] Success. Check logs for 'FundsLocked'.");
+            }
         }
 
-        info!("✅ Seeded test accounts 1001-1010 with BTC and USDT");
+        // --- STEP 3: SETTLE PHASE ---
+        wait_for_trigger("step3");
+        {
+            let mut core = self.core.write().await;
+            let buyer_id = offset + 1;
+            let seller_id = offset + 2;
+            let match_id = 8000001;
+            let sell_order_id = 9000002;
+            let order_id = 9000001;
+
+            log::info!("[STEP 3] Action: Settle Trade");
+
+            // Setup: Lock Seller Funds
+            log::info!("[STEP 3] Setup: Lock Seller Funds (BTC)");
+            let _ = core.lock_funds(seller_id, 1, 1_000_000_000, sell_order_id);
+
+            match core.settle_trade(
+                match_id,
+                buyer_id, seller_id,
+                1, 2,
+                1_000_000_000,
+                50_000_000_000,
+                0,
+                order_id, sell_order_id,
+                1000, 1000
+            ) {
+                 Ok(_) => log::info!("[STEP 3] Success. Check logs for 'TradeSettled'."),
+                 Err(e) => log::error!("[STEP 3] Failed: {:?}", e),
+            }
+        }
+
+        log::info!("🌱 Steps Complete.");
     }
 
     /// Log order to WAL before processing
@@ -239,14 +322,26 @@ async fn main() {
         }
     };
 
+    // --- Start TigerBeetle Worker ---
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+
+    // Hardcoded defaults for now since config update failed
+    let tb_addresses = vec!["127.0.0.1:3000".to_string()];
+    let tb_cluster = 0;
+
+    if let Err(e) = TigerBeetleWorker::start(tb_cluster, tb_addresses, event_rx) {
+         warn!("⚠️ Failed to start TigerBeetle Worker: {}", e);
+    } else {
+         info!("✅ TigerBeetle Worker started");
+    }
+
     // --- Create Service ---
-    let service = Arc::new(UBSCoreService::new(wal));
+    let service = Arc::new(UBSCoreService::new(wal, event_tx));
     info!("✅ UBSCore initialized");
 
     // --- Seed test accounts (development only) ---
-    // TODO: Remove this once balance sync from Gateway is implemented
+    // STEP-BY-STEP VERIFICATION MODE
     service.seed_test_accounts().await;
-
 
     // --- Kafka Producer ---
     let producer: FutureProducer = match ClientConfig::new()
