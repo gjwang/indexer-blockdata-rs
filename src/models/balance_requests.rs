@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum BalanceRequest {
     /// Transfer funds from funding_account to user's trading account (transfer in)
     TransferIn {
-        request_id: String,
+        request_id: u64,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -15,7 +15,7 @@ pub enum BalanceRequest {
     },
     /// Transfer funds from user's trading account to funding_account (transfer out)
     TransferOut {
-        request_id: String,
+        request_id: u64,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -24,10 +24,10 @@ pub enum BalanceRequest {
 }
 
 impl BalanceRequest {
-    pub fn request_id(&self) -> &str {
+    pub fn request_id(&self) -> u64 {
         match self {
-            BalanceRequest::TransferIn { request_id, .. } => request_id,
-            BalanceRequest::TransferOut { request_id, .. } => request_id,
+            BalanceRequest::TransferIn { request_id, .. } => *request_id,
+            BalanceRequest::TransferOut { request_id, .. } => *request_id,
         }
     }
 
@@ -87,7 +87,7 @@ mod tests {
 
         // Valid: within 60 seconds
         let req = BalanceRequest::TransferIn {
-            request_id: "test1".to_string(),
+            request_id: 1,
             user_id: 1,
             asset_id: 1,
             amount: 100,
@@ -97,7 +97,7 @@ mod tests {
 
         // Invalid: too old (>60 seconds)
         let req = BalanceRequest::TransferIn {
-            request_id: "test2".to_string(),
+            request_id: 2,
             user_id: 1,
             asset_id: 1,
             amount: 100,
@@ -107,7 +107,7 @@ mod tests {
 
         // Invalid: from future
         let req = BalanceRequest::TransferIn {
-            request_id: "test3".to_string(),
+            request_id: 3,
             user_id: 1,
             asset_id: 1,
             amount: 100,

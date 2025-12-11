@@ -176,14 +176,14 @@ async fn transfer_in(
     }
 
     // 2. Create Request & Send to Kafka
-    // Generate unique request_id (don't trust client)
+    // Generate unique request_id using snowflake (u64 for best performance)
     let gateway_request_id = {
         let mut gen = state.snowflake_gen.lock().unwrap();
-        format!("txin_{}_{}", payload.user_id, gen.generate())
+        gen.generate()
     };
 
     let balance_req = BalanceRequest::TransferIn {
-        request_id: gateway_request_id.clone(),
+        request_id: gateway_request_id,
         user_id: payload.user_id,
         asset_id,
         amount: raw_amount,
@@ -230,7 +230,7 @@ async fn transfer_in(
             "Transfer In request submitted & settled: {} units of asset {} transferred to user {}",
             payload.amount, payload.asset, payload.user_id
         ),
-        request_id: Some(gateway_request_id),
+        request_id: Some(gateway_request_id.to_string()),
     }))
 }
 
@@ -248,14 +248,14 @@ async fn transfer_out(
         })?;
 
     // 1. Create Request & Send to Kafka
-    // Generate unique request_id (don't trust client)
+    // Generate unique request_id using snowflake (u64 for best performance)
     let gateway_request_id = {
         let mut gen = state.snowflake_gen.lock().unwrap();
-        format!("txout_{}_{}", payload.user_id, gen.generate())
+        gen.generate()
     };
 
     let balance_req = BalanceRequest::TransferOut {
-        request_id: gateway_request_id.clone(),
+        request_id: gateway_request_id,
         user_id: payload.user_id,
         asset_id,
         amount: raw_amount,
@@ -322,7 +322,7 @@ async fn transfer_out(
             "Transfer Out request submitted & settled: {} units of asset {} transferred from user {} to funding account",
             payload.amount, payload.asset, payload.user_id
         ),
-        request_id: Some(gateway_request_id),
+        request_id: Some(gateway_request_id.to_string()),
     }))
 }
 
