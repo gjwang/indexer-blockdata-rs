@@ -37,7 +37,10 @@ async fn test_get_balance_no_db() {
         balance_topic: "balance_ops".to_string(),
         user_manager: UserAccountManager::new(),
         db: None,
+        internal_transfer_db: None,
         funding_account: Arc::new(Mutex::new(SimulatedFundingAccount::new())),
+        ubscore_timeout_ms: 1000,
+        tb_client: None,
     });
 
     let app = create_app(state);

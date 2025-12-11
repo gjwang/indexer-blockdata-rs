@@ -85,22 +85,25 @@ impl InternalTransferHandler {
         let request_id = generate_request_id() as i64;
         let now = get_current_timestamp_ms();
 
-        // 5. Create DB record
+        // Create DB record
+        // Create DB record
+        // Create DB record
         let record = TransferRequestRecord {
-            request_id,
+            request_id: request_id as i64,
+            user_id: match (req.from_account.user_id(), req.to_account.user_id()) {
+                (Some(uid), _) if uid > 0 => uid as i64,
+                (_, Some(uid)) if uid > 0 => uid as i64,
+                _ => 0,
+            },
             from_account_type: req.from_account.type_name().to_string(),
-            from_user_id: req.from_account.user_id().map(|u| u as i64),
-            from_asset_id: asset_id as i32,
+            from_user_id: req.from_account.user_id().unwrap_or(0) as i64,
             to_account_type: req.to_account.type_name().to_string(),
-            to_user_id: req.to_account.user_id().map(|u| u as i64),
-            to_asset_id: asset_id as i32,
-            amount: amount_scaled,
+            to_user_id: req.to_account.user_id().unwrap_or(0) as i64,
+            asset_id: asset_id as i32,
+            amount: amount_scaled as i64,
             status: TransferStatus::Requesting.as_str().to_string(),
-            created_at: now,
-            updated_at: now,
-            pending_transfer_id: None,
-            posted_transfer_id: None,
-            processor: Some("gateway".to_string()),
+            created_at: get_current_timestamp_ms(),
+            updated_at: get_current_timestamp_ms(),
             error_message: None,
         };
 

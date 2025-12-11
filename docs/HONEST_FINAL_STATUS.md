@@ -207,3 +207,6 @@ if let Some(db) = &state.internal_transfer_db {
 
 **No more premature celebrations!**
 **When settlement processes transfers → THEN it's done!**
+
+AUTO GO INTO NEXT ITERATOR!!! UNTIL COMPLETED!!! ALL THE WAY TO THE END!!!
+

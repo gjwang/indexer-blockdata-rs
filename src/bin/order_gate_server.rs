@@ -123,6 +123,29 @@ async fn main() {
         }
     };
 
+    // --- Connect to Internal Transfer DB ---
+    // Try to connect separately to ensure internal transfer functionality works even if settlement DB has schema issues
+    let internal_transfer_db = if let Some(scylla_config) = &config.scylladb {
+        let session = scylla::SessionBuilder::new()
+            .known_nodes(&scylla_config.hosts)
+            .build()
+            .await;
+
+        match session {
+            Ok(s) => {
+                println!("✅ Connected to ScyllaDB for Internal Transfers");
+                let db = fetcher::db::InternalTransferDb::new(Arc::new(s));
+                Some(Arc::new(db))
+            },
+            Err(e) => {
+                eprintln!("⚠️ Warning: Failed to connect to ScyllaDB for Internal Transfers: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         symbol_manager,
         balance_manager,
@@ -132,6 +155,7 @@ async fn main() {
         balance_topic,
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
+        internal_transfer_db,
         funding_account,
         #[cfg(feature = "aeron")]
         ubs_client,

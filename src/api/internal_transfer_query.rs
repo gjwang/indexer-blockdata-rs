@@ -5,14 +5,18 @@ use crate::models::api_response::ApiResponse;
 use crate::models::internal_transfer_types::{AccountType, InternalTransferData, TransferStatus};
 use anyhow::Result;
 use std::sync::Arc;
+use serde_json;
+
+use crate::symbol_manager::SymbolManager;
 
 pub struct InternalTransferQuery {
     pub db: Arc<InternalTransferDb>,
+    pub symbol_manager: Arc<SymbolManager>,
 }
 
 impl InternalTransferQuery {
-    pub fn new(db: Arc<InternalTransferDb>) -> Self {
-        Self { db }
+    pub fn new(db: Arc<InternalTransferDb>, symbol_manager: Arc<SymbolManager>) -> Self {
+        Self { db, symbol_manager }
     }
 
     /// Get transfer status by request_id
@@ -48,27 +52,21 @@ impl InternalTransferQuery {
             }
         };
 
-        // Convert to response format
-        let from_account = if record.from_account_type == "funding" {
-            AccountType::Funding {
-                asset: format!("ASSET_{}", record.from_asset_id), // TODO: Get actual asset name
-            }
-        } else {
-            AccountType::Spot {
-                user_id: record.from_user_id.unwrap_or(0) as u64,
-                asset: format!("ASSET_{}", record.from_asset_id),
-            }
+        // Resolve asset name from ID
+        let asset_name = self.symbol_manager.get_asset_name(record.asset_id as u32)
+            .unwrap_or_else(|| "UNKNOWN".to_string());
+
+        // Construct AccountTypes
+        let from_account = match record.from_account_type.as_str() {
+            "funding" => AccountType::Funding { asset: asset_name.clone(), user_id: record.from_user_id as u64 },
+            "spot" => AccountType::Spot { user_id: record.from_user_id as u64, asset: asset_name.clone() },
+            _ => AccountType::Funding { asset: "UNKNOWN".to_string(), user_id: 0 },
         };
 
-        let to_account = if record.to_account_type == "funding" {
-            AccountType::Funding {
-                asset: format!("ASSET_{}", record.to_asset_id),
-            }
-        } else {
-            AccountType::Spot {
-                user_id: record.to_user_id.unwrap_or(0) as u64,
-                asset: format!("ASSET_{}", record.to_asset_id),
-            }
+        let to_account = match record.to_account_type.as_str() {
+            "funding" => AccountType::Funding { asset: asset_name.clone(), user_id: record.to_user_id as u64 },
+            "spot" => AccountType::Spot { user_id: record.to_user_id as u64, asset: asset_name.clone() },
+            _ => AccountType::Funding { asset: "UNKNOWN".to_string(), user_id: 0 },
         };
 
         let status = TransferStatus::from_str(&record.status).unwrap_or(TransferStatus::Failed);

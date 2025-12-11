@@ -38,6 +38,7 @@ async fn test_internal_transfer_end_to_end() {
     let request = InternalTransferRequest {
         from_account: AccountType::Funding {
             asset: "USDT".to_string(),
+            user_id: 0,
         },
         to_account: AccountType::Spot {
             user_id,
@@ -122,6 +123,7 @@ async fn test_transfer_out_flow() {
         },
         to_account: AccountType::Funding {
             asset: "USDT".to_string(),
+            user_id: 0,
         },
         amount: Decimal::new(200_000_000, 8), // 2.00 USDT
     };

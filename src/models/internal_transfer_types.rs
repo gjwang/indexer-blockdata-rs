@@ -5,14 +5,18 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "account_type", rename_all = "snake_case")]
 pub enum AccountType {
-    Funding { asset: String },
+    Funding {
+        asset: String,
+        #[serde(default)]
+        user_id: u64, // Default to 0 for funding
+    },
     Spot { user_id: u64, asset: String },
 }
 
 impl AccountType {
     pub fn asset(&self) -> String {
         match self {
-            Self::Funding { asset } => asset.to_uppercase(),
+            Self::Funding { asset, .. } => asset.to_uppercase(),
             Self::Spot { asset, .. } => asset.to_uppercase(),
         }
     }
@@ -99,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_account_type_json() {
-        let funding = AccountType::Funding { asset: "USDT".to_string() };
+        let funding = AccountType::Funding { asset: "USDT".to_string(), user_id: 0 };
         let json = serde_json::to_string(&funding).unwrap();
         assert!(json.contains("account_type"));
 

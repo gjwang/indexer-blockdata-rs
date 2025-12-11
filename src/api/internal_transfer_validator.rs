@@ -135,6 +135,7 @@ mod tests {
         let req = InternalTransferRequest {
             from_account: AccountType::Funding {
                 asset: "USDT".to_string(),
+                user_id: 0,
             },
             to_account: AccountType::Spot {
                 user_id: 100,
@@ -152,6 +153,7 @@ mod tests {
         let req = InternalTransferRequest {
             from_account: AccountType::Funding {
                 asset: "BTC".to_string(),
+                user_id: 0,
             },
             to_account: AccountType::Spot {
                 user_id: 100,
@@ -187,6 +189,7 @@ mod tests {
         let req = InternalTransferRequest {
             from_account: AccountType::Funding {
                 asset: "USDT".to_string(),
+                user_id: 0,
             },
             to_account: AccountType::Spot {
                 user_id: 100,

@@ -16,6 +16,10 @@ use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
+use crate::api::internal_transfer_query::InternalTransferQuery;
+use crate::db::InternalTransferDb;
+use axum::extract::Path;
+use axum::response::IntoResponse;
 use crate::db::SettlementDb;
 use crate::fast_ulid::SnowflakeGenRng;
 use crate::ledger::MatchExecData;
@@ -121,6 +125,7 @@ pub struct AppState {
     pub balance_topic: String,
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
+    pub internal_transfer_db: Option<Arc<InternalTransferDb>>,
     pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
     /// UBS Gateway client for async order validation
     #[cfg(feature = "aeron")]
@@ -143,6 +148,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/user/transfer_in", post(transfer_in))
         .route("/api/v1/user/transfer_out", post(transfer_out))
         .route("/api/v1/user/internal_transfer", post(handle_internal_transfer))
+        .route("/api/v1/user/internal_transfer/:request_id", axum::routing::get(handle_get_transfer_status))
         .route("/api/v1/user/balance", axum::routing::get(get_balance))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
@@ -335,7 +341,7 @@ async fn handle_internal_transfer(
 
     // Validate asset match
     if payload.from_account.asset() != payload.to_account.asset() {
-        eprintln!("❌ Asset mismatch: {} != {}", payload.from_account.asset(), payload.to_account.asset());
+        log::error!("❌ Asset mismatch: {} != {}", payload.from_account.asset(), payload.to_account.asset());
         return Err(StatusCode::BAD_REQUEST);
     }
 
@@ -350,15 +356,15 @@ async fn handle_internal_transfer(
         .balance_manager
         .to_internal_amount(&payload.from_account.asset(), payload.amount)
         .map_err(|e| {
-            eprintln!("❌ Amount conversion failed: {}", e);
+            log::error!("❌ Amount conversion failed: {}", e);
             StatusCode::BAD_REQUEST
         })?;
 
-    println!("🔄 Internal Transfer Request:");
-    println!("   ID: {}", request_id);
-    println!("   From: {} (asset: {})", payload.from_account.type_name(), payload.from_account.asset());
-    println!("   To: {} (asset: {})", payload.to_account.type_name(), payload.to_account.asset());
-    println!("   Amount: {} (raw: {})", payload.amount, raw_amount);
+    log::info!("🔄 Internal Transfer Request:");
+    log::info!("   ID: {}", request_id);
+    log::info!("   From: {} (asset: {})", payload.from_account.type_name(), payload.from_account.asset());
+    log::info!("   To: {} (asset: {})", payload.to_account.type_name(), payload.to_account.asset());
+    log::info!("   Amount: {} (raw: {})", payload.amount, raw_amount);
 
     // Send to settlement service via Kafka (following transfer_in pattern)
     let settlement_message = serde_json::json!({
@@ -371,7 +377,7 @@ async fn handle_internal_transfer(
     });
 
     let json_payload = serde_json::to_string(&settlement_message).map_err(|e| {
-        eprintln!("Failed to serialize internal_transfer request: {}", e);
+        log::error!("Failed to serialize internal_transfer request: {}", e);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -384,11 +390,11 @@ async fn handle_internal_transfer(
         )
         .await
         .map_err(|e| {
-            eprintln!("Failed to send internal_transfer to Kafka: {}", e);
+            log::error!("Failed to send internal_transfer to Kafka: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!("✅ Internal Transfer published to Kafka");
+    log::info!("✅ Internal Transfer published to Kafka");
 
     // TODO: Write to database (InternalTransferDb)
     // TODO: Send to settlement service via Kafka
@@ -402,7 +408,7 @@ async fn handle_internal_transfer(
         created_at: current_time_ms() as i64,
     };
 
-    println!("✅ Internal Transfer SUBMITTED: request_id={}", request_id);
+    log::info!("✅ Internal Transfer SUBMITTED: request_id={}", request_id);
 
     Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
 }
@@ -909,5 +915,22 @@ async fn get_active_orders(
         Ok(Json(ApiResponse::success(response)))
     } else {
         Err((StatusCode::SERVICE_UNAVAILABLE, "Database not connected".to_string()))
+    }
+}
+
+/// Handler for getting internal transfer status
+async fn handle_get_transfer_status(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(request_id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(db) = &state.internal_transfer_db {
+        let query = InternalTransferQuery::new(db.clone(), state.symbol_manager.clone());
+
+        match query.get_transfer_status(&request_id).await {
+            Ok(response) => Json(response).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "Internal Transfer Database not connected").into_response()
     }
 }

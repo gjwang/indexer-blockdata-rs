@@ -51,6 +51,7 @@ mod tests {
             request_id: "123".to_string(),
             from_account: AccountType::Funding {
                 asset: "USDT".to_string(),
+                user_id: 0,
             },
             to_account: AccountType::Spot {
                 user_id: 100,

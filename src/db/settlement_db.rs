@@ -364,6 +364,11 @@ impl SettlementDb {
         &self.session
     }
 
+    /// Get Arc clone of the session
+    pub fn get_session(&self) -> Arc<Session> {
+        self.session.clone()
+    }
+
     /// Insert a single trade into the database with retry logic
     ///
     /// # Arguments

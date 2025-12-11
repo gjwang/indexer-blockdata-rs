@@ -87,6 +87,7 @@ hostname = "0.4"
 # Metrics
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
+zmq = "0.10.0"
 
 [features]
 default = ["aeron"]

@@ -51,6 +51,7 @@ mod integration_tests {
         let request = InternalTransferRequest {
             from_account: AccountType::Funding {
                 asset: "USDT".to_string(),
+                user_id: 0,
             },
             to_account: AccountType::Spot {
                 user_id: 3001,
@@ -183,6 +184,7 @@ mod integration_tests {
     async fn test_account_type_conversion() {
         let funding = AccountType::Funding {
             asset: "USDT".to_string(),
+            user_id: 0,
         };
 
         assert_eq!(funding.type_name(), "funding");
