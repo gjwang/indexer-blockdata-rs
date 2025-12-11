@@ -360,57 +360,35 @@ async fn handle_internal_transfer(
     println!("   To: {} (asset: {})", payload.to_account.type_name(), payload.to_account.asset());
     println!("   Amount: {} (raw: {})", payload.amount, raw_amount);
 
-    // REAL IMPLEMENTATION - Actually move funds via TigerBeetle!
-    if let Some(tb_client) = &state.tb_client {
-        use crate::ubs_core::tigerbeetle::tb_account_id;
+    // Send to settlement service via Kafka (following transfer_in pattern)
+    let settlement_message = serde_json::json!({
+        "request_id": request_id,
+        "from_account": payload.from_account,
+        "to_account": payload.to_account,
+        "asset_id": asset_id,
+        "amount": raw_amount,
+        "timestamp": current_time_ms(),
+    });
 
-        // Get account IDs
-        let from_account_id = match &payload.from_account {
-            crate::models::internal_transfer_types::AccountType::Funding { asset: _ } => {
-                // Funding account ID (asset-based)
-                asset_id as u128
-            },
-            crate::models::internal_transfer_types::AccountType::Spot { user_id, asset: _ } => {
-                tb_account_id(*user_id, asset_id)
-            },
-        };
+    let json_payload = serde_json::to_string(&settlement_message).map_err(|e| {
+        eprintln!("Failed to serialize internal_transfer request: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
 
-        let to_account_id = match &payload.to_account {
-            crate::models::internal_transfer_types::AccountType::Funding { asset: _ } => {
-                asset_id as u128
-            },
-            crate::models::internal_transfer_types::AccountType::Spot { user_id, asset: _ } => {
-                tb_account_id(*user_id, asset_id)
-            },
-        };
+    state
+        .producer
+        .publish(
+            "internal_transfer_requests".to_string(),
+            request_id.to_string(),
+            json_payload.into_bytes()
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to send internal_transfer to Kafka: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
 
-        println!("📝 TigerBeetle Transfer:");
-        println!("   From account: {}", from_account_id);
-        println!("   To account: {}", to_account_id);
-        println!("   Amount: {}", raw_amount);
-
-        // Create transfer in TigerBeetle
-        let transfer_id = request_id as u128;
-
-        match tb_client.create_transfer(
-            transfer_id,
-            from_account_id,
-            to_account_id,
-            raw_amount as u128,
-            0, // ledger
-            0, // code
-        ).await {
-            Ok(_) => {
-                println!("✅ TigerBeetle transfer created successfully!");
-            },
-            Err(e) => {
-                eprintln!("❌ TigerBeetle transfer failed: {:?}", e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
-            }
-        }
-    } else {
-        println!("⚠️  No TigerBeetle client - using mock mode");
-    }
+    println!("✅ Internal Transfer published to Kafka");
 
     // TODO: Write to database (InternalTransferDb)
     // TODO: Send to settlement service via Kafka
@@ -420,11 +398,11 @@ async fn handle_internal_transfer(
         from_account: payload.from_account,
         to_account: payload.to_account,
         amount: payload.amount.to_string(),
-        status: TransferStatus::Success,
+        status: TransferStatus::Pending,  // Changed to Pending since we sent to Kafka
         created_at: current_time_ms() as i64,
     };
 
-    println!("✅ Internal Transfer COMPLETE: request_id={}", request_id);
+    println!("✅ Internal Transfer SUBMITTED: request_id={}", request_id);
 
     Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
 }
