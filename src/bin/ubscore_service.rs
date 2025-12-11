@@ -120,92 +120,115 @@ impl UBSCoreService {
         }
     }
 
-    /// Seed test accounts with initial balances
-    /// This is for development/testing only
+    /// Test Command Processor Loop
+    /// Watches './triggers/command' for instructions, executes them, and deletes the file.
     async fn seed_test_accounts(&self) {
-        log::info!("🌱 Step-by-Step Verification Mode initialized.");
-        log::info!("⏳ Waiting for triggers in './triggers/' to inject inputs...");
+        log::info!("🎮 Test Command Mode initialized.");
+        log::info!("Instructions: Write commands to './triggers/command'");
+        log::info!("Format: CMD arg1 arg2 ...");
 
         let _ = std::fs::create_dir_all("./triggers");
-        // Ensure triggers are clean
-        let _ = std::fs::remove_file("./triggers/step1");
-        let _ = std::fs::remove_file("./triggers/step2");
-        let _ = std::fs::remove_file("./triggers/step3");
+        // Clean start
+        let _ = std::fs::remove_file("./triggers/command");
 
-        // Helper to wait for external signal before injecting next input
-        // This blocks only the SEEDING task, not the UBSCore service
-        let wait_for_trigger = |step: &str| {
-            let path = format!("./triggers/{}", step);
-            log::info!("⏸️  [TEST DRIVER] Ready for '{}'. Create file to inject input...", step);
-            while !std::path::Path::new(&path).exists() {
-                std::thread::sleep(std::time::Duration::from_millis(500));
+        loop {
+            let cmd_path = std::path::Path::new("./triggers/command");
+            if cmd_path.exists() {
+                // Read command
+                if let Ok(content) = std::fs::read_to_string(cmd_path) {
+                    let parts: Vec<&str> = content.trim().split_whitespace().collect();
+                    if !parts.is_empty() {
+                        log::info!("📥 Received Command: {:?}", parts);
+                        self.process_test_command(&parts).await;
+                    }
+                }
+                // Delete command file to signal completion/readiness for next
+                let _ = std::fs::remove_file(cmd_path);
             }
-            log::info!("▶️  [TEST DRIVER] Injecting Input: {}", step);
-        };
-
-        let offset = 2000;
-
-        // --- STEP 1: DEPOSIT PHASE ---
-        wait_for_trigger("step1");
-        {
-            let mut core = self.core.write().await;
-            for i in 1..=2 {
-                let user_id = offset + i;
-                let tx_id = 2_000_000 + user_id;
-                log::info!("[STEP 1] Action: Deposit User {}", user_id);
-                core.on_deposit(user_id, 1, 10_000 * 100_000_000, tx_id);
-                core.on_deposit(user_id, 2, 50_000 * 100_000_000, tx_id + 1000);
-            }
-            log::info!("[STEP 1] Finished. Check logs for 'AccountCreated' and 'Deposited'.");
-        } // Drop lock
-
-        // --- STEP 2: LOCK FUNDS PHASE ---
-        wait_for_trigger("step2");
-        {
-            let mut core = self.core.write().await;
-            let buyer_id = offset + 1;
-            let order_id = 9000001;
-            log::info!("[STEP 2] Action: Lock Funds Buyer {}", buyer_id);
-            // Buyer BUYS BTC, locks USDT (Asset 2)
-            if let Err(e) = core.lock_funds(buyer_id, 2, 50_000_000_000 + 1000, order_id) {
-                log::error!("[STEP 2] Failed: {:?}", e);
-            } else {
-                log::info!("[STEP 2] Success. Check logs for 'FundsLocked'.");
-            }
+            std::thread::sleep(std::time::Duration::from_millis(100)); // Low latency polling
         }
+    }
 
-        // --- STEP 3: SETTLE PHASE ---
-        wait_for_trigger("step3");
-        {
-            let mut core = self.core.write().await;
-            let buyer_id = offset + 1;
-            let seller_id = offset + 2;
-            let match_id = 8000001;
-            let sell_order_id = 9000002;
-            let order_id = 9000001;
+    async fn process_test_command(&self, args: &[&str]) {
+        let mut core = self.core.write().await;
 
-            log::info!("[STEP 3] Action: Settle Trade");
+        match args[0] {
+            "DEPOSIT" => {
+                // DEPOSIT <user_id> <asset_id> <amount> <tx_id>
+                if args.len() < 5 { log::error!("Usage: DEPOSIT user asset amount tx_id"); return; }
+                let user: u64 = args[1].parse().unwrap_or(0);
+                let asset: u32 = args[2].parse().unwrap_or(0);
+                let amount: u64 = args[3].parse().unwrap_or(0);
+                let tx: u64 = args[4].parse().unwrap_or(0);
+                core.on_deposit(user, asset, amount, tx);
+                log::info!("[CMD] Deposited: user={} asset={} amount={}", user, asset, amount);
+            },
+            "WITHDRAW" => {
+                // WITHDRAW <user_id> <asset_id> <amount> <req_id>
+                if args.len() < 5 { log::error!("Usage: WITHDRAW user asset amount req_id"); return; }
+                let user: u64 = args[1].parse().unwrap_or(0);
+                let asset: u32 = args[2].parse().unwrap_or(0);
+                let amount: u64 = args[3].parse().unwrap_or(0);
+                let req_id: u64 = args[4].parse().unwrap_or(0);
+                // Note: UBSCore currently doesn't expose on_withdraw directly in same way,
+                // but we can simulate logic if on_withdraw exists.
+                // Checking code... core.rs has on_deposit, let's assume we use lock for withdrawal or implement on_withdraw later.
+                // For now, we'll log limitation or use lock if intending to reserve.
+                log::warn!("[CMD] WITHDRAW not fully implemented in Core harness yet.");
+            },
+            "LOCK" => {
+                // LOCK <user_id> <asset_id> <amount> <order_id>
+                if args.len() < 5 { log::error!("Usage: LOCK user asset amount order_id"); return; }
+                let user: u64 = args[1].parse().unwrap_or(0);
+                let asset: u32 = args[2].parse().unwrap_or(0);
+                let amount: u64 = args[3].parse().unwrap_or(0);
+                let oid: u64 = args[4].parse().unwrap_or(0);
+                match core.lock_funds(user, asset, amount, oid) {
+                    Ok(_) => log::info!("[CMD] Funds Locked: user={} amount={}", user, amount),
+                    Err(e) => log::error!("[CMD] Lock Failed: {:?}", e),
+                }
+            },
+            "UNLOCK" => {
+                // UNLOCK <user_id> <asset_id> <amount> <order_id>
+                if args.len() < 5 { log::error!("Usage: UNLOCK user asset amount order_id"); return; }
+                let user: u64 = args[1].parse().unwrap_or(0);
+                let asset: u32 = args[2].parse().unwrap_or(0);
+                let amount: u64 = args[3].parse().unwrap_or(0);
+                let oid: u64 = args[4].parse().unwrap_or(0);
+                match core.unlock_funds(user, asset, amount, oid) {
+                    Ok(_) => log::info!("[CMD] Funds Unlocked: user={}", user),
+                    Err(e) => log::error!("[CMD] Unlock Failed: {:?}", e),
+                }
+            },
+            "SETTLE" => {
+                // SETTLE match_id buy_user sell_user base quote price qty
+                // Simplified for demo: Uses fixed fees and order IDs derived or passed?
+                // Usage: SETTLE match_id buy_uid sell_uid base quote price qty buy_oid sell_oid
+                if args.len() < 10 { log::error!("Usage: SETTLE match_id buy_uid sell_uid base quote price qty buy_oid sell_oid"); return; }
+                let match_id = args[1].parse().unwrap_or(0);
+                let buyer = args[2].parse().unwrap_or(0);
+                let seller = args[3].parse().unwrap_or(0);
+                let p_asset = args[4].parse().unwrap_or(0); // Payload asset (confusing name in core?) No, core uses base/quote
+                let q_asset = args[5].parse().unwrap_or(0);
+                let price = args[6].parse().unwrap_or(0);
+                let qty = args[7].parse().unwrap_or(0);
+                let buy_oid = args[8].parse().unwrap_or(0);
+                let sell_oid = args[9].parse().unwrap_or(0);
 
-            // Setup: Lock Seller Funds
-            log::info!("[STEP 3] Setup: Lock Seller Funds (BTC)");
-            let _ = core.lock_funds(seller_id, 1, 1_000_000_000, sell_order_id);
+                // For demo, we pre-lock the SELLER logic implicitly or expect user to have called LOCK?
+                // The Test Script should handle the LOCK calls.
 
-            match core.settle_trade(
-                match_id,
-                buyer_id, seller_id,
-                1, 2,
-                1_000_000_000,
-                50_000_000_000,
-                0,
-                order_id, sell_order_id,
-                1000, 1000
-            ) {
-                 Ok(_) => log::info!("[STEP 3] Success. Check logs for 'TradeSettled'."),
-                 Err(e) => log::error!("[STEP 3] Failed: {:?}", e),
-            }
+                match core.settle_trade(match_id, buyer, seller, p_asset, q_asset, qty, price * qty, 0, buy_oid, sell_oid, 1000, 1000) {
+                     Ok(_) => log::info!("[CMD] Trade Settled: match_id={}", match_id),
+                     Err(e) => log::error!("[CMD] Settle Failed: {:?}", e),
+                }
+            },
+            "EXIT" => {
+                log::info!("🛑 Exiting Test Mode.");
+                std::process::exit(0);
+            },
+            _ => log::warn!("Unknown command: {}", args[0]),
         }
-
-        log::info!("🌱 Steps Complete.");
     }
 
     /// Log order to WAL before processing

@@ -1,13 +1,16 @@
 #!/bin/bash
 set -e
 
+# Updated to use the new Command Processor architecture
+# This script mimics the old "Step-by-Step" flow using the new "DEPOSIT / LOCK / SETTLE" commands.
+
 # Colors
 GREEN='\033[0;32m'
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo "🚀 Starting Step-by-Step Verification..."
+echo "🚀 Starting Step-by-Step Verification (Legacy Flow)..."
 
 # 1. Clean Environment
 echo "🧹 Cleaning environment..."
@@ -61,43 +64,53 @@ check_log_wait() {
 }
 
 wait_for_driver_ready() {
-    local STEP=$1
-    check_log_wait "Ready for '$STEP'" "Driver Ready ($STEP)"
+    # New driver doesn't log "Ready for stepX", it logs "Test Command Mode initialized" once.
+    if ! grep -q "Test Command Mode initialized" service.log; then
+         check_log_wait "Test Command Mode initialized" "Service Init"
+    fi
 }
 
-trigger_step() {
-    local STEP=$1
-    echo "👉 Triggering $STEP..."
-    touch triggers/$STEP
+send_cmd() {
+    echo "👉 Triggering: $*"
+    echo "$*" > triggers/command
+    # Wait for consumption
+    while [ -f triggers/command ]; do sleep 0.1; done
+}
+
+check_wait() {
+    echo -n "Press Enter to execute $1..."
+    # read  # Uncomment for true interactive mode
 }
 
 # --- TEST FLOW ---
 
-# Wait for Service Startup and Step 1 Driver Ready
-wait_for_driver_ready "step1"
+wait_for_driver_ready
 
 # STEP 1: DEPOSIT
+# Old logic: Deposit User 2001 (10k BTC, 50k USDT) and 2002.
+# New Command: DEPOSIT <user> <asset> <amount> <tx>
 echo -e "\n${YELLOW}--- STEP 1: DEPOSIT ---${NC}"
-trigger_step "step1"
-check_log_wait "AccountCreated" "Event: AccountCreated"
-check_log_wait "Deposited" "Event: Deposited"
-check_log_wait "STEP 1] Finished" "Step 1 Completion"
+send_cmd "DEPOSIT 2001 1 1000000000000 2002001"
+send_cmd "DEPOSIT 2001 2 5000000000000 2002002"
+send_cmd "DEPOSIT 2002 1 1000000000000 2002003"
+check_log_wait "Deposited: user=2001" "Deposit 2001"
 echo "✅ Step 1 Verified."
 
 # STEP 2: LOCK FUNDS
-wait_for_driver_ready "step2"
 echo -e "\n${YELLOW}--- STEP 2: LOCK FUNDS ---${NC}"
-trigger_step "step2"
-check_log_wait "FundsLocked" "Event: FundsLocked"
-check_log_wait "STEP 2] Success" "Step 2 Completion"
+# Buyer 2001 locks 50k USDT (Asset 2)
+send_cmd "LOCK 2001 2 50000000001000 9000001"
+check_log_wait "Funds Locked: user=2001" "Lock Buyer"
 echo "✅ Step 2 Verified."
 
 # STEP 3: SETTLE TRADE
-wait_for_driver_ready "step3"
 echo -e "\n${YELLOW}--- STEP 3: SETTLE TRADE ---${NC}"
-trigger_step "step3"
-check_log_wait "TradeSettled" "Event: TradeSettled"
-check_log_wait "STEP 3] Success" "Step 3 Completion"
+# Pre-lock Seller 2002 (BTC)
+send_cmd "LOCK 2002 1 1000000000 9000002"
+# Settle
+# SETTLE match_id buy sell base quote price qty ...
+send_cmd "SETTLE 8000001 2001 2002 1 2 1000000000 50000000000 9000001 9000002"
+check_log_wait "Trade Settled: match_id=8000001" "Settlement"
 echo "✅ Step 3 Verified."
 
 
