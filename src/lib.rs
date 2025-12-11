@@ -29,5 +29,6 @@ pub mod symbol_manager;
 pub mod symbol_utils;
 pub mod ubs_core;
 pub mod user_account;
+pub mod utils;
 // pub mod zmq_publisher;  // REMOVED: Migrated to Kafka
 
