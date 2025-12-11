@@ -1071,10 +1071,9 @@ impl SettlementDb {
         // PER PARTITION LIMIT 1 returns latest balance per asset
 
         const QUERY: &str = "
-            SELECT asset_id, avail, frozen, seq, created_at
-            FROM user_balances_by_user
+            SELECT asset_id, avail, frozen, version, updated_at
+            FROM user_balances
             WHERE user_id = ?
-            PER PARTITION LIMIT 1
         ";
 
         let result = self.session.query(QUERY, (user_id as i64,)).await?;
@@ -1164,26 +1163,8 @@ impl SettlementDb {
             .await
             .context("Failed to insert balance event")?;
 
-        // 2. Update user_balances snapshot table for easy querying
-        log::info!(
-            "Updating user_balances: user={} asset={} avail={} frozen={} version={}",
-            user_id,
-            asset_id,
-            avail,
-            frozen,
-            seq
-        );
-
-        if let Err(e) = self.session
-            .query(
-                "INSERT INTO user_balances (user_id, asset_id, avail, frozen, version, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id as i64, asset_id as i32, avail, frozen, seq as i64, now as i64),
-            )
-            .await
-        {
-            log::error!("Failed to update user_balances: user={} asset={}: {}", user_id, asset_id, e);
-            return Err(e.into());
-        }
+        // (Removed) Write to user_balances (snapshot)
+        // User balances are now handled by TigerBeetle.
 
         Ok(())
     }
@@ -1276,6 +1257,11 @@ impl SettlementDb {
             .batch(&ledger_batch, ledger_values)
             .await
             .context("Failed to batch insert balance_ledger")?;
+
+        let _total_time_ledger = t_start.elapsed();
+
+        // (Removed) Write to user_balances (snapshot)
+        // User balances are now handled by TigerBeetle.
 
         let total_time = t_start.elapsed();
 

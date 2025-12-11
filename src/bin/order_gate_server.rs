@@ -69,19 +69,7 @@ async fn main() {
             Ok(db) => {
                 println!("✅ Connected to ScyllaDB");
 
-                // Check MV health
-                match db.check_mv_health().await {
-                    Ok(fetcher::db::MvStatus::Healthy) => {
-                        println!("✅ MV (user_balances_by_user) is healthy");
-                    }
-                    Ok(fetcher::db::MvStatus::Missing) => {
-                        eprintln!("⚠️ Warning: MV (user_balances_by_user) is missing!");
-                        eprintln!("   Run: cat schema/add_balance_mv.cql | docker exec -i scylla cqlsh");
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️ Warning: MV health check failed: {}", e);
-                    }
-                }
+                // (Optional) MV check removed as we use TigerBeetle now
 
                 Some(Arc::new(db))
             }
@@ -122,6 +110,19 @@ async fn main() {
 
     let balance_manager = balance_manager::BalanceManager::new(symbol_manager.clone());
 
+    // --- Connect to TigerBeetle ---
+    use tigerbeetle_unofficial::Client as TigerBeetleClient;
+    let tb_client = match TigerBeetleClient::new(0, "127.0.0.1:3000") {
+        Ok(c) => {
+            println!("✅ Connected to TigerBeetle");
+            Some(Arc::new(c))
+        },
+        Err(e) => {
+            eprintln!("⚠️ Warning: Failed to connect to TigerBeetle: {:?}", e);
+            None
+        }
+    };
+
     let state = Arc::new(AppState {
         symbol_manager,
         balance_manager,
@@ -134,7 +135,8 @@ async fn main() {
         funding_account,
         #[cfg(feature = "aeron")]
         ubs_client,
-        ubscore_timeout_ms: 5000, // 5 seconds - configurable timeout for UBSCore requests
+        ubscore_timeout_ms: 5000,
+        tb_client,
     });
 
     let app = create_app(state);

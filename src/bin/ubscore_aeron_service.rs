@@ -80,15 +80,26 @@ fn run_aeron_service() {
     let mut wal = MmapWal::open(&wal_path).expect("Failed to open WAL");
     info!("✅ MmapWal opened at {:?}", wal_path);
 
+    // --- Initialize Tokio Runtime for background tasks (TigerBeetle) ---
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let _rt_guard = rt.enter();
+
+    // --- Start TigerBeetle Worker ---
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+    fetcher::ubs_core::tigerbeetle::TigerBeetleWorker::start(0, vec!["127.0.0.1:3000".into()], event_rx)
+        .expect("Failed to start TigerBeetle Worker");
+    info!("✅ TigerBeetle Worker started");
+
     // --- Initialize UBSCore ---
-    let mut ubs_core = UBSCore::new(SpotRiskModel);
+    let mut ubs_core = UBSCore::new(SpotRiskModel)
+        .with_event_listener(event_tx);
 
     // Seed test accounts (optional - can be done via Deposit messages from Gateway)
     // Set SEED_TEST_ACCOUNTS=0 to disable
     if std::env::var("SEED_TEST_ACCOUNTS").unwrap_or("1".into()) != "0" {
         for user_id in 1001..=1010 {
-            ubs_core.on_deposit(user_id, 1, 100_00000000);      // 100 BTC
-            ubs_core.on_deposit(user_id, 2, 10_000_000_00000000); // 10M USDT
+            ubs_core.on_deposit(user_id, 1, 100_00000000, 0);      // 100 BTC
+            ubs_core.on_deposit(user_id, 2, 10_000_000_00000000, 0); // 10M USDT
         }
         info!("✅ Seeded test accounts 1001-1010 (disable with SEED_TEST_ACCOUNTS=0)");
     } else {
@@ -260,7 +271,7 @@ fn run_aeron_service() {
                                             .map(|(a, _)| a).unwrap_or(0);
 
                                         // Process deposit
-                                        state.ubs_core.on_deposit(user_id, asset_id, amount);
+                                        state.ubs_core.on_deposit(user_id, asset_id, amount, timestamp);
 
                                         // Get updated balance (returns Option<(avail, frozen)>)
                                         let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
@@ -317,7 +328,7 @@ fn run_aeron_service() {
                                         let balance_before = state.ubs_core.get_balance_full(user_id, asset_id)
                                             .map(|(a, _)| a).unwrap_or(0);
 
-                                        if state.ubs_core.on_withdraw(user_id, asset_id, amount) {
+                                        if state.ubs_core.on_withdraw(user_id, asset_id, amount, timestamp) {
                                             // Get updated balance
                                             let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
                                                 .unwrap_or((0, 0));

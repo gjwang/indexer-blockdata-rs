@@ -20,6 +20,7 @@ pub struct TigerBeetleWorker;
 impl TigerBeetleWorker {
     /// Start the background sync task
     pub fn start(cluster_id: u128, addresses: Vec<String>, rx: mpsc::UnboundedReceiver<BalanceEvent>) -> Result<(), String> {
+        // Client::new is synchronous in this version
         let client = Client::new(cluster_id, addresses.join(","))
             .map_err(|e| format!("Failed to create TB client: {:?}", e))?;
 
@@ -33,7 +34,7 @@ impl TigerBeetleWorker {
 
     /// Main worker loop processing events
     async fn worker_loop(client: Client, mut rx: mpsc::UnboundedReceiver<BalanceEvent>) {
-        log::info!("TigerBeetle Shadow Ledger sync started");
+        log::info!("TigerBeetle Shadow Ledger sync started - Initializing System Accounts...");
 
         // Initialize System Accounts (Idempotent)
         let mut sys_accounts = Vec::new();
@@ -42,9 +43,14 @@ impl TigerBeetleWorker {
              sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(HOLDING_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
              sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(REVENUE_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
         }
-        if let Err(e) = client.create_accounts(sys_accounts).await {
-             log::warn!("System accounts creation check: {:?}", e); // May describe 'Exists' which is fine
+
+        match client.create_accounts(sys_accounts).await {
+            Ok(_) => log::info!("System accounts initialized (or already existed)"),
+            Err(e) => log::error!("Failed to init system accounts: {:?}", e),
         }
+
+        log::info!("Starting event loop...");
+
 
         while let Some(event) = rx.recv().await {
             let transfers = match event {
@@ -161,11 +167,18 @@ impl TigerBeetleWorker {
                      // We invoke create_accounts separately.
                      // Since worker_loop expects `transfers`, we need to change the loop to handle mixed?
                      // Or just execute here and return empty transfers?
-                     match client.create_accounts(accounts).await {
-                         Ok(_) => log::info!("Created accounts for user {}", user_id),
-                         Err(e) => log::error!("Failed to create accounts for user {}: {:?}", user_id, e),
-                     }
-                     vec![] // Return empty transfers vector to continue loop
+                     if !accounts.is_empty() {
+                        match client.create_accounts(accounts.clone()).await {
+                            Ok(_) => {
+                                for acc in &accounts {
+                                    log::info!("✅ Created TB Account: id={}", acc.id());
+                                }
+                                log::info!("Created accounts for user {}", user_id);
+                            },
+                            Err(e) => log::error!("Failed to create accounts for {}: {:?}", user_id, e),
+                        }
+                    }
+                    vec![] // Return empty transfers vector to continue loop
                 }
             };
 

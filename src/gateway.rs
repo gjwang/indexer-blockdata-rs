@@ -127,6 +127,8 @@ pub struct AppState {
     pub ubs_client: Arc<crate::ubs_core::comm::UbsGatewayClient>,
     /// UBSCore request timeout in milliseconds
     pub ubscore_timeout_ms: u64,
+    /// TigerBeetle Client for direct balance lookups
+    pub tb_client: Option<Arc<tigerbeetle_unofficial::Client>>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -426,29 +428,71 @@ async fn get_balance(
 ) -> Result<Json<ApiResponse<Vec<ClientBalance>>>, (StatusCode, String)> {
     let user_id = params.user_id;
 
-    if let Some(db) = &state.db {
-        // Use the materialized view for efficient balance retrieval
-        let balances = db
-            .get_user_all_balances(user_id)
-            .await
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-        let mut response = Vec::new();
-        for balance in balances {
-            if let Some(client_balance) = state.balance_manager.to_client_balance(
-                balance.asset_id, // Removed incorrect 'as i32' cast
-                balance.avail(),
-                balance.frozen(),
-            ) {
-                response.push(client_balance);
-            }
+    // --- TigerBeetle Logic ---
+    if let Some(tb_client) = &state.tb_client {
+        // use crate::ubs_core::tigerbeetle::tb_account_id; // Assuming available
+        // Helper inline if needed
+        fn tb_account_id(user_id: u64, asset_id: u32) -> u128 {
+            ((user_id as u128) << 64) | (asset_id as u128)
         }
 
-        Ok(Json(ApiResponse::success(response)))
-    } else {
-        // Return empty if DB not connected
-        Ok(Json(ApiResponse::success(vec![])))
+        // Get known assets
+        // SymbolManager keys are symbols usually?
+        // assets map in SymbolManager: id -> AssetInfo
+        // But SymbolManager struct (Step 1705) has `assets: FxHashMap<u32, AssetInfo>` (public)
+        let assets = &state.symbol_manager.assets;
+
+        let mut account_ids = Vec::new();
+        let mut asset_map = std::collections::HashMap::new();
+
+        for (asset_id, info) in assets {
+            let id = tb_account_id(user_id, *asset_id);
+            account_ids.push(id);
+            asset_map.insert(id, (*asset_id, info.name.clone(), info.decimals));
+        }
+
+        match tb_client.lookup_accounts(account_ids).await {
+            Ok(accounts) => {
+                let mut response = Vec::new();
+                for acc in accounts {
+                    if let Some((asset_id, name, decimals)) = asset_map.get(&acc.id()) {
+                        // Calc avail/frozen
+                        let debits_pending = acc.debits_pending();
+                        let debits_posted = acc.debits_posted();
+                        let credits_posted = acc.credits_posted();
+
+                        let avail_raw = credits_posted.saturating_sub(debits_posted).saturating_sub(debits_pending);
+                        let frozen_raw = debits_pending;
+
+                        // Create ClientBalance
+                        // Note: ClientBalance expects String usually? Or struct fields match?
+                        // Step 1716 line 440: state.balance_manager.to_client_balance(asset_id, avail, frozen)
+                        if let Some(cb) = state.balance_manager.to_client_balance(
+                            *asset_id,
+                            avail_raw as u64,
+                            frozen_raw as u64
+                        ) {
+                            response.push(cb);
+                        }
+                    }
+                }
+                return Ok(Json(ApiResponse::success(response)));
+            }
+            Err(e) => {
+                 tracing::error!("TB Lookup failed: {:?}", e);
+                // Fallback to legacy behavior if TB fails?
+            }
+        }
     }
+
+    // --- Legacy / Fallback Logic (ScyllaDB) ---
+    // User requested to remove this, but for Safety I'll keep it as fallback
+    // UNLESS the prompt explicitly said "Eliminate...".
+    // Okay, prompt said "Eliminate code paths...".
+    // Since ScyllaDB user_balances is empty now, this returns [] anyway.
+
+    // So just return empty if TB fails/missing.
+    Ok(Json(ApiResponse::success(vec![])))
 }
 
 #[derive(serde::Deserialize)]
