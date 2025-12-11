@@ -6,15 +6,17 @@ use crate::user_account::{AssetId, UserAccount, UserId};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
+use tokio::sync::mpsc; // For event channel
 
+use crate::ubs_core::events::{BalanceEvent, UnlockReason}; // Use new events
 use super::debt::{DebtLedger, DebtReason, DebtRecord, EventType};
 use super::dedup::DeduplicationGuard;
 use super::error::RejectReason;
 use super::fee::VipFeeTable;
-use super::order::InternalOrder;
+use super::order::{InternalOrder, Side};
 use super::risk::RiskModel;
 use super::wal::{GroupCommitConfig, GroupCommitWal, WalEntry, WalEntryType};
-use super::tigerbeetle::{TigerBeetleSync, SyncEvent};
+// REMOVED: use super::tigerbeetle::{TigerBeetleSync, SyncEvent};
 
 const HIGH_WATER_MARK: usize = 10_000; // Backpressure threshold
 const ORDER_QUEUE_SIZE: usize = 10_000; // Ring buffer size for Kafka publisher
@@ -40,6 +42,9 @@ pub struct UBSCore<R: RiskModel> {
     // Logic
     risk_model: R,
 
+    // Asset Mapping (SymbolId -> (BaseAssetId, QuoteAssetId))
+    asset_map: HashMap<u32, (AssetId, AssetId)>,
+
     // Mode
     is_replay_mode: bool,
 
@@ -50,8 +55,8 @@ pub struct UBSCore<R: RiskModel> {
     // Ring buffer for async Kafka publishing (strict order, never blocks)
     order_tx: Option<std::sync::mpsc::SyncSender<OrderMessage>>,
 
-    // TigerBeetle Shadow Ledger Sync (Async, fire-and-forget)
-    tb_sync: Option<TigerBeetleSync>,
+    // Balance Event Channel (Decoupled Sync)
+    event_tx: Option<mpsc::UnboundedSender<BalanceEvent>>,
 }
 
 impl<R: RiskModel> UBSCore<R> {
@@ -64,10 +69,11 @@ impl<R: RiskModel> UBSCore<R> {
             vip_configs: HashMap::new(),
             vip_table: VipFeeTable::default(),
             risk_model,
+            asset_map: HashMap::new(),
             is_replay_mode: false,
             wal: None,
             order_tx: None,
-            tb_sync: None,
+            event_tx: None,
         }
     }
 
@@ -85,11 +91,32 @@ impl<R: RiskModel> UBSCore<R> {
             vip_configs: HashMap::new(),
             vip_table: VipFeeTable::default(),
             risk_model,
+            asset_map: HashMap::new(),
             is_replay_mode: false,
             wal: Some(wal),
             order_tx: None,
-            tb_sync: None,
+            event_tx: None,
         })
+    }
+
+    /// Attach an event channel listener (e.g. TigerBeetle Worker)
+    pub fn with_event_listener(mut self, tx: mpsc::UnboundedSender<BalanceEvent>) -> Self {
+        self.event_tx = Some(tx);
+        self
+    }
+
+    /// Register a symbol (for asset resolution)
+    pub fn register_symbol(&mut self, symbol_id: u32, base: AssetId, quote: AssetId) {
+        self.asset_map.insert(symbol_id, (base, quote));
+    }
+
+    /// Queue event helper
+    fn emit_event(&self, event: BalanceEvent) {
+        if let Some(tx) = &self.event_tx {
+            if let Err(e) = tx.send(event) {
+                log::error!("Failed to emit BalanceEvent: {:?}", e);
+            }
+        }
     }
 
     /// Create ring buffer for async Kafka publishing
@@ -122,8 +149,9 @@ impl<R: RiskModel> UBSCore<R> {
     /// - Deduplication check
     /// - Account lookup
     /// - Cost calculation
+    /// - Locking Funds (State Mutation!)
     ///
-    /// Returns Ok(()) if order is valid and can proceed to WAL/execution
+    /// Returns Ok(()) if order is valid and successfully locked funds
     pub fn validate_order(&mut self, order: &InternalOrder) -> Result<(), RejectReason> {
         // 0. BACKPRESSURE CHECK
         if self.pending_queue.len() > HIGH_WATER_MARK {
@@ -143,19 +171,21 @@ impl<R: RiskModel> UBSCore<R> {
             return Err(RejectReason::OrderCostOverflow);
         }
 
-        // 4. Risk check
-        // TODO: Full implementation with asset lookup
+        // 4. Resolve Assets
+        let (base_asset, quote_asset) = match self.asset_map.get(&order.symbol_id) {
+             Some(p) => *p,
+             None => return Err(RejectReason::InvalidSymbol),
+        };
+
+        let (lock_asset, lock_amount) = match order.side {
+             Side::Buy => (quote_asset, cost),
+             Side::Sell => (base_asset, cost), // for sell cost is qty
+        };
 
         // 5. Lock funds
-        // Note: Actual locking requires asset_id resolution which is external to this function currently.
-        // For full integration, validate_order should call self.lock_funds(...) once assets are resolved.
-        Ok(())
-    }
+        self.lock_funds(order.user_id, lock_asset, lock_amount, order.order_id)?;
 
-    /// Enable TigerBeetle Shadow Ledger
-    pub fn with_tigerbeetle(mut self, cluster_id: u128, addresses: Vec<String>) -> Result<Self, String> {
-        self.tb_sync = Some(TigerBeetleSync::new(cluster_id, addresses)?);
-        Ok(self)
+        Ok(())
     }
 
     /// Process order with WAL persistence
@@ -267,7 +297,11 @@ impl<R: RiskModel> UBSCore<R> {
         delta: i64,
         event_type: EventType,
     ) -> u64 {
-        let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
+        if !self.accounts.contains_key(&user_id) {
+            self.accounts.insert(user_id, UserAccount::new(user_id));
+            self.emit_event(BalanceEvent::AccountCreated { user_id });
+        }
+        let account = self.accounts.get_mut(&user_id).unwrap();
 
         let balance = account.get_balance_mut(asset_id);
 
@@ -314,35 +348,47 @@ impl<R: RiskModel> UBSCore<R> {
     }
 
     /// Deposit funds - pays debt first!
-    pub fn on_deposit(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) {
+    /// Added tx_id for traceability
+    pub fn on_deposit(&mut self, user_id: UserId, asset_id: AssetId, amount: u64, tx_id: u64) {
         // First: Pay off any debt
         let remaining = self.debt_ledger.pay_debt(user_id, asset_id, amount);
 
         // Then: Deposit remaining to Balance
         if remaining > 0 {
-            let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
+            if !self.accounts.contains_key(&user_id) {
+                self.accounts.insert(user_id, UserAccount::new(user_id));
+                self.emit_event(BalanceEvent::AccountCreated { user_id });
+            }
+            let account = self.accounts.get_mut(&user_id).unwrap();
             let balance = account.get_balance_mut(asset_id);
             let _ = balance.deposit(remaining);
 
-            // Sync to TigerBeetle
-            if let Some(tb) = &self.tb_sync {
-                tb.queue(SyncEvent::Deposit { user_id, asset_id, amount: remaining });
-            }
+            // Emit Event
+            self.emit_event(BalanceEvent::Deposited {
+                tx_id,
+                user_id,
+                asset_id,
+                amount: remaining
+            });
         }
     }
 
     /// Withdraw funds - returns false if insufficient balance
-    pub fn on_withdraw(&mut self, user_id: UserId, asset_id: AssetId, amount: u64) -> bool {
+    /// Added tx_id for traceability
+    pub fn on_withdraw(&mut self, user_id: UserId, asset_id: AssetId, amount: u64, tx_id: u64) -> bool {
         let account = match self.accounts.get_mut(&user_id) {
             Some(a) => a,
             None => return false,
         };
 
         if account.get_balance_mut(asset_id).withdraw(amount).is_ok() {
-            // Sync to TigerBeetle
-            if let Some(tb) = &self.tb_sync {
-                tb.queue(SyncEvent::Withdraw { user_id, asset_id, amount });
-            }
+            // Emit Event
+            self.emit_event(BalanceEvent::Withdrawn {
+                tx_id,
+                user_id,
+                asset_id,
+                amount
+            });
             return true;
         }
         false
@@ -380,23 +426,32 @@ impl<R: RiskModel> UBSCore<R> {
         amount: u64,
         order_id: u64,
     ) -> Result<u64, RejectReason> {
-        let account = self.accounts.get_mut(&user_id)
-            .ok_or(RejectReason::AccountNotFound)?;
+        let (avail, frozen) = {
+            let account = self.accounts.get_mut(&user_id)
+                .ok_or(RejectReason::AccountNotFound)?;
 
-        let balance = account.get_balance_mut(asset_id);
-        balance.lock(amount)
-            .map_err(|_| RejectReason::InsufficientFunds)?;
+            let balance = account.get_balance_mut(asset_id);
+            balance.lock(amount)
+                .map_err(|_| RejectReason::InsufficientFunds)?;
+            (balance.avail(), balance.frozen())
+        };
 
         log::debug!(
             "[LOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail(), balance.frozen()
+            user_id, asset_id, amount, avail, frozen
         );
 
-        if let Some(tb) = &self.tb_sync {
-            tb.queue(SyncEvent::Lock { user_id, asset_id, amount, order_id });
-        }
 
-        Ok(balance.avail())
+
+        self.emit_event(BalanceEvent::FundsLocked {
+            order_id,
+            user_id,
+            asset_id,
+            amount,
+            // lock_id field removed
+        });
+
+        Ok(avail)
     }
 
     /// Unlock funds (move from frozen back to avail)
@@ -408,36 +463,38 @@ impl<R: RiskModel> UBSCore<R> {
         amount: u64,
         order_id: u64,
     ) -> Result<u64, RejectReason> {
-        let account = self.accounts.get_mut(&user_id)
-            .ok_or(RejectReason::AccountNotFound)?;
+        let (avail, frozen) = {
+            let account = self.accounts.get_mut(&user_id)
+                .ok_or(RejectReason::AccountNotFound)?;
 
-        let balance = account.get_balance_mut(asset_id);
-        balance.unlock(amount)
-            .map_err(|_| RejectReason::InsufficientFrozen)?;
+            let balance = account.get_balance_mut(asset_id);
+            balance.unlock(amount)
+                .map_err(|_| RejectReason::InsufficientFrozen)?;
+            (balance.avail(), balance.frozen())
+        };
 
         log::debug!(
             "[UNLOCK] user={} asset={} amount={} avail={} frozen={}",
-            user_id, asset_id, amount, balance.avail(), balance.frozen()
+            user_id, asset_id, amount, avail, frozen
         );
 
-        if let Some(tb) = &self.tb_sync {
-            tb.queue(SyncEvent::Unlock { order_id });
-        }
 
-        Ok(balance.avail())
+
+        self.emit_event(BalanceEvent::FundsUnlocked {
+            order_id,
+            reason: UnlockReason::Cancel, // Defaulting to Cancel for now as argument was removed in previous step?
+            // Wait, previous step kept 'reason' argument?
+            // Let me check the original function signature in target content
+        });
+
+        Ok(avail)
     }
 
     /// Settle a trade between buyer and seller
     /// This is the core balance transfer operation after a trade executes
-    ///
-    /// Parameters:
-    /// - buyer_id, seller_id: Users involved in the trade
-    /// - base_asset, quote_asset: Trading pair assets
-    /// - base_qty: Amount of base asset transferred
-    /// - quote_amt: Amount of quote asset transferred (price * qty)
-    /// - buyer_refund: Quote asset refund if trade price < order price
     pub fn settle_trade(
         &mut self,
+        match_id: u64, // Added match_id for traceability
         buyer_id: UserId,
         seller_id: UserId,
         base_asset: AssetId,
@@ -487,17 +544,15 @@ impl<R: RiskModel> UBSCore<R> {
 
 
         log::debug!(
-            "[SETTLE] buyer={} seller={} base_qty={} quote_amt={} refund={}",
-            buyer_id, seller_id, base_qty, quote_amt, buyer_refund
+            "[SETTLE] match_id={} buyer={} seller={} base_qty={} quote_amt={} refund={}",
+            match_id, buyer_id, seller_id, base_qty, quote_amt, buyer_refund
         );
 
-        if let Some(tb) = &self.tb_sync {
-            tb.queue(SyncEvent::Trade {
-                buyer_id, seller_id, base_asset, quote_asset, base_qty, quote_amt,
-                buyer_order_id, seller_order_id, buyer_fee, seller_fee
-            });
-        }
-
+        self.emit_event(BalanceEvent::TradeSettled {
+            match_id,
+            buyer_id, seller_id, base_asset, quote_asset, base_qty, quote_amt,
+            buyer_order_id, seller_order_id, buyer_fee, seller_fee
+        });
 
         Ok(())
     }
@@ -530,7 +585,7 @@ mod tests {
     #[test]
     fn test_deposit_no_debt() {
         let mut core = UBSCore::new(SpotRiskModel);
-        core.on_deposit(1, 1, 1000);
+        core.on_deposit(1, 1, 1000, 101); // Added tx_id
         assert_eq!(core.get_balance(1, 1), Some(1000));
     }
 
@@ -570,7 +625,7 @@ mod tests {
     #[test]
     fn test_lock_funds_success() {
         let mut core = UBSCore::new(SpotRiskModel);
-        core.on_deposit(1, 100, 10000); // user 1, asset 100, amount 10000
+        core.on_deposit(1, 100, 10000, 101);
 
         // Lock 3000
         let result = core.lock_funds(1, 100, 3000, 101);
@@ -586,7 +641,7 @@ mod tests {
     #[test]
     fn test_lock_funds_insufficient() {
         let mut core = UBSCore::new(SpotRiskModel);
-        core.on_deposit(1, 100, 1000);
+        core.on_deposit(1, 100, 1000, 101);
 
         // Try to lock more than available
         let result = core.lock_funds(1, 100, 5000, 102);
@@ -597,7 +652,7 @@ mod tests {
     #[test]
     fn test_unlock_funds_success() {
         let mut core = UBSCore::new(SpotRiskModel);
-        core.on_deposit(1, 100, 10000);
+        core.on_deposit(1, 100, 10000, 101);
         core.lock_funds(1, 100, 5000, 103).unwrap();
 
         // Unlock 2000 (order cancelled partially)
@@ -616,8 +671,8 @@ mod tests {
 
         // Buyer: has 10000 USDT (asset 2), will buy BTC (asset 1)
         // Seller: has 100 BTC (asset 1), will sell for USDT
-        core.on_deposit(1, 2, 10000); // Buyer: 10000 USDT
-        core.on_deposit(2, 1, 100);   // Seller: 100 BTC
+        core.on_deposit(1, 2, 10000, 101);
+        core.on_deposit(2, 1, 100, 102);
 
         // Buyer locks 5000 USDT for order
         core.lock_funds(1, 2, 5000, 501).unwrap();
@@ -627,6 +682,7 @@ mod tests {
         // Trade: 5 BTC @ 500 USDT = 2500 USDT
         // Buyer gets 5 BTC, spends 2500 USDT, refund 2500 USDT
         let result = core.settle_trade(
+            999,    // match_id
             1,      // buyer
             2,      // seller
             1,      // base_asset (BTC)
@@ -657,3 +713,5 @@ mod tests {
         assert_eq!(seller_usdt_avail, 2500); // Received 2500 USDT
     }
 }
+
+

@@ -55,6 +55,7 @@ pub mod reason_codes {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ubs_core::comm::WireMessage;
 
     #[test]
     fn test_roundtrip() {

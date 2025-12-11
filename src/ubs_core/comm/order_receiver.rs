@@ -70,6 +70,7 @@ impl super::WireMessage for OrderMessage {}
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct DepositMessage {
+    pub tx_id: u64,
     pub user_id: u64,
     pub asset_id: u32,
     pub amount: u64,
@@ -81,6 +82,7 @@ impl super::WireMessage for DepositMessage {}
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WithdrawMessage {
+    pub tx_id: u64,
     pub user_id: u64,
     pub asset_id: u32,
     pub amount: u64,
@@ -141,6 +143,7 @@ impl AeronUnavailableImageCallback for AeronNoUnavailableImageHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ubs_core::comm::WireMessage;
 
     #[test]
     fn test_order_message_roundtrip() {

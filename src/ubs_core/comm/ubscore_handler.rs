@@ -314,8 +314,8 @@ impl<'a> UbsCoreHandler<'a> {
             }
         };
 
-        self.ubs_core.on_deposit(msg.user_id, msg.asset_id, msg.amount);
-        log::info!("[UBSC] Deposit: user={} asset={} amount={}", msg.user_id, msg.asset_id, msg.amount);
+        self.ubs_core.on_deposit(msg.user_id, msg.asset_id, msg.amount, msg.tx_id);
+        log::info!("[UBSC] Deposit: tx={} user={} asset={} amount={}", msg.tx_id, msg.user_id, msg.asset_id, msg.amount);
         self.accept_response(msg.user_id)
     }
 
@@ -328,8 +328,8 @@ impl<'a> UbsCoreHandler<'a> {
             }
         };
 
-        if self.ubs_core.on_withdraw(msg.user_id, msg.asset_id, msg.amount) {
-            log::info!("[UBSC] Withdraw: user={} asset={} amount={}", msg.user_id, msg.asset_id, msg.amount);
+        if self.ubs_core.on_withdraw(msg.user_id, msg.asset_id, msg.amount, msg.tx_id) {
+            log::info!("[UBSC] Withdraw: tx={} user={} asset={} amount={}", msg.tx_id, msg.user_id, msg.asset_id, msg.amount);
             self.accept_response(msg.user_id)
         } else {
             log::warn!("[UBSC] Withdraw failed: insufficient balance");

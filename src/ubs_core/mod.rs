@@ -17,6 +17,7 @@ pub mod risk;
 pub mod types;
 pub mod wal;
 pub mod tigerbeetle;
+pub mod events;
 
 #[cfg(test)]
 mod bench;
@@ -34,3 +35,5 @@ pub use metrics::{LatencyTimer, MetricsSnapshot, OrderMetrics};
 pub use order::{InternalOrder, OrderType, Side, CancelRequest};
 pub use risk::{RiskModel, SpotRiskModel};
 pub use wal::{GroupCommitConfig, GroupCommitWal, MmapWal, WalEntry, WalEntryType, WalReplay, install_sigbus_handler};
+pub use tigerbeetle::TigerBeetleWorker;
+pub use events::BalanceEvent;
