@@ -333,19 +333,87 @@ async fn handle_internal_transfer(
 ) -> Result<Json<crate::models::api_response::ApiResponse<crate::models::internal_transfer_types::InternalTransferData>>, StatusCode> {
     use crate::models::internal_transfer_types::{InternalTransferData, TransferStatus};
 
+    // Validate asset match
     if payload.from_account.asset() != payload.to_account.asset() {
+        eprintln!("❌ Asset mismatch: {} != {}", payload.from_account.asset(), payload.to_account.asset());
         return Err(StatusCode::BAD_REQUEST);
     }
 
+    // Generate request ID
     let request_id = {
         let mut gen = state.snowflake_gen.lock().unwrap();
         gen.generate() as i64
     };
 
-    let (_asset_id, _raw_amount) = state
+    // Convert amount to internal representation
+    let (asset_id, raw_amount) = state
         .balance_manager
         .to_internal_amount(&payload.from_account.asset(), payload.amount)
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|e| {
+            eprintln!("❌ Amount conversion failed: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    println!("🔄 Internal Transfer Request:");
+    println!("   ID: {}", request_id);
+    println!("   From: {} (asset: {})", payload.from_account.type_name(), payload.from_account.asset());
+    println!("   To: {} (asset: {})", payload.to_account.type_name(), payload.to_account.asset());
+    println!("   Amount: {} (raw: {})", payload.amount, raw_amount);
+
+    // REAL IMPLEMENTATION - Actually move funds via TigerBeetle!
+    if let Some(tb_client) = &state.tb_client {
+        use crate::ubs_core::tigerbeetle::tb_account_id;
+
+        // Get account IDs
+        let from_account_id = match &payload.from_account {
+            crate::models::internal_transfer_types::AccountType::Funding { asset: _ } => {
+                // Funding account ID (asset-based)
+                asset_id as u128
+            },
+            crate::models::internal_transfer_types::AccountType::Spot { user_id, asset: _ } => {
+                tb_account_id(*user_id, asset_id)
+            },
+        };
+
+        let to_account_id = match &payload.to_account {
+            crate::models::internal_transfer_types::AccountType::Funding { asset: _ } => {
+                asset_id as u128
+            },
+            crate::models::internal_transfer_types::AccountType::Spot { user_id, asset: _ } => {
+                tb_account_id(*user_id, asset_id)
+            },
+        };
+
+        println!("📝 TigerBeetle Transfer:");
+        println!("   From account: {}", from_account_id);
+        println!("   To account: {}", to_account_id);
+        println!("   Amount: {}", raw_amount);
+
+        // Create transfer in TigerBeetle
+        let transfer_id = request_id as u128;
+
+        match tb_client.create_transfer(
+            transfer_id,
+            from_account_id,
+            to_account_id,
+            raw_amount as u128,
+            0, // ledger
+            0, // code
+        ).await {
+            Ok(_) => {
+                println!("✅ TigerBeetle transfer created successfully!");
+            },
+            Err(e) => {
+                eprintln!("❌ TigerBeetle transfer failed: {:?}", e);
+                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+        }
+    } else {
+        println!("⚠️  No TigerBeetle client - using mock mode");
+    }
+
+    // TODO: Write to database (InternalTransferDb)
+    // TODO: Send to settlement service via Kafka
 
     let response_data = InternalTransferData {
         request_id: request_id.to_string(),
@@ -355,6 +423,8 @@ async fn handle_internal_transfer(
         status: TransferStatus::Success,
         created_at: current_time_ms() as i64,
     };
+
+    println!("✅ Internal Transfer COMPLETE: request_id={}", request_id);
 
     Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
 }
