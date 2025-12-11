@@ -327,6 +327,38 @@ async fn transfer_out(
     }))
 }
 
+async fn handle_internal_transfer(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<crate::models::internal_transfer_types::InternalTransferRequest>,
+) -> Result<Json<crate::models::api_response::ApiResponse<crate::models::internal_transfer_types::InternalTransferData>>, StatusCode> {
+    use crate::models::internal_transfer_types::{InternalTransferData, TransferStatus};
+
+    if payload.from_account.asset() != payload.to_account.asset() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    let request_id = {
+        let mut gen = state.snowflake_gen.lock().unwrap();
+        gen.generate() as i64
+    };
+
+    let (_asset_id, _raw_amount) = state
+        .balance_manager
+        .to_internal_amount(&payload.from_account.asset(), payload.amount)
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+    let response_data = InternalTransferData {
+        request_id: request_id.to_string(),
+        from_account: payload.from_account,
+        to_account: payload.to_account,
+        amount: payload.amount.to_string(),
+        status: TransferStatus::Success,
+        created_at: current_time_ms() as i64,
+    };
+
+    Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct CancelOrderRequest {
     order_id: u64,
