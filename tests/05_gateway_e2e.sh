@@ -54,8 +54,8 @@ while [ $count -lt $timeout ]; do
     let count=count+1
     echo -n "."
 done
-echo "🟢 Scylla TCP Open. Waiting 30s for CQL init..."
-sleep 30 # Extra buffer for Scylla initialization
+echo "🟢 Scylla TCP Open. Waiting 10s for CQL init..."
+sleep 10 # Extra buffer for Scylla initialization
 
 echo "📜 Applying Scylla Schema..."
 docker cp schema/settlement_unified.cql scylla:/tmp/schema.cql

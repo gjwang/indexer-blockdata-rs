@@ -10,3 +10,13 @@ kafka:
     orders: "validated_orders"
     trades: "trade.history"
   group_id: "matching_engine_group_debug_001"
+  linger_ms: 0
+  socket_keepalive_enable: true
+
+scylladb:
+  hosts:
+    - "127.0.0.1:9042"
+  keyspace: "trading"
+  replication_factor: 1
+  connection_timeout_ms: 5000
+  request_timeout_ms: 3000

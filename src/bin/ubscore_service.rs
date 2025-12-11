@@ -30,6 +30,7 @@ use fetcher::ubs_core::{
     GroupCommitConfig, GroupCommitWal, HealthChecker, HealthStatus, InternalOrder, LatencyTimer,
     OrderMetrics, RejectReason, SpotRiskModel, UBSCore, WalEntry, WalEntryType, BalanceEvent, TigerBeetleWorker,
 };
+use fetcher::models::BalanceRequest;
 
 // Logging macros with target "UBSC"
 const TARGET: &str = "UBSC";
@@ -362,9 +363,7 @@ async fn main() {
     let service = Arc::new(UBSCoreService::new(wal, event_tx));
     info!("✅ UBSCore initialized");
 
-    // --- Seed test accounts (development only) ---
-    // STEP-BY-STEP VERIFICATION MODE
-    service.seed_test_accounts().await;
+
 
     // --- Kafka Producer ---
     let producer: FutureProducer = match ClientConfig::new()
