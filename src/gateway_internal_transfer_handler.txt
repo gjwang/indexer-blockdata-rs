@@ -1,0 +1,60 @@
+// Internal Transfer endpoint handler for Gateway
+// Add this to gateway.rs after transfer_out function (around line 328)
+
+async fn handle_internal_transfer(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<crate::models::internal_transfer_types::InternalTransferRequest>,
+) -> Result<Json<crate::models::api_response::ApiResponse<crate::models::internal_transfer_types::InternalTransferData>>, StatusCode> {
+    use crate::models::internal_transfer_types::{AccountType, InternalTransferData, TransferStatus};
+
+    println!("🔄 Internal Transfer request received: {:?}", payload);
+
+    // Validate asset match
+    if payload.from_account.asset() != payload.to_account.asset() {
+        eprintln!("❌ Asset mismatch: {} != {}", payload.from_account.asset(), payload.to_account.asset());
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Generate request ID
+    let request_id = {
+        let mut gen = state.snowflake_gen.lock().unwrap();
+        gen.generate() as i64
+    };
+
+    // Convert amount to internal representation
+    let (asset_id, raw_amount) = state
+        .balance_manager
+        .to_internal_amount(&payload.from_account.asset(), payload.amount)
+        .map_err(|e| {
+            eprintln!("❌ Amount conversion failed: {}", e);
+            StatusCode::BAD_REQUEST
+        })?;
+
+    println!("📝 Internal Transfer:");
+    println!("   Request ID: {}", request_id);
+    println!("   From: {} ({})", payload.from_account.type_name(), payload.from_account.asset());
+    println!("   To: {} ({})", payload.to_account.type_name(), payload.to_account.asset());
+    println!("   Amount: {} (raw: {})", payload.amount, raw_amount);
+
+    // Simulated success response
+    // TODO in production:
+    // 1. Call InternalTransferHandler
+    // 2. Integrate with TigerBeetle (CREATE_PENDING)
+    // 3. Insert DB record
+    // 4. Send to Settlement via Kafka
+
+    let response_data = InternalTransferData {
+        request_id,
+        from_account: payload.from_account,
+        to_account: payload.to_account,
+        amount: payload.amount.to_string(),
+        status: TransferStatus::Success,
+        created_at: current_time_ms() as i64,
+        updated_at: current_time_ms() as i64,
+        error_message: None,
+    };
+
+    println!("✅ Internal Transfer SUCCESS: request_id={}", request_id);
+
+    Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
+}

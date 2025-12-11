@@ -142,6 +142,7 @@ pub fn create_app(state: Arc<AppState>) -> Router {
 
         .route("/api/v1/user/transfer_in", post(transfer_in))
         .route("/api/v1/user/transfer_out", post(transfer_out))
+        .route("/api/v1/user/internal_transfer", post(handle_internal_transfer))
         .route("/api/v1/user/balance", axum::routing::get(get_balance))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
