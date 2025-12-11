@@ -52,6 +52,24 @@ impl InternalTransferHandler {
         &self,
         req: InternalTransferRequest,
     ) -> Result<ApiResponse<Option<InternalTransferData>>> {
+
+
+        // ARCHITECTURE CHECK:
+        // Current implementation uses TigerBeetle as the source of truth for locking funds.
+        // This is valid for Funding -> Spot (since Funding accounts are held in TB).
+        // However, for Spot -> Funding, the authoritative balance ("Available") is held by UBSCore (Trading Engine),
+        // which accounts for open orders. Checking TB for Spot balance is unsafe/incorrect.
+        // TODO: Implement Spot -> Funding flow by sending a Lock Request to UBSCore.
+        match (&req.from_account, &req.to_account) {
+            (AccountType::Spot { .. }, AccountType::Funding { .. }) => {
+                return Ok(error_response(
+                    "NOT_IMPLEMENTED",
+                    "Spot -> Funding transfers are temporarily disabled. Requires UBSCore integration.".to_string(),
+                ));
+            }
+            _ => {}
+        }
+
         // 1. Validate
         if let Err(e) = validate_transfer_request(&req, &self.symbol_manager) {
             return Ok(error_response(error_codes::INVALID_AMOUNT, e.to_string()));

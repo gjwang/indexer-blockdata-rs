@@ -54,7 +54,12 @@ timeout=60
 count=0
 while [ $count -lt $timeout ]; do
     if docker exec scylla cqlsh -f /tmp/schema.cql 2>/dev/null; then
-        echo -e " ${GREEN}✅ Schema Applied${NC}"
+        echo -e " ${GREEN}✅ Settlement Schema Applied${NC}"
+        # Apply Internal Transfer Schema
+        docker cp schema/internal_transfer.cql scylla:/tmp/internal_transfer.cql
+        if docker exec scylla cqlsh -f /tmp/internal_transfer.cql; then
+             echo -e " ${GREEN}✅ Internal Transfer Schema Applied${NC}"
+        fi
         break
     fi
     sleep 2

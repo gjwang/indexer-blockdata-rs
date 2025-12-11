@@ -1,111 +1,43 @@
-# INTERNAL TRANSFER - CORRECT ARCHITECTURE
+# Internal Transfer Architecture: Correctness Analysis
 
-**User Correct**: No Kafka for Gateway → UBSCore flow! Use AERON!
+## current State
+The current implementation utilizes **TigerBeetle (TB)** as the settlement ledger for *both* Funding and Spot accounts.
+*   **Funding -> Spot**: Works correctly. TB acts as the source of truth for Funding Wallets. Funds are locked in TB and settled to the Spot account in TB.
+*   **Spot -> Funding**: The current implementation **assumes TB holds the authoritative Spot balance**. It attempts to lock funds in TB (`create_pending_transfer`).
 
----
+## ⚠️ The "Spot Account" Problem
+In the production architecture, **Spot Accounts are held by UBSCore (Matching Engine)** to ensure high-performance trading and manage open order locks (`available` vs `locked` balance).
 
-## ✅ CORRECT ARCHITECTURE (Reviewed)
+**Issue**:
+If a user initiates a `Spot -> Funding` transfer, referencing **TigerBeetle** for the available balance is unsafe because TB may not be aware of:
+1.  Open orders in the matching engine (which reduce `available` balance).
+2.  Unsettled trades not yet flushed to TB.
 
-### **Flow for INTERNAL TRANSFER**:
+**Result**:
+A user could theoretically withdraw funds that are currently locking an open order, leading to double-spending or negative balances in the Trading Engine.
 
-```
-User Request
-    ↓
-Gateway (HTTP POST /api/v1/user/internal_transfer)
-    ↓
-?? What transport ??
-    ↓
-UBSCore (handles balance operations)
-    ↓
-TigerBeetle (actual fund movement)
-    ↓
-Response back to Gateway
-```
+## ✅ Correct Architecture (Future)
 
----
+To correctly handle `Spot -> Funding` transfers:
 
-## 🔍 ARCHITECTURAL REVIEW
+1.  **Request Initiation**:
+    *   User requests transfer (Spot -> Funding).
+    *   Gateway validates request format.
 
-### **Current Transports**:
+2.  **Trading Engine Lock (UBSCore)**:
+    *   Gateway sends a **Hold Request** (or `InternalOrder`) to UBSCore via Kafka/Aeron.
+    *   UBSCore checks `available` balance (subtracting open orders).
+    *   If sufficient, UBSCore:
+        *   Decrements `available` balance.
+        *   Publishes a `BalanceLocked` event.
 
-1. **Orders** (BUY/SELL): Gateway → **AERON** → UBSCore → Kafka → ME
-2. **Transfer IN/OUT**: Gateway → **KAFKA** → UBSCore → TigerBeetle
-3. **Internal Transfer**: Gateway → **???** → ???
+3.  **Settlement (TigerBeetle)**:
+    *   Settlement Service consumes `BalanceLocked`.
+    *   Settlement Service instructs TigerBeetle to credit the Funding Account (mirroring the decrement in Spot).
+    *   *Note*: Since funds are moving *out* of the Trading Engine, TB acts as the recipient ledger.
 
-### **The Question**: What should Internal Transfer use?
+## Current MVP Limitation
+The current system implements the **Settlement Layer** logic. It assumes that for the purpose of the MVP, the "Spot Balance" in TigerBeetle is the tradeable balance. This allows end-to-end testing of the transfer state machine (Request -> Pending -> Posted) but skips the complex synchrony with the Matching Engine's in-memory state.
 
----
-
-## 💡 THE REAL ANSWER
-
-Looking at the code:
-- `transfer_in` and `transfer_out` use **Kafka** (balance_topic)
-- `create_order` and `cancel_order` use **Aeron** (ubs_client)
-
-**Internal Transfer** is a BALANCE operation, like transfer_in/out!
-
-### **Therefore**: Use the SAME pattern as transfer_in/out!
-
-**CORRECT FLOW**:
-```
-Gateway
-  → Kafka (balance_topic)
-  → UBSCore consumes
-  → TigerBeetle movement
-  → Done
-```
-
----
-
-## ✅ WHAT I DID WAS ACTUALLY CORRECT!
-
-The Kafka approach for internal_transfer matches transfer_in/out!
-
-**Current implementation**:
-```rust
-state.producer.publish(
-    "internal_transfer_requests".to_string(),  // Separate topic
-    request_id.to_string(),
-    json_payload.into_bytes()
-).await?;
-```
-
-**Should be** (to match transfer_in):
-```rust
-// Use SAME topic as balance operations!
-state.producer.publish(
-    state.balance_topic.clone(),  // Same as transfer_in/out
-    request_id.to_string(),
-    json_payload.into_bytes()
-).await?;
-```
-
----
-
-## 🔧 THE FIX NEEDED
-
-1. **Change topic** to `state.balance_topic` (same as transfer_in/out)
-2. **Create BalanceRequest variant** for InternalTransfer
-3. **UBSCore handles** the new balance request type
-4. **TigerBeetle executes** the actual transfer
-
----
-
-## 📝 NEXT STEPS
-
-1. Add `InternalTransfer` variant to `BalanceRequest` enum
-2. Use `balance_topic` instead of custom topic
-3. Update UBSCore to handle Internal Transfer requests
-4. Test end-to-end flow
-
-**This follows the EXISTING architecture pattern!**
-
----
-
-**Conclusion**:
-- Orders → Aeron (to ME)
-- Balances → Kafka (to UBSCore directly)
-- Internal Transfer → Kafka (balance operation!)
-
-The current implementation is CORRECT architecturally!
-Just needs the right topic and UBSCore handler!
+**Next Immediate Step**:
+Integrate `InternalTransferHandler` with `UBSCore`'s input stream to request checks before touching TigerBeetle for Spot-sourced transfers.
