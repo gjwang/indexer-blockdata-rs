@@ -16,6 +16,7 @@ pub mod order;
 pub mod risk;
 pub mod types;
 pub mod wal;
+pub mod tigerbeetle;
 
 #[cfg(test)]
 mod bench;

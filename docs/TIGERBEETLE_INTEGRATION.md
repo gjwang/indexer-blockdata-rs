@@ -133,6 +133,122 @@ pub fn extract_asset_id(account_id: u128) -> u32 {
 // User 1001, USDT (asset 2): tb_account_id(1001, 2) = 0x00000000000003E9_00000002
 ```
 
+## Transfer ID Generation
+
+> ⚠️ **Pro Tip**: Random identifiers have ~10% lower throughput than strictly-increasing IDs
+> due to LSM tree optimizations. Use time-based identifiers (ULID/TSID) for best performance.
+
+```rust
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+static TRANSFER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Generate strictly-increasing transfer ID (TSID pattern)
+/// High 48 bits: milliseconds since epoch
+/// Low 80 bits: sequence counter (allows ~1.2 quintillion IDs per millisecond)
+pub fn generate_transfer_id() -> u128 {
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u128;
+
+    let sequence = TRANSFER_SEQUENCE.fetch_add(1, Ordering::SeqCst) as u128;
+
+    // Combine: timestamp in high bits, sequence in low bits
+    (timestamp_ms << 80) | (sequence & 0xFFFF_FFFF_FFFF_FFFF_FFFF)
+}
+
+/// Generate paired transfer IDs for base + quote legs of a trade
+pub fn generate_trade_transfer_ids() -> (u128, u128) {
+    let base_id = generate_transfer_id();
+    let quote_id = generate_transfer_id();
+    (base_id, quote_id)
+}
+```
+
+## Account Creation
+
+Accounts must be created before transfers can reference them. Use a lazy creation
+pattern with idempotent handling:
+
+```rust
+use tigerbeetle::{Account, AccountFlags, CreateAccountResult};
+
+/// Ensure account exists, creating it if necessary (idempotent)
+async fn ensure_account_exists(
+    tb: &TigerBeetleClient,
+    user_id: u64,
+    asset_id: u32,
+    ledger_id: u32,
+) -> Result<()> {
+    let account_id = tb_account_id(user_id, asset_id);
+
+    let account = Account {
+        id: account_id,
+        user_data_128: user_id as u128,   // Link back to OLGP user record
+        user_data_64: asset_id as u64,
+        user_data_32: 0,
+        ledger: ledger_id,
+        code: asset_id as u16,            // Account type = asset ID
+
+        // ⚠️ CRITICAL: This flag enforces balance cannot go negative
+        // credits_posted - debits_posted - debits_pending >= 0
+        flags: AccountFlags::DEBITS_MUST_NOT_EXCEED_CREDITS,
+
+        ..Default::default()
+    };
+
+    match tb.create_accounts(&[account]).await? {
+        results if results.iter().all(|r|
+            *r == CreateAccountResult::Ok || *r == CreateAccountResult::Exists
+        ) => Ok(()),
+        results => Err(anyhow!("Account creation failed: {:?}", results)),
+    }
+}
+
+/// Create accounts for a new user during onboarding
+async fn create_user_accounts(
+    tb: &TigerBeetleClient,
+    user_id: u64,
+    asset_ids: &[u32],
+    ledger_id: u32,
+) -> Result<()> {
+    let accounts: Vec<Account> = asset_ids
+        .iter()
+        .map(|&asset_id| Account {
+            id: tb_account_id(user_id, asset_id),
+            user_data_128: user_id as u128,
+            user_data_64: asset_id as u64,
+            user_data_32: 0,
+            ledger: ledger_id,
+            code: asset_id as u16,
+            flags: AccountFlags::DEBITS_MUST_NOT_EXCEED_CREDITS,
+            ..Default::default()
+        })
+        .collect();
+
+    let results = tb.create_accounts(&accounts).await?;
+
+    for (i, result) in results.iter().enumerate() {
+        match result {
+            CreateAccountResult::Ok => {
+                tracing::info!("Created account for user {} asset {}", user_id, asset_ids[i]);
+            }
+            CreateAccountResult::Exists => {
+                tracing::debug!("Account already exists for user {} asset {}", user_id, asset_ids[i]);
+            }
+            err => {
+                tracing::error!("Failed to create account: {:?}", err);
+                return Err(anyhow!("Account creation failed: {:?}", err));
+            }
+        }
+    }
+
+    Ok(())
+}
+```
+
 ## Checkpoint & Recovery
 
 TigerBeetle stores the Kafka offset in `user_data_128`, enabling crash recovery:
@@ -166,40 +282,69 @@ TigerBeetle stores the Kafka offset in `user_data_128`, enabling crash recovery:
 ### Recovery Implementation
 
 ```rust
+use tigerbeetle::QueryFilter;
+
+const BATCH_SIZE: usize = 8190;  // TigerBeetle max batch size
+
 async fn recover_from_tigerbeetle(
     tb: &TigerBeetleClient,
     me: &mut MatchingEngine,
     kafka: &KafkaConsumer,
+    known_account_ids: &[u128],  // All possible (user_id, asset_id) combinations
 ) -> Result<()> {
-    // 1. Get checkpoint (last processed Kafka offset)
-    let last_transfer = tb.query_transfers(
-        .filter(.timestamp, .max),
-        .limit(1),
-    ).await?;
+    // 1. Get checkpoint (last processed Kafka offset) using query with REVERSED flag
+    let last_transfers = tb.query_transfers(&QueryFilter {
+        user_data_128: 0,
+        user_data_64: 0,
+        user_data_32: 0,
+        code: 0,
+        timestamp_min: 0,
+        timestamp_max: u64::MAX,
+        limit: 1,
+        flags: QueryFilterFlags::REVERSED,  // Most recent first
+    }).await?;
 
-    let checkpoint: u64 = last_transfer
+    let checkpoint: u64 = last_transfers
         .first()
         .map(|t| t.user_data_128 as u64)
         .unwrap_or(0);
 
     tracing::info!("Recovering from TigerBeetle checkpoint: {}", checkpoint);
 
-    // 2. Load balances into ME GlobalLedger
-    let accounts = tb.lookup_accounts(&[/* all known account IDs */]).await?;
+    // 2. Load balances into ME GlobalLedger (paginated in batches of 8190)
+    for chunk in known_account_ids.chunks(BATCH_SIZE) {
+        let accounts = tb.lookup_accounts(chunk).await?;
 
-    for account in accounts {
-        let user_id = extract_user_id(account.id);
-        let asset_id = extract_asset_id(account.id);
-        let available = account.credits_posted - account.debits_posted - account.debits_pending;
-        let frozen = account.debits_pending;
+        for account in accounts {
+            // Skip accounts that don't exist (id will be 0)
+            if account.id == 0 { continue; }
 
-        me.global_ledger.set_balance(user_id, asset_id, available, frozen);
+            let user_id = extract_user_id(account.id);
+            let asset_id = extract_asset_id(account.id);
+
+            // Use saturating_sub to prevent underflow
+            let available = account.credits_posted
+                .saturating_sub(account.debits_posted)
+                .saturating_sub(account.debits_pending);
+            let frozen = account.debits_pending;
+
+            me.global_ledger.set_balance(user_id, asset_id, available, frozen);
+
+            tracing::debug!(
+                "Restored balance: user={} asset={} available={} frozen={}",
+                user_id, asset_id, available, frozen
+            );
+        }
     }
 
     // 3. Seek Kafka to resume point
     kafka.seek("validated_orders", checkpoint + 1)?;
 
-    tracing::info!("ME recovered. Resuming from Kafka offset {}", checkpoint + 1);
+    tracing::info!(
+        "ME recovered. Loaded {} accounts. Resuming from Kafka offset {}",
+        known_account_ids.len(),
+        checkpoint + 1
+    );
     Ok(())
 }
 ```
@@ -255,28 +400,69 @@ async fn process_engine_output(
 
 fn build_transfers(trades: &[TradeOutput], kafka_offset: u64) -> Vec<Transfer> {
     trades.iter().flat_map(|trade| {
+        // Generate time-based IDs for optimal LSM throughput
+        let (base_id, quote_id) = generate_trade_transfer_ids();
+
         // Each trade = 2 linked transfers (base + quote assets)
+        // LINKED flag: first transfer links to next, both succeed or both fail
         let base_transfer = Transfer {
-            id: trade.trade_id,
+            id: base_id,
             debit_account_id: tb_account_id(trade.seller_user_id, trade.base_asset_id),
             credit_account_id: tb_account_id(trade.buyer_user_id, trade.base_asset_id),
             amount: trade.quantity,
             user_data_128: kafka_offset as u128,
-            flags: TransferFlags::LINKED,
+            flags: TransferFlags::LINKED,  // Atomic with next transfer
             ..Default::default()
         };
 
+        // Quote leg: NO LINKED flag (closes the atomic chain)
         let quote_transfer = Transfer {
-            id: trade.trade_id + 1, // Or use separate ID generator
+            id: quote_id,
             debit_account_id: tb_account_id(trade.buyer_user_id, trade.quote_asset_id),
             credit_account_id: tb_account_id(trade.seller_user_id, trade.quote_asset_id),
             amount: trade.quantity * trade.price / PRICE_SCALE,
             user_data_128: kafka_offset as u128,
+            // No LINKED flag - this closes the atomic chain
             ..Default::default()
         };
 
         vec![base_transfer, quote_transfer]
     }).collect()
+}
+
+/// Process transfers in optimal batches (max 8190 per batch)
+async fn create_transfers_batched(
+    tb: &TigerBeetleClient,
+    transfers: &[Transfer],
+) -> Result<()> {
+    const BATCH_SIZE: usize = 8190;
+
+    for (batch_idx, chunk) in transfers.chunks(BATCH_SIZE).enumerate() {
+        let results = tb.create_transfers(chunk).await?;
+
+        // Check individual results
+        for (i, result) in results.iter().enumerate() {
+            match result {
+                CreateTransferResult::Ok => {},
+                CreateTransferResult::Exists => {
+                    // Idempotent - already processed
+                    tracing::debug!("Transfer {} already exists (idempotent)", chunk[i].id);
+                }
+                err => {
+                    // CRITICAL: ME bug or system error
+                    tracing::error!(
+                        "Batch {} transfer {} failed: {:?}",
+                        batch_idx, chunk[i].id, err
+                    );
+                    return Err(anyhow!("Transfer failed: {:?}", err));
+                }
+            }
+        }
+
+        tracing::debug!("Batch {} processed {} transfers", batch_idx, chunk.len());
+    }
+
+    Ok(())
 }
 ```
 
@@ -485,5 +671,65 @@ tigerbeetle:
 
 ---
 
+## Best Practices Summary
+
+> These recommendations are based on official TigerBeetle documentation and
+> production-grade deployment patterns.
+
+### Performance Optimization
+
+| Practice | Why |
+|----------|-----|
+| Use time-based IDs (ULID/TSID) | ~10% higher throughput vs random IDs due to LSM optimizations |
+| Batch transfers (max 8190) | TigerBeetle is optimized for batch processing |
+| Cache asset mappings | Never fetch from OLGP DB during transfer path |
+| Use `saturating_sub()` | Prevent underflow when calculating available balance |
+
+### Safety Guarantees
+
+| Practice | Why |
+|----------|-----|
+| `DEBITS_MUST_NOT_EXCEED_CREDITS` flag | TigerBeetle enforces balance >= 0 atomically |
+| Fail-fast on TB rejection | If TB rejects, ME has a bug - halt and investigate |
+| Check individual transfer results | Handle `Exists` (idempotent) vs real errors |
+| Store Kafka offset in `user_data_128` | Enables exact-once recovery |
+
+### Division of Responsibilities
+
+| Component | Responsibility |
+|-----------|----------------|
+| **App/Gateway** | Auth, ID generation, batching, rate limiting |
+| **ScyllaDB (OLGP)** | User metadata, event history, trade records |
+| **TigerBeetle (OLTP)** | Balance state, transfer records, constraint enforcement |
+| **Matching Engine** | In-memory order matching, price-time priority |
+
+### Account Management
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        ACCOUNT LIFECYCLE                                    │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  User Signup              First Trade/Deposit          Trading
+      │                          │                        │
+      ▼                          ▼                        ▼
+  ┌──────────┐              ┌──────────┐            ┌──────────┐
+  │ Create   │──── OR ──────│ Lazy     │            │ Lookup   │
+  │ accounts │              │ create   │            │ balance  │
+  │ (batch)  │              │ if !exist│            │ O(1)     │
+  └──────────┘              └──────────┘            └──────────┘
+
+  Always use: AccountFlags::DEBITS_MUST_NOT_EXCEED_CREDITS
+```
+
+### Future Enhancements
+
+- **Change Data Capture (CDC)**: Stream TB events to Kafka for analytics
+- **Multi-ledger**: Separate ledgers per currency for isolation
+- **Rate limiting via TB**: Use `code` field for transfer type limits
+
+---
+
 *Document created: 2025-12-11*
+*Updated: 2025-12-11 (Pro-level recommendations added)*
 *Status: Design Complete - Ready for Implementation*

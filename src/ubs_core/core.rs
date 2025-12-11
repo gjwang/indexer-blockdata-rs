@@ -14,6 +14,7 @@ use super::fee::VipFeeTable;
 use super::order::InternalOrder;
 use super::risk::RiskModel;
 use super::wal::{GroupCommitConfig, GroupCommitWal, WalEntry, WalEntryType};
+use super::tigerbeetle::{TigerBeetleSync, SyncEvent};
 
 const HIGH_WATER_MARK: usize = 10_000; // Backpressure threshold
 const ORDER_QUEUE_SIZE: usize = 10_000; // Ring buffer size for Kafka publisher
@@ -48,6 +49,9 @@ pub struct UBSCore<R: RiskModel> {
 
     // Ring buffer for async Kafka publishing (strict order, never blocks)
     order_tx: Option<std::sync::mpsc::SyncSender<OrderMessage>>,
+
+    // TigerBeetle Shadow Ledger Sync (Async, fire-and-forget)
+    tb_sync: Option<TigerBeetleSync>,
 }
 
 impl<R: RiskModel> UBSCore<R> {
@@ -63,6 +67,7 @@ impl<R: RiskModel> UBSCore<R> {
             is_replay_mode: false,
             wal: None,
             order_tx: None,
+            tb_sync: None,
         }
     }
 
@@ -83,6 +88,7 @@ impl<R: RiskModel> UBSCore<R> {
             is_replay_mode: false,
             wal: Some(wal),
             order_tx: None,
+            tb_sync: None,
         })
     }
 
@@ -141,9 +147,15 @@ impl<R: RiskModel> UBSCore<R> {
         // TODO: Full implementation with asset lookup
 
         // 5. Lock funds
-        // TODO: Implement after we have symbol config
-
+        // Note: Actual locking requires asset_id resolution which is external to this function currently.
+        // For full integration, validate_order should call self.lock_funds(...) once assets are resolved.
         Ok(())
+    }
+
+    /// Enable TigerBeetle Shadow Ledger
+    pub fn with_tigerbeetle(mut self, cluster_id: u128, addresses: Vec<String>) -> Result<Self, String> {
+        self.tb_sync = Some(TigerBeetleSync::new(cluster_id, addresses)?);
+        Ok(self)
     }
 
     /// Process order with WAL persistence
@@ -311,6 +323,11 @@ impl<R: RiskModel> UBSCore<R> {
             let account = self.accounts.entry(user_id).or_insert_with(|| UserAccount::new(user_id));
             let balance = account.get_balance_mut(asset_id);
             let _ = balance.deposit(remaining);
+
+            // Sync to TigerBeetle
+            if let Some(tb) = &self.tb_sync {
+                tb.queue(SyncEvent::Deposit { user_id, asset_id, amount: remaining });
+            }
         }
     }
 
@@ -321,8 +338,14 @@ impl<R: RiskModel> UBSCore<R> {
             None => return false,
         };
 
-        let balance = account.get_balance_mut(asset_id);
-        balance.withdraw(amount).is_ok()
+        if account.get_balance_mut(asset_id).withdraw(amount).is_ok() {
+            // Sync to TigerBeetle
+            if let Some(tb) = &self.tb_sync {
+                tb.queue(SyncEvent::Withdraw { user_id, asset_id, amount });
+            }
+            return true;
+        }
+        false
     }
 
     /// Calculate fee (simple: always quote asset)
@@ -355,6 +378,7 @@ impl<R: RiskModel> UBSCore<R> {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
+        order_id: u64,
     ) -> Result<u64, RejectReason> {
         let account = self.accounts.get_mut(&user_id)
             .ok_or(RejectReason::AccountNotFound)?;
@@ -368,6 +392,10 @@ impl<R: RiskModel> UBSCore<R> {
             user_id, asset_id, amount, balance.avail(), balance.frozen()
         );
 
+        if let Some(tb) = &self.tb_sync {
+            tb.queue(SyncEvent::Lock { user_id, asset_id, amount, order_id });
+        }
+
         Ok(balance.avail())
     }
 
@@ -378,6 +406,7 @@ impl<R: RiskModel> UBSCore<R> {
         user_id: UserId,
         asset_id: AssetId,
         amount: u64,
+        order_id: u64,
     ) -> Result<u64, RejectReason> {
         let account = self.accounts.get_mut(&user_id)
             .ok_or(RejectReason::AccountNotFound)?;
@@ -390,6 +419,10 @@ impl<R: RiskModel> UBSCore<R> {
             "[UNLOCK] user={} asset={} amount={} avail={} frozen={}",
             user_id, asset_id, amount, balance.avail(), balance.frozen()
         );
+
+        if let Some(tb) = &self.tb_sync {
+            tb.queue(SyncEvent::Unlock { order_id });
+        }
 
         Ok(balance.avail())
     }
@@ -412,6 +445,10 @@ impl<R: RiskModel> UBSCore<R> {
         base_qty: u64,
         quote_amt: u64,
         buyer_refund: u64,
+        buyer_order_id: u64,
+        seller_order_id: u64,
+        buyer_fee: u64,
+        seller_fee: u64,
     ) -> Result<(), RejectReason> {
         // --- Buyer: Spend frozen quote, receive base, refund excess ---
         let buyer = self.accounts.get_mut(&buyer_id)
@@ -448,10 +485,19 @@ impl<R: RiskModel> UBSCore<R> {
             .deposit(quote_amt)
             .map_err(|_| RejectReason::BalanceOverflow)?;
 
+
         log::debug!(
             "[SETTLE] buyer={} seller={} base_qty={} quote_amt={} refund={}",
             buyer_id, seller_id, base_qty, quote_amt, buyer_refund
         );
+
+        if let Some(tb) = &self.tb_sync {
+            tb.queue(SyncEvent::Trade {
+                buyer_id, seller_id, base_asset, quote_asset, base_qty, quote_amt,
+                buyer_order_id, seller_order_id, buyer_fee, seller_fee
+            });
+        }
+
 
         Ok(())
     }
@@ -527,7 +573,7 @@ mod tests {
         core.on_deposit(1, 100, 10000); // user 1, asset 100, amount 10000
 
         // Lock 3000
-        let result = core.lock_funds(1, 100, 3000);
+        let result = core.lock_funds(1, 100, 3000, 101);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 7000); // 10000 - 3000 = 7000 available
 
@@ -543,7 +589,7 @@ mod tests {
         core.on_deposit(1, 100, 1000);
 
         // Try to lock more than available
-        let result = core.lock_funds(1, 100, 5000);
+        let result = core.lock_funds(1, 100, 5000, 102);
         assert!(result.is_err());
         assert_eq!(result.unwrap_err(), RejectReason::InsufficientFunds);
     }
@@ -552,10 +598,10 @@ mod tests {
     fn test_unlock_funds_success() {
         let mut core = UBSCore::new(SpotRiskModel);
         core.on_deposit(1, 100, 10000);
-        core.lock_funds(1, 100, 5000).unwrap();
+        core.lock_funds(1, 100, 5000, 103).unwrap();
 
         // Unlock 2000 (order cancelled partially)
-        let result = core.unlock_funds(1, 100, 2000);
+        let result = core.unlock_funds(1, 100, 2000, 103);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), 7000); // 5000 + 2000 = 7000 available
 
@@ -574,9 +620,9 @@ mod tests {
         core.on_deposit(2, 1, 100);   // Seller: 100 BTC
 
         // Buyer locks 5000 USDT for order
-        core.lock_funds(1, 2, 5000).unwrap();
+        core.lock_funds(1, 2, 5000, 501).unwrap();
         // Seller locks 10 BTC for order
-        core.lock_funds(2, 1, 10).unwrap();
+        core.lock_funds(2, 1, 10, 502).unwrap();
 
         // Trade: 5 BTC @ 500 USDT = 2500 USDT
         // Buyer gets 5 BTC, spends 2500 USDT, refund 2500 USDT
@@ -588,6 +634,10 @@ mod tests {
             5,      // base_qty (5 BTC)
             2500,   // quote_amt (2500 USDT)
             2500,   // buyer_refund (price diff refund)
+            501,    // buyer_order_id
+            502,    // seller_order_id
+            0,      // buyer_fee
+            0,      // seller_fee
         );
         assert!(result.is_ok());
 

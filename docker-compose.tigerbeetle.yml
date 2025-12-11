@@ -1,0 +1,52 @@
+version: '3.7'
+
+# TigerBeetle Docker Compose Configuration
+# For development: single-node setup
+# For production: use 3-node cluster (see commented section below)
+
+services:
+  tigerbeetle:
+    image: ghcr.io/tigerbeetle/tigerbeetle:latest
+    container_name: tigerbeetle
+    command: "start --addresses=0.0.0.0:3000 /data/0_0.tigerbeetle"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data/tigerbeetle:/data
+    security_opt:
+      - "seccomp=unconfined"
+    restart: unless-stopped
+
+# ==============================================================================
+# PRODUCTION: 3-Node Cluster Configuration
+# ==============================================================================
+# Uncomment below for a fault-tolerant 3-node cluster.
+# First, format data files for each replica:
+#   ./scripts/setup_tigerbeetle.sh cluster
+#
+#   tigerbeetle_0:
+#     image: ghcr.io/tigerbeetle/tigerbeetle:latest
+#     command: "start --addresses=0.0.0.0:3001,0.0.0.0:3002,0.0.0.0:3003 /data/0_0.tigerbeetle"
+#     network_mode: host
+#     volumes:
+#       - ./data/tigerbeetle:/data
+#     security_opt:
+#       - "seccomp=unconfined"
+#
+#   tigerbeetle_1:
+#     image: ghcr.io/tigerbeetle/tigerbeetle:latest
+#     command: "start --addresses=0.0.0.0:3001,0.0.0.0:3002,0.0.0.0:3003 /data/0_1.tigerbeetle"
+#     network_mode: host
+#     volumes:
+#       - ./data/tigerbeetle:/data
+#     security_opt:
+#       - "seccomp=unconfined"
+#
+#   tigerbeetle_2:
+#     image: ghcr.io/tigerbeetle/tigerbeetle:latest
+#     command: "start --addresses=0.0.0.0:3001,0.0.0.0:3002,0.0.0.0:3003 /data/0_2.tigerbeetle"
+#     network_mode: host
+#     volumes:
+#       - ./data/tigerbeetle:/data
+#     security_opt:
+#       - "seccomp=unconfined"
