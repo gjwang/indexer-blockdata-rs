@@ -54,12 +54,28 @@ while [ $count -lt $timeout ]; do
     let count=count+1
     echo -n "."
 done
-echo "🟢 Scylla TCP Open. Waiting 10s for CQL init..."
-sleep 10 # Extra buffer for Scylla initialization
-
-echo "📜 Applying Scylla Schema..."
+echo "🟢 Scylla TCP Open. Waiting for CQL service..."
+echo "📜 Applying Scylla Schema (with retries)..."
 docker cp schema/settlement_unified.cql scylla:/tmp/schema.cql
-docker exec scylla cqlsh -f /tmp/schema.cql
+
+# Retry schema application until successful
+timeout=60
+count=0
+while [ $count -lt $timeout ]; do
+    if docker exec scylla cqlsh -f /tmp/schema.cql 2>/dev/null; then
+        echo -e " ${GREEN}✅ Schema Applied${NC}"
+        break
+    fi
+    sleep 2
+    let count=count+2
+    echo -n "."
+done
+
+if [ $count -ge $timeout ]; then
+    echo -e " ${RED}❌ Schema application timeout${NC}"
+    exit 1
+fi
+
 sleep 3 # Wait for schema propagation
 
 # Setup TigerBeetle
