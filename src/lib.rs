@@ -1,3 +1,4 @@
+pub mod api;
 pub mod centrifugo_auth;
 pub mod centrifugo_publisher;
 pub mod client_order_convertor;
