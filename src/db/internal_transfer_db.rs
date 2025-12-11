@@ -50,6 +50,19 @@ const SELECT_BY_ID_CQL: &str = "
     WHERE request_id = ?
 ";
 
+const SELECT_BY_STATUS_CQL: &str = "
+    SELECT
+        request_id, from_account_type, from_user_id, from_asset_id,
+        to_account_type, to_user_id, to_asset_id, amount,
+        status, created_at, updated_at,
+        pending_transfer_id, posted_transfer_id,
+        processor, error_message
+    FROM balance_transfer_requests
+    WHERE status = ?
+    ALLOW FILTERING
+    LIMIT 1000
+";
+
 /// DB operations for internal transfers
 pub struct InternalTransferDb {
     session: Arc<Session>,
@@ -84,8 +97,8 @@ impl InternalTransferDb {
         Ok(())
     }
 
-    /// Update transfer status with CAS
-    pub async fn update_transfer_status(
+    /// Update transfer status with CAS (Compare-And-Swap)
+    pub async fn update_transfer_status_cas(
         &self,
         request_id: i64,
         new_status: TransferStatus,
@@ -119,6 +132,35 @@ impl InternalTransferDb {
         Ok(false)
     }
 
+    /// Update transfer status (simple version without CAS)
+    pub async fn update_transfer_status(
+        &self,
+        request_id: i64,
+        status: &str,
+        error_message: Option<String>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let update_sql = if error_message.is_some() {
+            "UPDATE balance_transfer_requests SET status = ?, updated_at = ?, error_message = ? WHERE request_id = ?"
+        } else {
+            "UPDATE balance_transfer_requests SET status = ?, updated_at = ? WHERE request_id = ?"
+        };
+
+        if let Some(err_msg) = error_message {
+            self.session
+                .query(update_sql, (status, now, err_msg, request_id))
+                .await
+                .context("Failed to update transfer status with error")?;
+        } else {
+            self.session
+                .query(update_sql, (status, now, request_id))
+                .await
+                .context("Failed to update transfer status")?;
+        }
+
+        Ok(())
+    }
+
     /// Get transfer by request_id
     pub async fn get_transfer_by_id(&self, request_id: i64) -> Result<Option<TransferRequestRecord>> {
         let result = self.session
@@ -136,6 +178,26 @@ impl InternalTransferDb {
         }
 
         Ok(None)
+    }
+
+    /// Get transfers by status
+    pub async fn get_transfers_by_status(&self, status: &str) -> Result<Vec<TransferRequestRecord>> {
+        let result = self.session
+            .query(SELECT_BY_STATUS_CQL, (status,))
+            .await
+            .context("Failed to query transfers by status")?;
+
+        let mut records = Vec::new();
+        if let Some(rows) = result.rows {
+            for row in rows {
+                let record: TransferRequestRecord = row
+                    .into_typed()
+                    .context("Failed to parse transfer record")?;
+                records.push(record);
+            }
+        }
+
+        Ok(records)
     }
 }
 
