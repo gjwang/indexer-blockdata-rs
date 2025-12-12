@@ -179,9 +179,11 @@ fn run_aeron_service() {
             let balance_topic = config.kafka.topics.balance_ops.clone()
                 .unwrap_or("balance.operations".to_string());
 
+            let group_id = std::env::var("KAFKA_GROUP_ID").unwrap_or_else(|_| "ubscore_group_v4".to_string());
+
             let consumer: BaseConsumer = ClientConfig::new()
                 .set("bootstrap.servers", &config.kafka.broker)
-                .set("group.id", "ubscore_group_v4") // Bumped to v4 to ensure fresh start
+                .set("group.id", &group_id)
                 .set("enable.auto.commit", "true")
                 .set("auto.offset.reset", "earliest")  // Process all deposits from beginning
                 .create()
@@ -190,7 +192,7 @@ fn run_aeron_service() {
             consumer.subscribe(&[&balance_topic])
                 .expect("Failed to subscribe to balance topic");
 
-            info!("✅ Kafka consumer created for topic: {}", balance_topic);
+            info!("✅ Kafka consumer created for topic: {} (Group: {})", balance_topic, group_id);
             Some(consumer)
         }
         Err(e) => {

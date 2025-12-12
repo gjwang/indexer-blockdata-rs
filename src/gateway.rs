@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::Query;
@@ -126,7 +127,7 @@ pub struct AppState {
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
     pub internal_transfer_db: Option<Arc<InternalTransferDb>>,
-    pub funding_account: Arc<Mutex<SimulatedFundingAccount>>,
+    pub funding_account: Arc<AsyncMutex<SimulatedFundingAccount>>,
     /// UBS Gateway client for async order validation
     #[cfg(feature = "aeron")]
     pub ubs_client: Arc<crate::ubs_core::comm::UbsGatewayClient>,
@@ -174,7 +175,7 @@ async fn transfer_in(
 
     // 1. Lock Funding Account & Reserve Funds
     {
-        let mut funding = state.funding_account.lock().unwrap();
+        let mut funding = state.funding_account.lock().await;
         if let Err(e) = funding.lock(asset_id, raw_amount) {
             eprintln!("❌ Lock failed: {}", e);
             return Err(StatusCode::BAD_REQUEST);
@@ -216,13 +217,12 @@ async fn transfer_in(
 
     println!("✅ Transfer In request published to Kafka: {}", payload.request_id);
 
-    // 3. Wait for Settlement (Simulated)
-    println!("⏳ Waiting 1s for settlement...");
-    sleep(Duration::from_secs(1)).await;
+    // 3. Removed Sleep (Non-blocking simulation)
+    // println!("⏳ Waiting 1s for settlement...");
 
     // 4. "Spend" the locked funds
     {
-        let mut funding = state.funding_account.lock().unwrap();
+        let mut funding = state.funding_account.lock().await;
         if let Err(e) = funding.spend(asset_id, raw_amount) {
             eprintln!("❌ Critical: Failed to spend locked funds: {}", e);
             // In production this would be a critical alert
@@ -312,13 +312,9 @@ async fn transfer_out(
 
     println!("✅ Transfer Out request published to Kafka: {}", payload.request_id);
 
-    // 2. Wait for Settlement (Simulated)
-    println!("⏳ Waiting 5s for settlement...");
-    sleep(Duration::from_secs(5)).await;
-
     // 3. Credit funds to funding account (Funds coming from Trading Engine)
     {
-        let mut funding = state.funding_account.lock().unwrap();
+        let mut funding = state.funding_account.lock().await;
         funding.credit(asset_id, raw_amount);
         println!("💰 Funds credited to funding account (Transfer Out complete).");
     }

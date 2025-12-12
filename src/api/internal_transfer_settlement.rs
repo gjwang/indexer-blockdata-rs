@@ -52,8 +52,8 @@ impl InternalTransferSettlement {
                      if let Some(payload) = msg.payload() {
                          if let Ok(json) = serde_json::from_slice::<serde_json::Value>(payload) {
                              if let Some(event_type) = json.get("event_type").and_then(|v| v.as_str()) {
-                                 // Handle Spot -> Funding (Withdraw from Spot)
-                                 if event_type == "withdraw" {
+                                 // Handle Spot -> Funding (Withdraw from Spot) AND Funding -> Spot (Deposit to Spot)
+                                 if event_type == "withdraw" || event_type == "deposit" {
                                      let request_id_opt = json.get("ref_id")
                                          .and_then(|v| v.as_u64().map(|id| id as i64))
                                          .or_else(|| {
@@ -61,12 +61,15 @@ impl InternalTransferSettlement {
                                          });
 
                                      if let Some(request_id) = request_id_opt {
-                                         log::info!("📥 Received Withdraw Event for Request {}", request_id);
+                                         log::info!("📥 Received {} Event for Request {}", event_type, request_id);
                                          if let Err(e) = self.process_confirmation(request_id).await {
                                               log::error!("Error processing confirmation {}: {}", request_id, e);
                                          }
                                      } else {
-                                         log::warn!("Received withdraw event with invalid ref_id: {:?}", json);
+                                         // Some deposits are from External (transfer_in endpoint) and have string IDs e.g. "setup_001"
+                                         // These fail parsing to i64 request_id (unless numeric).
+                                         // We can ignore them as they are not Internal Transfers tracked by our DB.
+                                         // log::debug!("Ignored event with non-numeric ref_id: {:?}", json);
                                      }
                                  }
                              }
@@ -81,61 +84,120 @@ impl InternalTransferSettlement {
     /// Process transfer logic (Real TigerBeetle)
     async fn process_confirmation(&self, request_id: i64) -> Result<()> {
         use crate::ubs_core::tigerbeetle::{EXCHANGE_OMNIBUS_ID_PREFIX, tb_account_id};
+        use crate::models::internal_transfer_fsm::{InternalTransferStateMachine, InternalTransferEvent, InternalTransferState};
 
         // 1. Fetch Request from DB
         let record = match self.db.get_transfer_by_id(request_id).await? {
             Some(r) => r,
-            None => return Ok(()), // Not found
+            None => return Ok(()),
         };
 
-        if record.status != "pending" {
-            return Ok(());
+        // Initialize FSM from DB state
+        // Simple mapping from string to FSM State
+        let current_state = match record.status.as_str() {
+            "requesting" => InternalTransferState::Requesting,
+            "processing_ubs" => InternalTransferState::Processing,
+            "pending" => InternalTransferState::Pending,
+            "success" => InternalTransferState::Success,
+            "failed" => InternalTransferState::Failed,
+            _ => return Err(anyhow::anyhow!("Unknown state in DB: {}", record.status)),
+        };
+
+        // If already success, we are done (Idempotent check at state level)
+        if current_state == InternalTransferState::Success {
+             return Ok(());
         }
 
-        // 2. Execute Transfer in TigerBeetle (Spot -> Funding)
+        // 2. Validate Transition: Can we Settle from current state?
+        // We reconstruct the FSM state.
+        let mut fsm = InternalTransferStateMachine { state: current_state };
+
+        // Attempt transition to check validity
+        if fsm.consume(InternalTransferEvent::Settle).is_err() {
+             // Transition failed.
+             log::warn!("Invalid state transition for Settle: {:?} -> Success", current_state);
+             // If current state is Failed, don't retry.
+             if current_state == InternalTransferState::Failed {
+                 return Ok(());
+             }
+             return Ok(());
+        }
+
+        // 3. Execute Transfer in TigerBeetle
         let asset_id = record.asset_id as u32;
         let funding_user_id = (record.to_user_id as u64) | (1u64 << 63);
         let funding_account_id = tb_account_id(funding_user_id, asset_id);
         let omnibus_account_id = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
         let transfer_id = request_id as u128;
 
-        // Ensure accounts exist (Idempotent)
-        // Ignoring warnings if they exist
-        let _ = crate::ubs_core::tigerbeetle::ensure_account(&self.tb_client, funding_account_id, 1, 100).await;
-        let _ = crate::ubs_core::tigerbeetle::ensure_account(&self.tb_client, omnibus_account_id, 1, 100).await;
+        // Check if transfer exists (generic path creates Pending)
+        let transfers = self.tb_client.lookup_transfers(vec![transfer_id]).await
+            .map_err(|e| anyhow::anyhow!("TB Lookup Failed: {:?}", e))?;
 
-        let transfer = Transfer::new(transfer_id)
-            .with_debit_account_id(omnibus_account_id)
-            .with_credit_account_id(funding_account_id)
-            .with_amount(record.amount as u128)
-            .with_ledger(1)
-            .with_code(100);
+        if let Some(t) = transfers.first() {
+             if t.flags().contains(TransferFlags::PENDING) {
+                 log::info!("🔄 Found PENDING transfer {}. Posting...", request_id);
+                 // POST
+                 let post_id = (chrono::Utc::now().timestamp_nanos() as u128) << 16;
+                 // Use unique ID for Post operation
+                 let post_tx = Transfer::new(post_id)
+                     .with_pending_id(t.id())
+                     .with_code(t.code())
+                     .with_flags(TransferFlags::POST_PENDING_TRANSFER);
 
-        log::info!("💰 Spot->Funding: Crediting Funding Account {:?} from Omnibus", funding_account_id);
-
-        // Idempotent create
-        match self.tb_client.create_transfers(vec![transfer]).await {
-             Ok(_) => log::info!("✅ TB Transfer created"),
-             Err(e) => {
-                 let err_str = format!("{:?}", e);
-                 // Only treat as success if it already exists
-                 if err_str.contains("Exists") || err_str.contains("linked_event_failed") {
-                      log::warn!("TB Transfer exists/failed idempotent: {:?}", e);
-                 } else {
-                      log::error!("❌ TB Transfer Failed: {:?}", e);
-                      return Err(anyhow::anyhow!("TB Transfer Failed: {:?}", e));
-                 }
+                  self.tb_client.create_transfers(vec![post_tx]).await
+                      .map_err(|e| anyhow::anyhow!("Failed to POST pending: {:?}", e))?;
+                  log::info!("✅ TB Transfer POSTED");
+             } else {
+                 log::info!("✅ TB Transfer already exists (Finalized).");
              }
+        } else {
+            // Create NEW (Spot -> Funding path)
+            // Ensure accounts exist (Idempotent)
+            let _ = crate::ubs_core::tigerbeetle::ensure_account(&self.tb_client, funding_account_id, 1, 100).await;
+            let _ = crate::ubs_core::tigerbeetle::ensure_account(&self.tb_client, omnibus_account_id, 1, 100).await;
+
+            let transfer = Transfer::new(transfer_id)
+                .with_debit_account_id(omnibus_account_id)
+                .with_credit_account_id(funding_account_id)
+                .with_amount(record.amount as u128)
+                .with_ledger(1)
+                .with_code(100);
+
+            match self.tb_client.create_transfers(vec![transfer]).await {
+                 Ok(_) => log::info!("✅ TB Transfer created"),
+                 Err(e) => {
+                     let err_str = format!("{:?}", e);
+                     if err_str.contains("Exists") {
+                          log::warn!("TB Transfer exists idempotent: {:?}", e);
+                     } else if err_str.contains("IdAlreadyFailed") || err_str.contains("Exceeds") || err_str.contains("CreditAccountNotFound") {
+                          log::error!("❌ TB Transfer Failed Definitively: {:?}", e);
+                          // Transition FSM to Failed
+                          let _ = fsm.consume(InternalTransferEvent::Fail);
+                          self.db.update_transfer_status(
+                              request_id,
+                              fsm.as_str(), // "failed"
+                              Some(err_str),
+                          ).await?;
+                          // RETURN Early so we don't mark as success below
+                          return Ok(());
+                     } else {
+                          log::error!("❌ TB Transfer Failed: {:?}", e);
+                          return Err(anyhow::anyhow!("TB Transfer Failed: {:?}", e));
+                     }
+                 }
+            }
         }
 
-        // 3. Update DB Status
+        // 4. Update DB Status to Success (Using FSM State String)
+        // We know fsm.state is now Success because consume(Settle) succeeded.
         self.db.update_transfer_status(
             request_id,
-            TransferStatus::Success.as_str(),
+            fsm.as_str(),
             None,
         ).await?;
 
-        log::info!("✅ Transfer {} (Spot->Funding) settled successfully", request_id);
+        log::info!("✅ Transfer {} settled successfully (State: {})", request_id, fsm.as_str());
         Ok(())
     }
 
@@ -172,18 +234,10 @@ impl InternalTransferSettlement {
             .context("TB Lookup Failed")?;
 
         if transfers.is_empty() {
-             // If not found in TB, and it is older than timeout, fail it?
-             // OR Retry if it was supposed to be processed by Consumer?
-             // We can retry process_confirmation IF it is a Spot->Funding type?
-             // Since we don't have explicit Type field in DB (only infer from accounts),
-             // Assuming Spot->Funding account types from record.
-
              // Check timeout
              let now = chrono::Utc::now().timestamp_millis();
              let age = now - record.created_at;
 
-             // Only handle explicitly missed kafka events here if we want robust recovery
-             // For now, retry logic:
              log::info!("🔄 Retrying stuck transaction {} (Empty in TB)", request_id);
              if let Err(e) = self.process_confirmation(request_id).await {
                  log::warn!("Retry failed: {}", e);

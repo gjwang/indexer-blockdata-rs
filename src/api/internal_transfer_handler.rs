@@ -15,7 +15,7 @@ use crate::api::{error_codes, error_response, success_response, validate_transfe
 use crate::db::{TransferRequestRecord, InternalTransferDb};
 use crate::models::api_response::ApiResponse;
 use crate::models::internal_transfer_types::{InternalTransferData, InternalTransferRequest, TransferStatus, AccountType};
-// use crate::mocks::tigerbeetle_mock::MockTbClient; // Removed
+use crate::models::internal_transfer_fsm::{InternalTransferStateMachine, InternalTransferEvent, InternalTransferState};
 use tigerbeetle_unofficial::{Client, Transfer};
 use crate::symbol_manager::SymbolManager;
 use crate::utils::generate_request_id;
@@ -59,6 +59,8 @@ impl InternalTransferHandler {
         req: InternalTransferRequest,
     ) -> Result<ApiResponse<Option<InternalTransferData>>> {
 
+        // Initialize FSM tracking
+        let mut fsm = InternalTransferStateMachine::new();
 
         // ROUTING: Spot -> Funding must go through UBSCore
         match (&req.from_account, &req.to_account) {
@@ -90,6 +92,12 @@ impl InternalTransferHandler {
                      Err(e) => return Ok(error_response(error_codes::INVALID_AMOUNT, e.to_string())),
                  };
 
+                 // FSM Transition: Requesting -> Processing
+                 if let Err(e) = fsm.consume(InternalTransferEvent::Submit) {
+                      log::error!("FSM Error: {}", e);
+                      return Ok(error_response("FSM_ERROR", e));
+                 }
+
                  let record = TransferRequestRecord {
                     request_id: request_id as i64,
                     user_id: user_id as i64,
@@ -99,7 +107,7 @@ impl InternalTransferHandler {
                     to_user_id: req.to_account.user_id().unwrap_or(0) as i64,
                     asset_id: asset_id as i32,
                     amount: amount_scaled,
-                    status: "processing_ubs".to_string(),
+                    status: fsm.as_str().to_string(), // "processing_ubs"
                     created_at: get_current_timestamp_ms(),
                     updated_at: get_current_timestamp_ms(),
                     error_message: None,
@@ -109,13 +117,17 @@ impl InternalTransferHandler {
                     return Ok(error_response("DB_ERROR", format!("Failed to insert: {}", e)));
                  }
 
-                     // 5. Send to UBSCore via Kafka
+                 // 5. Send to UBSCore via Kafka
                  // Update DB to "pending" BEFORE publishing to avoid race where Settlement completes it before we return.
-                 // Actually, best to insert as "pending" initially or update now.
-                 // Using "processing_ubs" in insert is fine, but we must update to "pending" BEFORE publish.
+
+                 // FSM Transition: Processing -> Pending
+                 if let Err(e) = fsm.consume(InternalTransferEvent::LockFunds) {
+                      log::error!("FSM Error: {}", e);
+                 }
+
                  let _ = self.db.update_transfer_status(
                       request_id as i64,
-                      TransferStatus::Pending.as_str(),
+                      fsm.as_str(), // "pending"
                       None
                   ).await;
 
@@ -145,9 +157,11 @@ impl InternalTransferHandler {
                              }));
                          }
                          Err(e) => { // Error is String now
+                             // FSM Transition: Pending -> Failed
+                             let _ = fsm.consume(InternalTransferEvent::Fail);
                              let _ = self.db.update_transfer_status(
                                  request_id as i64,
-                                 TransferStatus::Failed.as_str(),
+                                 fsm.as_str(), // "failed"
                                  Some(format!("Kafka error: {}", e))
                              ).await;
                              return Ok(error_response("KAFKA_ERROR", format!("Failed to send to UBSCore: {}", e)));
@@ -159,6 +173,8 @@ impl InternalTransferHandler {
             }
             _ => {}
         }
+
+        // --- Generic Path (Funding -> Spot or other) ---
 
         // 1. Validate
         if let Err(e) = validate_transfer_request(&req, &self.symbol_manager) {
@@ -178,9 +194,8 @@ impl InternalTransferHandler {
         };
 
         // Verify user owns from_account
-    log::info!("⚡ [InternalTransfer] Received request: {:?}", req);
+        log::info!("⚡ [InternalTransfer] Received request: {:?}", req);
 
-    // Check balance logic...
         // 3. Convert amount
         let decimals = self.symbol_manager.get_asset_decimal(asset_id).unwrap_or(8);
         let amount_scaled = match decimal_to_i64(&req.amount, decimals) {
@@ -197,9 +212,8 @@ impl InternalTransferHandler {
         let request_id = generate_request_id() as i64;
         let now = get_current_timestamp_ms();
 
-        // Create DB record
-        // Create DB record
-        // Create DB record
+        // 5. Create DB record
+        // FSM State: Requesting
         let record = TransferRequestRecord {
             request_id: request_id as i64,
             user_id: match (req.from_account.user_id(), req.to_account.user_id()) {
@@ -213,7 +227,7 @@ impl InternalTransferHandler {
             to_user_id: req.to_account.user_id().unwrap_or(0) as i64,
             asset_id: asset_id as i32,
             amount: amount_scaled as i64,
-            status: TransferStatus::Requesting.as_str().to_string(),
+            status: fsm.as_str().to_string(), // "requesting"
             created_at: get_current_timestamp_ms(),
             updated_at: get_current_timestamp_ms(),
             error_message: None,
@@ -238,12 +252,10 @@ impl InternalTransferHandler {
         let debit_user_id = if debit_is_funding { from_user | (1u64 << 63) } else { from_user };
         let credit_user_id = if credit_is_funding { to_user | (1u64 << 63) } else { to_user };
 
-        // If Funding Account "from_user" is 0, then we use (0 | MSB).
-
         let debit_account_id = tb_account_id(debit_user_id, asset_id);
         let credit_account_id = tb_account_id(credit_user_id, asset_id);
 
-        // Ensure accounts exist
+        // Ensure accounts exist (Idempotent)
         if let Err(e) = crate::ubs_core::tigerbeetle::ensure_account(&self.tb_client, debit_account_id, 1, 1).await {
              log::warn!("Failed to ensure Debit Account: {}", e);
         }
@@ -251,12 +263,19 @@ impl InternalTransferHandler {
              log::warn!("Failed to ensure Credit Account: {}", e);
         }
 
+        // FSM Transition: Requesting -> Processing (Start validations)
+        let _ = fsm.consume(InternalTransferEvent::Submit);
+
         // 8. Check funding account balance (Real TB)
         // We use lookup_accounts to check balance.
         let accounts = self.tb_client.lookup_accounts(vec![debit_account_id]).await
-             .map_err(|e| anyhow::anyhow!("TB Lookup Error: {:?}", e))?; // Assuming map_err needed if Client mismatch
+             .map_err(|e| anyhow::anyhow!("TB Lookup Error: {:?}", e))?;
 
         if accounts.is_empty() {
+             // Fail FSM
+             let _ = fsm.consume(InternalTransferEvent::Fail);
+             let _ = self.db.update_transfer_status(request_id, fsm.as_str(), Some("Debit account not found".to_string())).await;
+
              return Ok(error_response(
                  "INVALID_ACCOUNT",
                  format!("Debit account not found: {}", debit_account_id),
@@ -267,6 +286,14 @@ impl InternalTransferHandler {
         let available = account.credits_posted().saturating_sub(account.debits_posted()).saturating_sub(account.debits_pending());
 
         if available < (amount_scaled as u128) {
+             // Fail FSM
+             let _ = fsm.consume(InternalTransferEvent::Fail);
+             let _ = self.db.update_transfer_status(
+                 request_id,
+                 fsm.as_str(),
+                 Some(format!("Insufficient balance: have {}, need {}", available, amount_scaled))
+             ).await;
+
              return Ok(error_response(
                  error_codes::INSUFFICIENT_BALANCE,
                  format!("Insufficient balance: have {}, need {}", available, amount_scaled),
@@ -284,12 +311,12 @@ impl InternalTransferHandler {
             .with_code(100)
             .with_flags(tigerbeetle_unofficial::transfer::Flags::PENDING); // Lock funds
 
-        // Corrected create_transfers handling (Result<()>)
         if let Err(e) = self.tb_client.create_transfers(vec![transfer]).await {
-             // Failed to lock - mark as failed
+             // Fail FSM
+             let _ = fsm.consume(InternalTransferEvent::Fail);
               let _ = self.db.update_transfer_status(
                 request_id,
-                TransferStatus::Failed.as_str(),
+                fsm.as_str(),
                 Some(format!("TB lock failed: {}", e)),
             ).await;
 
@@ -300,12 +327,14 @@ impl InternalTransferHandler {
         }
 
         // 10. Update DB status to Pending
+        // FSM Transition: Processing -> Pending
+        let _ = fsm.consume(InternalTransferEvent::LockFunds);
+
         if let Err(e) = self.db.update_transfer_status(
             request_id,
-            TransferStatus::Pending.as_str(),
+            fsm.as_str(), // "pending"
             None,
         ).await {
-            // TB locked but DB update failed - need recovery
             log::error!(
                 "CRITICAL: TB locked for transfer {} but DB update failed: {}",
                 request_id, e
@@ -313,9 +342,27 @@ impl InternalTransferHandler {
             // Settlement scanner will recover this
         }
 
-        // 11. [TODO] Send to UBSCore via Aeron
+        // 11. Send to UBSCore via Kafka (to update in-memory state)
+        if let Some(producer) = &self.kafka_producer {
+             // For Funding -> Spot, we treat it as a Deposit to the Spot user.
+             let balance_req = BalanceRequest::TransferIn {
+                 request_id: request_id as u64,
+                 user_id: to_user as u64,
+                 asset_id: asset_id,
+                 amount: amount_scaled as u64,
+                 timestamp: now as u64,
+             };
 
-        // 12. Return success
+             let payload = serde_json::to_string(&balance_req).unwrap_or_default();
+             let key = to_user.to_string();
+
+             if let Err(e) = producer.publish("balance.operations".to_string(), key, payload.into_bytes()).await {
+                  log::error!("Failed to publish deposit to UBSCore: {}", e);
+             } else {
+                  log::info!("✅ Published Funding->Spot Deposit to UBSCore: {}", request_id);
+             }
+        }
+
         // 12. Return success
         let data = InternalTransferData {
             request_id: request_id.to_string(),
@@ -342,7 +389,6 @@ mod tests {
     #[test]
     fn test_handler_creation() {
         // This is a placeholder test
-        // Real tests would need MockDB
         assert!(true);
     }
 }

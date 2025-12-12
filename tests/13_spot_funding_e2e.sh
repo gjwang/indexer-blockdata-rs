@@ -10,6 +10,10 @@ pkill -f "target/debug/internal_transfer_settlement" || true
 set -e
 
 echo "🚀 Starting Spot -> Funding E2E Test"
+export APP_ENV=dev
+export KAFKA_BROKERS=localhost:9093
+export KAFKA_GROUP_ID="ubscore_e2e_run_${RANDOM}"
+echo "Configured KAFKA_GROUP_ID: $KAFKA_GROUP_ID"
 
 # 1. Start Services
 pkill -f "order_gate_server" || true
@@ -17,9 +21,11 @@ pkill -f "ubscore_aeron_service" || true
 pkill -f "internal_transfer_settlement" || true
 
 # Check Kafka/Scylla/TB are up
-docker compose ps
+docker compose ps || true
 
 echo "🛠 Creating Kafka topics..."
+docker exec redpanda rpk topic delete balance.operations balance.events || true
+sleep 3
 docker exec redpanda rpk topic create balance.operations balance.events -p 1 || true
 
 # Build binaries
@@ -42,7 +48,7 @@ RUST_LOG=info ./target/debug/order_gate_server > gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "Gateway PID: $GATEWAY_PID"
 
-sleep 2
+sleep 5
 
 # Start Internal Transfer Settlement Service
 echo "Starting Internal Transfer Settlement Service..."

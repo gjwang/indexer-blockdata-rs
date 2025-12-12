@@ -11,6 +11,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 use std::time::Duration;
 
 use rdkafka::config::ClientConfig;
@@ -102,7 +103,7 @@ async fn main() {
     };
 
     let snowflake_gen = Mutex::new(SnowflakeGenRng::new(1));
-    let funding_account = Arc::new(Mutex::new(fetcher::gateway::SimulatedFundingAccount::new()));
+    let funding_account = Arc::new(AsyncMutex::new(fetcher::gateway::SimulatedFundingAccount::new()));
     let balance_topic =
         config.kafka.topics.balance_ops.as_ref().unwrap_or(&"balance_ops".to_string()).clone();
 
@@ -168,27 +169,12 @@ async fn main() {
     });
 
     // --- Internal Transfer Settlement Listener ---
-    if let Some(internal_db) = internal_transfer_db.clone() {
-        if let Some(tb) = tb_client_for_settlement {
-            println!("🔧 Starting Settlement Listener. Broker: {}", config.kafka.broker);
-
-            let settlement = Arc::new(fetcher::api::internal_transfer_settlement::InternalTransferSettlement::new(
-                internal_db,
-                tb,
-            ));
-
-            let brokers = config.kafka.broker.clone();
-            let group_id = "internal_transfer_settlement".to_string();
-
-            let settlement_clone = settlement.clone();
-            tokio::spawn(async move {
-                settlement_clone.run_consumer(brokers, group_id).await;
-            });
-            println!("✅ Internal Transfer Settlement Listener spawned");
-        } else {
-             println!("⚠️ Settlement Listener NOT started (No updated TB Connection)");
-        }
-    }
+    // DISABLED: The embedded Settlement Listener uses synchronous Kafka polling and TigerBeetle
+    // operations which block the tokio runtime, causing HTTP handlers to become unresponsive.
+    // Use the separate `internal_transfer_settlement` service instead.
+    // See: cargo run --bin internal_transfer_settlement
+    let _ = (internal_transfer_db.clone(), tb_client_for_settlement); // suppress unused warnings
+    println!("⚠️ Embedded Settlement Listener DISABLED - use separate service");
 
     // --- Start HTTP Server ---
     let app = create_app(state);
