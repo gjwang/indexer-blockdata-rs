@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Internal Transfer V2 End-to-End Test
-# Tests the new FSM-based transfer system
+# Internal Transfer End-to-End Test
+# Tests the FSM-based internal transfer system
 #
 # set -e removed to allow all tests to run
 
-echo "🧪 INTERNAL TRANSFER V2 E2E TEST"
-echo "=================================="
+echo "🧪 INTERNAL TRANSFER E2E TEST"
+echo "=============================="
 
 # Configuration
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"

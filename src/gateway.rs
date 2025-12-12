@@ -151,15 +151,15 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/order/history", axum::routing::get(get_order_history))
         .route("/api/v1/order/active", axum::routing::get(get_active_orders))
 
-
         .route("/api/v1/user/transfer_in", post(transfer_in))
         .route("/api/v1/user/transfer_out", post(transfer_out))
-        .route("/api/v1/user/internal_transfer", post(handle_internal_transfer))
-        .route("/api/v1/user/internal_transfer/:request_id", axum::routing::get(handle_get_transfer_status))
         .route("/api/v1/user/balance", axum::routing::get(get_balance))
-        // Transfer v2 endpoints
-        .route("/api/v1/transfer", post(handle_transfer_v2))
-        .route("/api/v1/transfer/:req_id", axum::routing::get(get_transfer_v2))
+        // Internal Transfer endpoints (FSM-based)
+        .route("/api/v1/internal_transfer", post(handle_internal_transfer))
+        .route("/api/v1/internal_transfer/:req_id", axum::routing::get(get_internal_transfer))
+        // Legacy alias for backwards compatibility
+        .route("/api/v1/transfer", post(handle_internal_transfer))
+        .route("/api/v1/transfer/:req_id", axum::routing::get(get_internal_transfer))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
 }
@@ -338,52 +338,7 @@ async fn transfer_out(
     }))
 }
 
-async fn handle_internal_transfer(
-    Extension(state): Extension<Arc<AppState>>,
-    Json(payload): Json<crate::models::internal_transfer_types::InternalTransferRequest>,
-) -> Result<Json<crate::models::api_response::ApiResponse<Option<crate::models::internal_transfer_types::InternalTransferData>>>, StatusCode> {
-    use crate::models::api_response::ApiResponse;
-
-    // 1. Check if DB is available
-    let db = match &state.internal_transfer_db {
-        Some(d) => d,
-        None => return Err(StatusCode::SERVICE_UNAVAILABLE),
-    };
-
-    // 2. Instantiate Handler
-    // TODO: Migrate InternalTransferHandler to use Real TB Client.
-    // For now, we use a dummy MockTbClient because Spot->Funding doesn't use TB (uses Kafka).
-    use crate::api::internal_transfer_handler::InternalTransferHandler;
-    use crate::mocks::tigerbeetle_mock::MockTbClient;
-
-    // Use real TB client from state
-    let tb_client = match &state.tb_client {
-        Some(c) => c.clone(),
-        None => {
-             log::error!("TB Client not available in AppState!");
-             return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-
-    // Use the producer from state (OrderPublisher trait)
-    let producer: Option<Arc<dyn OrderPublisher>> = Some(state.producer.clone());
-
-    let handler = InternalTransferHandler::new(
-        db.clone(),
-        state.symbol_manager.clone(),
-        tb_client,
-        producer,
-    );
-
-    // 3. Delegate processing
-    match handler.handle_transfer(payload).await {
-        Ok(api_resp) => Ok(Json(api_resp)),
-        Err(e) => {
-            log::error!("Internal Transfer Handler Error: {:?}", e);
-            Err(StatusCode::INTERNAL_SERVER_ERROR)
-        }
-    }
-}
+// Old V1 internal_transfer handler removed - use FSM-based implementation
 
 
 
@@ -892,30 +847,15 @@ async fn get_active_orders(
     }
 }
 
-/// Handler for getting internal transfer status
-async fn handle_get_transfer_status(
-    Extension(state): Extension<Arc<AppState>>,
-    Path(request_id): Path<String>,
-) -> impl IntoResponse {
-    if let Some(db) = &state.internal_transfer_db {
-        let query = InternalTransferQuery::new(db.clone(), state.symbol_manager.clone());
-
-        match query.get_transfer_status(&request_id).await {
-            Ok(response) => Json(response).into_response(),
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        }
-    } else {
-        (StatusCode::SERVICE_UNAVAILABLE, "Internal Transfer Database not connected").into_response()
-    }
-}
+// Old V1 handle_get_transfer_status removed - use FSM-based implementation
 
 // ============================================================================
-// Transfer v2 Handlers
+// Internal Transfer Handlers (FSM-based)
 // ============================================================================
 
-/// Request payload for Transfer v2
+/// Request payload for Internal Transfer
 #[derive(Debug, serde::Deserialize)]
-pub struct TransferV2Request {
+pub struct InternalTransferApiRequest {
     pub from: crate::transfer::ServiceId,
     pub to: crate::transfer::ServiceId,
     pub user_id: u64,
@@ -923,9 +863,10 @@ pub struct TransferV2Request {
     pub amount: u64,
 }
 
-/// Response payload for Transfer v2
+
+/// Response payload for Internal Transfer
 #[derive(Debug, serde::Serialize)]
-pub struct TransferV2Response {
+pub struct InternalTransferApiResponse {
     pub req_id: String,
     pub status: String,     // "committed", "pending", "failed", "rolled_back"
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -934,14 +875,14 @@ pub struct TransferV2Response {
     pub error: Option<String>,
 }
 
-/// POST /api/v1/transfer - Create and process a new transfer
-async fn handle_transfer_v2(
+/// POST /api/v1/internal_transfer - Create and process a new transfer
+async fn handle_internal_transfer(
     Extension(state): Extension<Arc<AppState>>,
-    Json(payload): Json<TransferV2Request>,
+    Json(payload): Json<InternalTransferApiRequest>,
 ) -> impl IntoResponse {
     use crate::transfer::{TransferRequest, TransferState};
 
-    // Check if transfer v2 is enabled
+    // Check if transfer is enabled
     let (coordinator, worker, queue) = match (
         &state.transfer_coordinator,
         &state.transfer_worker,
@@ -949,18 +890,18 @@ async fn handle_transfer_v2(
     ) {
         (Some(c), Some(w), Some(q)) => (c.clone(), w.clone(), q.clone()),
         _ => {
-            return Json(TransferV2Response {
+            return Json(InternalTransferApiResponse {
                 req_id: "".to_string(),
                 status: "failed".to_string(),
                 message: None,
-                error: Some("Transfer v2 not enabled".to_string()),
+                error: Some("Internal transfer not enabled".to_string()),
             }).into_response();
         }
     };
 
     // Validate request
     if payload.amount == 0 {
-        return Json(TransferV2Response {
+        return Json(InternalTransferApiResponse {
             req_id: "".to_string(),
             status: "failed".to_string(),
             message: None,
@@ -969,7 +910,7 @@ async fn handle_transfer_v2(
     }
 
     if payload.from == payload.to {
-        return Json(TransferV2Response {
+        return Json(InternalTransferApiResponse {
             req_id: "".to_string(),
             status: "failed".to_string(),
             message: None,
@@ -990,7 +931,7 @@ async fn handle_transfer_v2(
     let req_id = match coordinator.create(req).await {
         Ok(id) => id,
         Err(e) => {
-            return Json(TransferV2Response {
+            return Json(InternalTransferApiResponse {
                 req_id: "".to_string(),
                 status: "failed".to_string(),
                 message: None,
@@ -1016,7 +957,7 @@ async fn handle_transfer_v2(
         }
     };
 
-    Json(TransferV2Response {
+    Json(InternalTransferApiResponse {
         req_id: req_id.to_string(),
         status: status.to_string(),
         message,
@@ -1024,20 +965,20 @@ async fn handle_transfer_v2(
     }).into_response()
 }
 
-/// GET /api/v1/transfer/:req_id - Get transfer status
-async fn get_transfer_v2(
+/// GET /api/v1/internal_transfer/:req_id - Get transfer status
+async fn get_internal_transfer(
     Extension(state): Extension<Arc<AppState>>,
     Path(req_id): Path<String>,
 ) -> impl IntoResponse {
-    // Check if transfer v2 is enabled
+    // Check if transfer is enabled
     let coordinator = match &state.transfer_coordinator {
         Some(c) => c.clone(),
         None => {
-            return Json(TransferV2Response {
+            return Json(InternalTransferApiResponse {
                 req_id: req_id.clone(),
                 status: "error".to_string(),
                 message: None,
-                error: Some("Transfer v2 not enabled".to_string()),
+                error: Some("Internal transfer not enabled".to_string()),
             }).into_response();
         }
     };
@@ -1046,7 +987,7 @@ async fn get_transfer_v2(
     let request_id = match crate::transfer::RequestId::from_str(&req_id) {
         Ok(id) => id,
         Err(_) => {
-            return Json(TransferV2Response {
+            return Json(InternalTransferApiResponse {
                 req_id: req_id.clone(),
                 status: "error".to_string(),
                 message: None,

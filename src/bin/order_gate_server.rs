@@ -151,11 +151,10 @@ async fn main() {
     // Clone TB client for Settlement Listener
     let tb_client_for_settlement = tb_client.clone();
 
-    // --- Transfer v2 Initialization ---
-    // Note: Transfer v2 is disabled by default until adapters are fully implemented
-    let transfer_v2_enabled = std::env::var("TRANSFER_V2_ENABLED").is_ok();
+    // --- Internal Transfer Initialization (FSM-based) ---
+    let internal_transfer_enabled = std::env::var("INTERNAL_TRANSFER_ENABLED").is_ok();
 
-    let (transfer_coordinator, transfer_worker, transfer_queue) = if transfer_v2_enabled {
+    let (transfer_coordinator, transfer_worker, transfer_queue) = if internal_transfer_enabled {
         use fetcher::transfer::{
             TransferCoordinator, TransferWorker, TransferQueue, TransferDb, WorkerConfig,
             adapters::{FundingAdapter, TradingAdapter},
