@@ -5,16 +5,15 @@
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use uuid::Uuid;
 
-use crate::transfer::types::OpResult;
+use crate::transfer::types::{OpResult, RequestId};
 use super::traits::ServiceAdapter;
 
 /// Mock adapter for testing
 pub struct MockAdapter {
     name: String,
     /// Map of req_id -> expected result
-    results: Mutex<HashMap<Uuid, OpResult>>,
+    results: Mutex<HashMap<u64, OpResult>>,
     /// Default result when no specific result is set
     default_result: Mutex<OpResult>,
 }
@@ -29,8 +28,8 @@ impl MockAdapter {
     }
 
     /// Set expected result for a specific req_id
-    pub fn set_result(&self, req_id: Uuid, result: OpResult) {
-        self.results.lock().unwrap().insert(req_id, result);
+    pub fn set_result(&self, req_id: RequestId, result: OpResult) {
+        self.results.lock().unwrap().insert(req_id.as_u64(), result);
     }
 
     /// Set default result for all operations
@@ -43,11 +42,11 @@ impl MockAdapter {
         self.results.lock().unwrap().clear();
     }
 
-    fn get_result(&self, req_id: Uuid) -> OpResult {
+    fn get_result(&self, req_id: RequestId) -> OpResult {
         self.results
             .lock()
             .unwrap()
-            .get(&req_id)
+            .get(&req_id.as_u64())
             .cloned()
             .unwrap_or_else(|| self.default_result.lock().unwrap().clone())
     }
@@ -57,7 +56,7 @@ impl MockAdapter {
 impl ServiceAdapter for MockAdapter {
     async fn withdraw(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -71,7 +70,7 @@ impl ServiceAdapter for MockAdapter {
 
     async fn deposit(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -83,17 +82,17 @@ impl ServiceAdapter for MockAdapter {
         self.get_result(req_id)
     }
 
-    async fn commit(&self, req_id: Uuid) -> OpResult {
+    async fn commit(&self, req_id: RequestId) -> OpResult {
         log::debug!("[{}] commit({})", self.name, req_id);
         OpResult::Success
     }
 
-    async fn rollback(&self, req_id: Uuid) -> OpResult {
+    async fn rollback(&self, req_id: RequestId) -> OpResult {
         log::debug!("[{}] rollback({})", self.name, req_id);
         OpResult::Success
     }
 
-    async fn query(&self, req_id: Uuid) -> OpResult {
+    async fn query(&self, req_id: RequestId) -> OpResult {
         log::debug!("[{}] query({})", self.name, req_id);
         self.get_result(req_id)
     }
@@ -110,7 +109,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_default_success() {
         let mock = MockAdapter::new("test");
-        let req_id = Uuid::new_v4();
+        let req_id = RequestId::new(1001);
 
         let result = mock.withdraw(req_id, 4001, 1, 1000).await;
         assert!(matches!(result, OpResult::Success));
@@ -119,7 +118,7 @@ mod tests {
     #[tokio::test]
     async fn test_mock_set_result() {
         let mock = MockAdapter::new("test");
-        let req_id = Uuid::new_v4();
+        let req_id = RequestId::new(1002);
 
         mock.set_result(req_id, OpResult::Failed("Insufficient funds".to_string()));
 
@@ -132,7 +131,7 @@ mod tests {
         let mock = MockAdapter::new("test");
         mock.set_default_result(OpResult::Pending);
 
-        let req_id = Uuid::new_v4();
+        let req_id = RequestId::new(1003);
         let result = mock.withdraw(req_id, 4001, 1, 1000).await;
         assert!(matches!(result, OpResult::Pending));
     }

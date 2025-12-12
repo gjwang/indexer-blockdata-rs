@@ -3,9 +3,8 @@
 //! Implements freeze/commit pattern for withdrawals.
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
-use crate::transfer::types::OpResult;
+use crate::transfer::types::{OpResult, RequestId};
 use super::traits::ServiceAdapter;
 
 /// Funding service adapter (placeholder)
@@ -34,7 +33,7 @@ impl Default for FundingAdapter {
 impl ServiceAdapter for FundingAdapter {
     async fn withdraw(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -50,7 +49,7 @@ impl ServiceAdapter for FundingAdapter {
 
     async fn deposit(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -63,17 +62,17 @@ impl ServiceAdapter for FundingAdapter {
         OpResult::Success
     }
 
-    async fn commit(&self, req_id: Uuid) -> OpResult {
+    async fn commit(&self, req_id: RequestId) -> OpResult {
         log::info!("FundingAdapter::commit({})", req_id);
         OpResult::Success
     }
 
-    async fn rollback(&self, req_id: Uuid) -> OpResult {
+    async fn rollback(&self, req_id: RequestId) -> OpResult {
         log::info!("FundingAdapter::rollback({})", req_id);
         OpResult::Success
     }
 
-    async fn query(&self, req_id: Uuid) -> OpResult {
+    async fn query(&self, req_id: RequestId) -> OpResult {
         log::info!("FundingAdapter::query({})", req_id);
         OpResult::Pending
     }
@@ -106,7 +105,7 @@ impl TbFundingAdapter {
         Self { client }
     }
 
-    fn transfer_id(req_id: Uuid) -> u128 {
+    fn transfer_id(req_id: RequestId) -> u128 {
         req_id.as_u128()
     }
 }
@@ -115,7 +114,7 @@ impl TbFundingAdapter {
 impl ServiceAdapter for TbFundingAdapter {
     async fn withdraw(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -156,7 +155,7 @@ impl ServiceAdapter for TbFundingAdapter {
 
     async fn deposit(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -185,7 +184,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
-    async fn commit(&self, req_id: Uuid) -> OpResult {
+    async fn commit(&self, req_id: RequestId) -> OpResult {
         log::info!("TbFundingAdapter::commit({})", req_id);
 
         let pending_id = Self::transfer_id(req_id);
@@ -204,7 +203,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
-    async fn rollback(&self, req_id: Uuid) -> OpResult {
+    async fn rollback(&self, req_id: RequestId) -> OpResult {
         log::info!("TbFundingAdapter::rollback({})", req_id);
 
         let pending_id = Self::transfer_id(req_id);
@@ -223,7 +222,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
-    async fn query(&self, _req_id: Uuid) -> OpResult {
+    async fn query(&self, _req_id: RequestId) -> OpResult {
         OpResult::Pending
     }
 

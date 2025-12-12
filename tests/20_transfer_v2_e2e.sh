@@ -169,9 +169,9 @@ echo ""
 echo "📤 Test Suite 3: Error Handling"
 echo "---------------------------------"
 
-# Test 3.1: Query non-existent transfer
+# Test 3.1: Query non-existent transfer (use valid decimal ID that doesn't exist)
 echo "Test 3.1: Query non-existent"
-RESP=$(query "00000000-0000-0000-0000-000000000000")
+RESP=$(query "9999999999999999")
 echo "Response: $RESP"
 ERROR=$(echo "$RESP" | jq -r '.error')
 assert_contains "not found" "$ERROR" "Query non-existent"

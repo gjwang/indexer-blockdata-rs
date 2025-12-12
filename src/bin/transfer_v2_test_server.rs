@@ -143,7 +143,9 @@ async fn get_transfer(
     Extension(state): Extension<Arc<AppState>>,
     Path(req_id): Path<String>,
 ) -> impl IntoResponse {
-    let uuid = match uuid::Uuid::parse_str(&req_id) {
+    use fetcher::transfer::RequestId;
+
+    let request_id = match RequestId::from_str(&req_id) {
         Ok(id) => id,
         Err(_) => {
             return Json(serde_json::json!({
@@ -152,7 +154,7 @@ async fn get_transfer(
         }
     };
 
-    match state.coordinator.get(uuid).await {
+    match state.coordinator.get(request_id).await {
         Ok(Some(record)) => {
             Json(serde_json::json!({
                 "req_id": record.req_id.to_string(),
@@ -205,9 +207,11 @@ async fn main() {
 
     // Initialize schema
     println!("📋 Setting up schema...");
+    // Drop and recreate table with new schema (req_id changed from uuid to bigint)
+    let _ = session.query("DROP TABLE IF EXISTS trading.transfers", &[]).await;
     let schema = r#"
         CREATE TABLE IF NOT EXISTS trading.transfers (
-            req_id uuid,
+            req_id bigint,
             source text,
             target text,
             user_id bigint,

@@ -5,10 +5,9 @@
 use anyhow::{Context, Result};
 use scylla::Session;
 use std::sync::Arc;
-use uuid::Uuid;
 
 use crate::transfer::state::TransferState;
-use crate::transfer::types::{ServiceId, TransferRecord};
+use crate::transfer::types::{RequestId, ServiceId, TransferRecord};
 
 // CQL Statements
 const INSERT_TRANSFER_CQL: &str = "
@@ -70,7 +69,7 @@ impl TransferDb {
             .query(
                 INSERT_TRANSFER_CQL,
                 (
-                    record.req_id,
+                    record.req_id.as_u64() as i64,
                     record.source.as_str(),
                     record.target.as_str(),
                     record.user_id as i64,
@@ -89,17 +88,17 @@ impl TransferDb {
     }
 
     /// Get transfer by req_id
-    pub async fn get(&self, req_id: Uuid) -> Result<Option<TransferRecord>> {
+    pub async fn get(&self, req_id: RequestId) -> Result<Option<TransferRecord>> {
         let result = self
             .session
-            .query(GET_TRANSFER_BY_ID_CQL, (req_id,))
+            .query(GET_TRANSFER_BY_ID_CQL, (req_id.as_u64() as i64,))
             .await
             .context("Failed to query transfer by ID")?;
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
                 let (
-                    req_id,
+                    req_id_raw,
                     source,
                     target,
                     user_id,
@@ -110,11 +109,11 @@ impl TransferDb {
                     updated_at,
                     error,
                     retry_count,
-                ): (Uuid, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
+                ): (i64, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
                     row.into_typed().context("Failed to parse transfer record")?;
 
                 let record = TransferRecord {
-                    req_id,
+                    req_id: RequestId::new(req_id_raw as u64),
                     source: ServiceId::from_str(&source).unwrap_or(ServiceId::Funding),
                     target: ServiceId::from_str(&target).unwrap_or(ServiceId::Trading),
                     user_id: user_id as u64,
@@ -137,7 +136,7 @@ impl TransferDb {
     /// CRITICAL: Uses LWT for safe concurrent updates
     pub async fn update_state_if(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         expected: TransferState,
         new_state: TransferState,
     ) -> Result<bool> {
@@ -147,7 +146,7 @@ impl TransferDb {
             .session
             .query(
                 UPDATE_STATE_IF_CQL,
-                (new_state.as_str(), now, req_id, expected.as_str()),
+                (new_state.as_str(), now, req_id.as_u64() as i64, expected.as_str()),
             )
             .await
             .context("Failed to update transfer state")?;
@@ -168,7 +167,7 @@ impl TransferDb {
     /// Update state with error message
     pub async fn update_state_with_error(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         expected: TransferState,
         new_state: TransferState,
         error: &str,
@@ -179,7 +178,7 @@ impl TransferDb {
             .session
             .query(
                 UPDATE_STATE_WITH_ERROR_CQL,
-                (new_state.as_str(), now, error, req_id, expected.as_str()),
+                (new_state.as_str(), now, error, req_id.as_u64() as i64, expected.as_str()),
             )
             .await
             .context("Failed to update transfer state with error")?;
@@ -196,11 +195,11 @@ impl TransferDb {
     }
 
     /// Increment retry count and update timestamp
-    pub async fn increment_retry(&self, req_id: Uuid) -> Result<()> {
+    pub async fn increment_retry(&self, req_id: RequestId) -> Result<()> {
         let now = chrono::Utc::now().timestamp_millis();
 
         self.session
-            .query(INCREMENT_RETRY_CQL, (now, req_id))
+            .query(INCREMENT_RETRY_CQL, (now, req_id.as_u64() as i64))
             .await
             .context("Failed to increment retry count")?;
 
@@ -222,7 +221,7 @@ impl TransferDb {
         if let Some(rows) = result.rows {
             for row in rows {
                 let (
-                    req_id,
+                    req_id_raw,
                     source,
                     target,
                     user_id,
@@ -233,11 +232,11 @@ impl TransferDb {
                     updated_at,
                     error,
                     retry_count,
-                ): (Uuid, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
+                ): (i64, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
                     row.into_typed().context("Failed to parse stale transfer record")?;
 
                 records.push(TransferRecord {
-                    req_id,
+                    req_id: RequestId::new(req_id_raw as u64),
                     source: ServiceId::from_str(&source).unwrap_or(ServiceId::Funding),
                     target: ServiceId::from_str(&target).unwrap_or(ServiceId::Trading),
                     user_id: user_id as u64,

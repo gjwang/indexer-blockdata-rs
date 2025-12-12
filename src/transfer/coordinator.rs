@@ -3,19 +3,20 @@
 //! Orchestrates the FSM-based transfer processing.
 
 use anyhow::Result;
-use std::sync::Arc;
-use uuid::Uuid;
+use std::sync::{Arc, Mutex};
 
+use crate::fast_ulid::SnowflakeGenRng;
 use crate::transfer::adapters::ServiceAdapter;
 use crate::transfer::db::TransferDb;
 use crate::transfer::state::TransferState;
-use crate::transfer::types::{OpResult, ServiceId, TransferRecord, TransferRequest};
+use crate::transfer::types::{OpResult, RequestId, ServiceId, TransferRecord, TransferRequest};
 
 /// Transfer Coordinator - orchestrates FSM-based processing
 pub struct TransferCoordinator {
     db: Arc<TransferDb>,
     funding_adapter: Arc<dyn ServiceAdapter>,
     trading_adapter: Arc<dyn ServiceAdapter>,
+    id_gen: Mutex<SnowflakeGenRng>,
 }
 
 impl TransferCoordinator {
@@ -24,15 +25,26 @@ impl TransferCoordinator {
         funding_adapter: Arc<dyn ServiceAdapter>,
         trading_adapter: Arc<dyn ServiceAdapter>,
     ) -> Self {
+        Self::with_machine_id(db, funding_adapter, trading_adapter, 1)
+    }
+
+    /// Create coordinator with specific machine ID for distributed deployment
+    pub fn with_machine_id(
+        db: Arc<TransferDb>,
+        funding_adapter: Arc<dyn ServiceAdapter>,
+        trading_adapter: Arc<dyn ServiceAdapter>,
+        machine_id: u8,
+    ) -> Self {
         Self {
             db,
             funding_adapter,
             trading_adapter,
+            id_gen: Mutex::new(SnowflakeGenRng::new(machine_id)),
         }
     }
 
     /// Create a new transfer record
-    pub async fn create(&self, req: TransferRequest) -> Result<Uuid> {
+    pub async fn create(&self, req: TransferRequest) -> Result<RequestId> {
         // Validate request
         if req.amount == 0 {
             return Err(anyhow::anyhow!("Amount must be greater than 0"));
@@ -42,7 +54,11 @@ impl TransferCoordinator {
             return Err(anyhow::anyhow!("Source and target cannot be the same"));
         }
 
-        let req_id = Uuid::new_v4();
+        // Generate RequestId using Snowflake
+        let req_id = {
+            let mut gen = self.id_gen.lock().unwrap();
+            RequestId::new(gen.generate())
+        };
         let now = chrono::Utc::now().timestamp_millis();
 
         let record = TransferRecord {
@@ -67,7 +83,7 @@ impl TransferCoordinator {
 
     /// Execute one step of the FSM
     /// Returns the new state after processing
-    pub async fn step(&self, req_id: Uuid) -> Result<TransferState> {
+    pub async fn step(&self, req_id: RequestId) -> Result<TransferState> {
         let record = self
             .db
             .get(req_id)
@@ -291,12 +307,12 @@ impl TransferCoordinator {
     }
 
     /// Get current state of a transfer
-    pub async fn get_state(&self, req_id: Uuid) -> Result<Option<TransferState>> {
+    pub async fn get_state(&self, req_id: RequestId) -> Result<Option<TransferState>> {
         Ok(self.db.get(req_id).await?.map(|r| r.state))
     }
 
     /// Get full transfer record
-    pub async fn get(&self, req_id: Uuid) -> Result<Option<TransferRecord>> {
+    pub async fn get(&self, req_id: RequestId) -> Result<Option<TransferRecord>> {
         self.db.get(req_id).await
     }
 }

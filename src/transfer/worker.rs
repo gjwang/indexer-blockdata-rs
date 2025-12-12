@@ -6,11 +6,11 @@ use crossbeam::queue::ArrayQueue;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-use uuid::Uuid;
 
 use crate::transfer::coordinator::TransferCoordinator;
 use crate::transfer::db::TransferDb;
 use crate::transfer::state::TransferState;
+use crate::transfer::types::RequestId;
 
 /// Worker configuration
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ impl Default for WorkerConfig {
 
 /// Transfer queue (ring buffer with backpressure)
 pub struct TransferQueue {
-    buffer: ArrayQueue<Uuid>,
+    buffer: ArrayQueue<RequestId>,
 }
 
 impl TransferQueue {
@@ -53,12 +53,12 @@ impl TransferQueue {
 
     /// Try to push a req_id to the queue
     /// Returns false if queue is full (backpressure)
-    pub fn try_push(&self, req_id: Uuid) -> bool {
+    pub fn try_push(&self, req_id: RequestId) -> bool {
         self.buffer.push(req_id).is_ok()
     }
 
     /// Try to pop a req_id from the queue
-    pub fn try_pop(&self) -> Option<Uuid> {
+    pub fn try_pop(&self) -> Option<RequestId> {
         self.buffer.pop()
     }
 
@@ -101,7 +101,7 @@ impl TransferWorker {
     /// This is the "happy path optimization" - attempt to complete
     /// the transfer immediately. If it doesn't complete in time,
     /// return the current state and let the background worker continue.
-    pub async fn process_now(&self, req_id: Uuid) -> TransferState {
+    pub async fn process_now(&self, req_id: RequestId) -> TransferState {
         let deadline = Instant::now() + Duration::from_millis(self.config.process_timeout_ms);
 
         loop {
@@ -131,7 +131,7 @@ impl TransferWorker {
     }
 
     /// Process a transfer in the background (no timeout)
-    async fn process_transfer(&self, req_id: Uuid) {
+    async fn process_transfer(&self, req_id: RequestId) {
         loop {
             match self.coordinator.step(req_id).await {
                 Ok(state) => {
@@ -250,8 +250,8 @@ mod tests {
     fn test_transfer_queue() {
         let queue = TransferQueue::new(100);
 
-        let id1 = Uuid::new_v4();
-        let id2 = Uuid::new_v4();
+        let id1 = RequestId::new(1001);
+        let id2 = RequestId::new(1002);
 
         assert!(queue.try_push(id1));
         assert!(queue.try_push(id2));
@@ -267,9 +267,9 @@ mod tests {
     fn test_queue_backpressure() {
         let queue = TransferQueue::new(2);
 
-        assert!(queue.try_push(Uuid::new_v4()));
-        assert!(queue.try_push(Uuid::new_v4()));
-        assert!(!queue.try_push(Uuid::new_v4())); // Full
+        assert!(queue.try_push(RequestId::new(1)));
+        assert!(queue.try_push(RequestId::new(2)));
+        assert!(!queue.try_push(RequestId::new(3))); // Full
     }
 
     #[test]

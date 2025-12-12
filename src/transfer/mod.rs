@@ -12,7 +12,7 @@ pub mod adapters;
 
 // Re-export commonly used types
 pub use state::TransferState;
-pub use types::{OpResult, ServiceId, TransferRecord, TransferRequest, TransferResponse};
+pub use types::{OpResult, RequestId, ServiceId, TransferRecord, TransferRequest, TransferResponse};
 pub use db::TransferDb;
 pub use coordinator::TransferCoordinator;
 pub use worker::{TransferWorker, TransferQueue, WorkerConfig};

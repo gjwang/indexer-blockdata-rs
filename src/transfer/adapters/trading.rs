@@ -3,9 +3,8 @@
 //! Implements direct debit/credit pattern.
 
 use async_trait::async_trait;
-use uuid::Uuid;
 
-use crate::transfer::types::OpResult;
+use crate::transfer::types::{OpResult, RequestId};
 use super::traits::ServiceAdapter;
 
 /// Trading service adapter (placeholder)
@@ -34,7 +33,7 @@ impl Default for TradingAdapter {
 impl ServiceAdapter for TradingAdapter {
     async fn withdraw(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -48,7 +47,7 @@ impl ServiceAdapter for TradingAdapter {
 
     async fn deposit(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -60,17 +59,17 @@ impl ServiceAdapter for TradingAdapter {
         OpResult::Success
     }
 
-    async fn commit(&self, req_id: Uuid) -> OpResult {
+    async fn commit(&self, req_id: RequestId) -> OpResult {
         log::debug!("TradingAdapter::commit({}) - no-op", req_id);
         OpResult::Success
     }
 
-    async fn rollback(&self, req_id: Uuid) -> OpResult {
+    async fn rollback(&self, req_id: RequestId) -> OpResult {
         log::info!("TradingAdapter::rollback({})", req_id);
         OpResult::Success
     }
 
-    async fn query(&self, req_id: Uuid) -> OpResult {
+    async fn query(&self, req_id: RequestId) -> OpResult {
         log::info!("TradingAdapter::query({})", req_id);
         OpResult::Pending
     }
@@ -102,7 +101,7 @@ impl TbTradingAdapter {
         Self { client }
     }
 
-    fn transfer_id(req_id: Uuid) -> u128 {
+    fn transfer_id(req_id: RequestId) -> u128 {
         req_id.as_u128() | (1u128 << 127) // Different namespace than funding
     }
 }
@@ -111,7 +110,7 @@ impl TbTradingAdapter {
 impl ServiceAdapter for TbTradingAdapter {
     async fn withdraw(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -147,7 +146,7 @@ impl ServiceAdapter for TbTradingAdapter {
 
     async fn deposit(
         &self,
-        req_id: Uuid,
+        req_id: RequestId,
         user_id: u64,
         asset_id: u32,
         amount: u64,
@@ -176,17 +175,17 @@ impl ServiceAdapter for TbTradingAdapter {
         }
     }
 
-    async fn commit(&self, _req_id: Uuid) -> OpResult {
+    async fn commit(&self, _req_id: RequestId) -> OpResult {
         log::debug!("TbTradingAdapter::commit - no-op for trading");
         OpResult::Success
     }
 
-    async fn rollback(&self, _req_id: Uuid) -> OpResult {
+    async fn rollback(&self, _req_id: RequestId) -> OpResult {
         log::warn!("TbTradingAdapter::rollback - not supported without state lookup");
         OpResult::Failed("Rollback not supported for trading".to_string())
     }
 
-    async fn query(&self, _req_id: Uuid) -> OpResult {
+    async fn query(&self, _req_id: RequestId) -> OpResult {
         OpResult::Pending
     }
 

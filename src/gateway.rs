@@ -1042,8 +1042,8 @@ async fn get_transfer_v2(
         }
     };
 
-    // Parse UUID
-    let uuid = match uuid::Uuid::parse_str(&req_id) {
+    // Parse RequestId (decimal u64 string)
+    let request_id = match crate::transfer::RequestId::from_str(&req_id) {
         Ok(id) => id,
         Err(_) => {
             return Json(TransferV2Response {
@@ -1056,7 +1056,7 @@ async fn get_transfer_v2(
     };
 
     // Get transfer
-    match coordinator.get(uuid).await {
+    match coordinator.get(request_id).await {
         Ok(Some(record)) => {
             Json(serde_json::json!({
                 "req_id": record.req_id.to_string(),
