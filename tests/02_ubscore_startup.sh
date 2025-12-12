@@ -131,7 +131,8 @@ SEED_TEST_ACCOUNTS=0 ./target/debug/ubscore_aeron_service --features aeron > log
 UBS_PID=$!
 
 # Wait for UBSCore to  be ready
-DATE=$(date +%Y-%m-%d)
+# Use UTC date since tracing-appender uses UTC
+DATE=$(TZ=UTC date +%Y-%m-%d)
 LOG_FILE="logs/ubscore.log.$DATE"
 
 echo -n "⏳ Waiting for UBSCore..."
@@ -139,10 +140,15 @@ sleep 5
 timeout=30
 count=0
 while [ $count -lt $timeout ]; do
-    if [ -f "$LOG_FILE" ] && grep -q "UBSCore Service ready" "$LOG_FILE"; then
-        echo -e " ${GREEN}READY${NC}"
-        break
-    fi
+    # Check any log file that exists (handles timezone edge cases)
+    found=false
+    for logfile in logs/ubscore.log.* logs/ubscore_std.log; do
+        if [ -f "$logfile" ] && grep -q "UBSCore Service ready" "$logfile" 2>/dev/null; then
+            echo -e " ${GREEN}READY${NC}"
+            found=true
+            break 2
+        fi
+    done
     if ! kill -0 $UBS_PID 2>/dev/null; then
         echo -e " ${RED}UBSCore died!${NC}"
         cat logs/ubscore_std.log
