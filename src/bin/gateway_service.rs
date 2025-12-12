@@ -125,28 +125,7 @@ async fn main() {
         }
     };
 
-    // --- Connect to Internal Transfer DB ---
-    // Try to connect separately to ensure internal transfer functionality works even if settlement DB has schema issues
-    let internal_transfer_db = if let Some(scylla_config) = &config.scylladb {
-        let session = scylla::SessionBuilder::new()
-            .known_nodes(&scylla_config.hosts)
-            .build()
-            .await;
-
-        match session {
-            Ok(s) => {
-                println!("✅ Connected to ScyllaDB for Internal Transfers");
-                let db = fetcher::db::InternalTransferDb::new(Arc::new(s));
-                Some(Arc::new(db))
-            },
-            Err(e) => {
-                eprintln!("⚠️ Warning: Failed to connect to ScyllaDB for Internal Transfers: {}", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
+    // V1 InternalTransferDb removed - V2 Transfer system uses TransferDb below
 
     // Clone TB client for Settlement Listener
     let tb_client_for_settlement = tb_client.clone();
@@ -241,7 +220,7 @@ async fn main() {
         balance_topic,
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
-        internal_transfer_db: internal_transfer_db.clone(),
+        // V1 internal_transfer_db removed
         funding_account,
         #[cfg(feature = "aeron")]
         ubs_client,
@@ -252,13 +231,8 @@ async fn main() {
         transfer_queue,
     });
 
-    // --- Internal Transfer Settlement Listener ---
-    // DISABLED: The embedded Settlement Listener uses synchronous Kafka polling and TigerBeetle
-    // operations which block the tokio runtime, causing HTTP handlers to become unresponsive.
-    // Use the separate `internal_transfer_settlement` service instead.
-    // See: cargo run --bin internal_transfer_settlement
-    let _ = (internal_transfer_db.clone(), tb_client_for_settlement); // suppress unused warnings
-    println!("⚠️ Embedded Settlement Listener DISABLED - use separate service");
+    // V1 Settlement Listener removed - V2 uses transfer_worker background task
+    let _ = tb_client_for_settlement; // suppress unused warning
 
     // --- Start HTTP Server ---
     let app = create_app(state);

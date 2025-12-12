@@ -17,8 +17,7 @@ use tokio::time::sleep;
 use tower_http::cors::CorsLayer;
 
 use crate::client_order_convertor::client_order_convert;
-use crate::api::internal_transfer_query::InternalTransferQuery;
-use crate::db::InternalTransferDb;
+// V1 internal transfer imports removed - using transfer::* v2 module
 use axum::extract::Path;
 use axum::response::IntoResponse;
 use crate::db::SettlementDb;
@@ -126,7 +125,7 @@ pub struct AppState {
     pub balance_topic: String,
     pub user_manager: UserAccountManager,
     pub db: Option<SettlementDb>,
-    pub internal_transfer_db: Option<Arc<InternalTransferDb>>,
+    // V1 internal_transfer_db removed - use transfer_coordinator instead
     pub funding_account: Arc<AsyncMutex<SimulatedFundingAccount>>,
     /// UBS Gateway client for async order validation
     #[cfg(feature = "aeron")]
