@@ -58,9 +58,39 @@ pub struct TransferDb {
     session: Arc<Session>,
 }
 
+/// Raw DB row type for transfer records
+type TransferRow = (i64, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32);
+
 impl TransferDb {
     pub fn new(session: Arc<Session>) -> Self {
         Self { session }
+    }
+
+    /// Parse a raw DB row into a TransferRecord
+    /// Returns None and logs error if data is corrupt
+    fn parse_row(row: TransferRow) -> Result<TransferRecord> {
+        let (req_id_raw, source, target, user_id, asset_id, amount, state, created_at, updated_at, error, retry_count) = row;
+
+        let source = ServiceId::from_str(&source)
+            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid source '{}'", source))?;
+        let target = ServiceId::from_str(&target)
+            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid target '{}'", target))?;
+        let state = TransferState::from_str(&state)
+            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid state '{}'", state))?;
+
+        Ok(TransferRecord {
+            req_id: RequestId::new(req_id_raw as u64),
+            source,
+            target,
+            user_id: user_id as u64,
+            asset_id: asset_id as u32,
+            amount: amount as u64,
+            state,
+            created_at,
+            updated_at,
+            error,
+            retry_count: retry_count as u32,
+        })
     }
 
     /// Create a new transfer record
@@ -97,43 +127,8 @@ impl TransferDb {
 
         if let Some(rows) = result.rows {
             if let Some(row) = rows.into_iter().next() {
-                let (
-                    req_id_raw,
-                    source,
-                    target,
-                    user_id,
-                    asset_id,
-                    amount,
-                    state,
-                    created_at,
-                    updated_at,
-                    error,
-                    retry_count,
-                ): (i64, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
-                    row.into_typed().context("Failed to parse transfer record")?;
-
-                // Parse enums - fail on corrupt data instead of using defaults
-                let source = ServiceId::from_str(&source)
-                    .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid source '{}'", source))?;
-                let target = ServiceId::from_str(&target)
-                    .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid target '{}'", target))?;
-                let state = TransferState::from_str(&state)
-                    .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid state '{}'", state))?;
-
-                let record = TransferRecord {
-                    req_id: RequestId::new(req_id_raw as u64),
-                    source,
-                    target,
-                    user_id: user_id as u64,
-                    asset_id: asset_id as u32,
-                    amount: amount as u64,
-                    state,
-                    created_at,
-                    updated_at,
-                    error,
-                    retry_count: retry_count as u32,
-                };
-                return Ok(Some(record));
+                let raw: TransferRow = row.into_typed().context("Failed to parse transfer record")?;
+                return Ok(Some(Self::parse_row(raw)?));
             }
         }
 
@@ -228,63 +223,21 @@ impl TransferDb {
         let mut records = Vec::new();
         if let Some(rows) = result.rows {
             for row in rows {
-                let (
-                    req_id_raw,
-                    source,
-                    target,
-                    user_id,
-                    asset_id,
-                    amount,
-                    state,
-                    created_at,
-                    updated_at,
-                    error,
-                    retry_count,
-                ): (i64, String, String, i64, i32, i64, String, i64, i64, Option<String>, i32) =
-                    match row.into_typed() {
-                        Ok(r) => r,
-                        Err(e) => {
-                            log::error!("Corrupt transfer record (parse error): {}", e);
-                            continue; // Skip corrupt record
-                        }
-                    };
-
-                // Parse enums - skip corrupt records
-                let source = match ServiceId::from_str(&source) {
-                    Some(s) => s,
-                    None => {
-                        log::error!("Corrupt transfer {}: invalid source '{}'", req_id_raw, source);
-                        continue;
-                    }
-                };
-                let target = match ServiceId::from_str(&target) {
-                    Some(t) => t,
-                    None => {
-                        log::error!("Corrupt transfer {}: invalid target '{}'", req_id_raw, target);
-                        continue;
-                    }
-                };
-                let state = match TransferState::from_str(&state) {
-                    Some(s) => s,
-                    None => {
-                        log::error!("Corrupt transfer {}: invalid state '{}'", req_id_raw, state);
+                let raw: TransferRow = match row.into_typed() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        log::error!("Corrupt transfer record (parse error): {}", e);
                         continue;
                     }
                 };
 
-                records.push(TransferRecord {
-                    req_id: RequestId::new(req_id_raw as u64),
-                    source,
-                    target,
-                    user_id: user_id as u64,
-                    asset_id: asset_id as u32,
-                    amount: amount as u64,
-                    state,
-                    created_at,
-                    updated_at,
-                    error,
-                    retry_count: retry_count as u32,
-                });
+                match Self::parse_row(raw) {
+                    Ok(record) => records.push(record),
+                    Err(e) => {
+                        log::error!("Corrupt transfer record: {}", e);
+                        continue;
+                    }
+                }
             }
         }
 
