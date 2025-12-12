@@ -1,6 +1,6 @@
-//! Transfer V2 Test Server
+//! Internal Transfer Test Server
 //!
-//! Standalone HTTP server for testing transfer v2 without Aeron dependency.
+//! Standalone HTTP server for testing internal transfers with real TigerBeetle.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,7 +15,6 @@ use axum::{
 use tower_http::cors::CorsLayer;
 
 use fetcher::transfer::{
-    adapters::{FundingAdapter, TradingAdapter, MockAdapter},
     TransferCoordinator, TransferDb, TransferQueue, TransferRequest, TransferState,
     TransferWorker, WorkerConfig,
 };
@@ -187,8 +186,8 @@ async fn get_transfer(
 async fn main() {
     env_logger::init();
 
-    println!("🧪 Transfer V2 Test Server");
-    println!("=========================");
+    println!("🧪 Internal Transfer Test Server");
+    println!("================================");
 
     // Connect to ScyllaDB
     println!("📦 Connecting to ScyllaDB...");
@@ -232,9 +231,25 @@ async fn main() {
     // Create components
     let db = Arc::new(TransferDb::new(session));
 
-    // Use Mock adapters that always succeed (for testing)
-    let funding = Arc::new(MockAdapter::new("funding"));
-    let trading = Arc::new(MockAdapter::new("trading"));
+    // Connect to TigerBeetle
+    println!("🐯 Connecting to TigerBeetle...");
+    let tb_address = std::env::var("TIGERBEETLE_ADDRESS").unwrap_or_else(|_| "3000".to_string());
+    let tb_client: Arc<tigerbeetle_unofficial::Client> = match tigerbeetle_unofficial::Client::new(0, &tb_address) {
+        Ok(client) => {
+            println!("✅ Connected to TigerBeetle at {}", tb_address);
+            Arc::new(client)
+        }
+        Err(e) => {
+            eprintln!("❌ Failed to connect to TigerBeetle: {}", e);
+            eprintln!("   Make sure TigerBeetle is running on port {}", tb_address);
+            std::process::exit(1);
+        }
+    };
+
+    // Use real TigerBeetle adapters
+    use fetcher::transfer::adapters::{TbFundingAdapter, TbTradingAdapter};
+    let funding = Arc::new(TbFundingAdapter::new(tb_client.clone()));
+    let trading = Arc::new(TbTradingAdapter::new(tb_client.clone()));
 
     let coordinator = Arc::new(TransferCoordinator::new(
         db.clone(),
@@ -273,11 +288,11 @@ async fn main() {
 
     let port = 8080;
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("🚀 Transfer V2 Test Server on http://127.0.0.1:{}", port);
+    println!("🚀 Internal Transfer Test Server on http://127.0.0.1:{}", port);
     println!("");
     println!("📤 Endpoints:");
-    println!("  POST /api/v1/transfer       - Create transfer");
-    println!("  GET  /api/v1/transfer/:id   - Query status");
+    println!("  POST /api/v1/transfer       - Create internal transfer");
+    println!("  GET  /api/v1/transfer/:id   - Query transfer status");
 
     axum::serve(
         tokio::net::TcpListener::bind(&addr).await.unwrap(),

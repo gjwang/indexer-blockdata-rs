@@ -157,44 +157,54 @@ async fn main() {
     let (transfer_coordinator, transfer_worker, transfer_queue) = if internal_transfer_enabled {
         use fetcher::transfer::{
             TransferCoordinator, TransferWorker, TransferQueue, TransferDb, WorkerConfig,
-            adapters::{FundingAdapter, TradingAdapter},
+            adapters::{TbFundingAdapter, TbTradingAdapter},
         };
 
-        if let Some(ref session) = db {
-            let transfer_db = Arc::new(TransferDb::new(session.get_session()));
-            let funding_adapter = Arc::new(FundingAdapter::new());
-            let trading_adapter = Arc::new(TradingAdapter::new());
+        // Require both ScyllaDB and TigerBeetle for internal transfers
+        match (&db, &tb_client) {
+            (Some(ref session), Some(ref tb)) => {
+                let transfer_db = Arc::new(TransferDb::new(session.get_session()));
 
-            let coordinator = Arc::new(TransferCoordinator::new(
-                transfer_db.clone(),
-                funding_adapter,
-                trading_adapter,
-            ));
+                // Use real TigerBeetle adapters
+                let funding_adapter = Arc::new(TbFundingAdapter::new(tb.clone()));
+                let trading_adapter = Arc::new(TbTradingAdapter::new(tb.clone()));
 
-            let queue = Arc::new(TransferQueue::new(10000));
-            let config = WorkerConfig::default();
+                let coordinator = Arc::new(TransferCoordinator::new(
+                    transfer_db.clone(),
+                    funding_adapter,
+                    trading_adapter,
+                ));
 
-            let worker = Arc::new(TransferWorker::new(
-                coordinator.clone(),
-                transfer_db,
-                queue.clone(),
-                config,
-            ));
+                let queue = Arc::new(TransferQueue::new(10000));
+                let config = WorkerConfig::default();
 
-            // Spawn background worker
-            let worker_clone = worker.clone();
-            tokio::spawn(async move {
-                worker_clone.run().await;
-            });
+                let worker = Arc::new(TransferWorker::new(
+                    coordinator.clone(),
+                    transfer_db,
+                    queue.clone(),
+                    config,
+                ));
 
-            println!("✅ Transfer v2 ENABLED");
-            (Some(coordinator), Some(worker), Some(queue))
-        } else {
-            println!("⚠️ Transfer v2 requires database connection");
-            (None, None, None)
+                // Spawn background worker
+                let worker_clone = worker.clone();
+                tokio::spawn(async move {
+                    worker_clone.run().await;
+                });
+
+                println!("✅ Internal Transfer ENABLED (TigerBeetle)");
+                (Some(coordinator), Some(worker), Some(queue))
+            }
+            (None, _) => {
+                println!("⚠️ Internal Transfer requires ScyllaDB connection");
+                (None, None, None)
+            }
+            (_, None) => {
+                println!("⚠️ Internal Transfer requires TigerBeetle connection");
+                (None, None, None)
+            }
         }
     } else {
-        println!("⚠️ Transfer v2 DISABLED (set TRANSFER_V2_ENABLED=1 to enable)");
+        println!("⚠️ Internal Transfer DISABLED (set INTERNAL_TRANSFER_ENABLED=1 to enable)");
         (None, None, None)
     };
 
