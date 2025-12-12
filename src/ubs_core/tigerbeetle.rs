@@ -82,43 +82,52 @@ impl TigerBeetleWorker {
     async fn worker_loop(client: Client, mut rx: mpsc::UnboundedReceiver<BalanceEvent>) {
         log::info!("TigerBeetle Shadow Ledger sync started - Initializing System Accounts...");
 
-        // Initialize System Accounts (Idempotent)
-        let mut sys_accounts = Vec::new();
-        for asset_id in [1, 2] { // BTC, USDT
-             sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
-             sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(HOLDING_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
-             sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(REVENUE_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
-        }
-
-        match client.create_accounts(sys_accounts).await {
-            Ok(_) => log::info!("System accounts initialized (or already existed)"),
-            Err(e) => log::error!("Failed to init system accounts: {:?}", e),
-        }
+        // TODO: External deposit/withdraw design needs careful consideration
+        // Commenting out system account initialization until design is finalized
+        //
+        // let mut sys_accounts = Vec::new();
+        // for asset_id in [1, 2] { // BTC, USDT
+        //      sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
+        //      sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(HOLDING_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
+        //      sys_accounts.push(tigerbeetle_unofficial::Account::new(tb_account_id(REVENUE_ACCOUNT_ID_PREFIX, asset_id), TRADING_LEDGER, 1));
+        // }
+        //
+        // match client.create_accounts(sys_accounts).await {
+        //     Ok(_) => log::info!("System accounts initialized (or already existed)"),
+        //     Err(e) => log::error!("Failed to init system accounts: {:?}", e),
+        // }
 
         log::info!("Starting event loop...");
 
 
         while let Some(event) = rx.recv().await {
             let transfers = match event {
-                // EXTERNAL Deposit: Money enters from outside via omnibus
-                // (This is NOT internal transfer - omnibus is correct here for external funds)
-                BalanceEvent::Deposited { tx_id, user_id, asset_id, amount } => {
-                    vec![Transfer::new(tb_id(1, tx_id)) // Type 1 = External
-                        .with_debit_account_id(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id))
-                        .with_credit_account_id(tb_account_id(user_id, asset_id))
-                        .with_amount(amount as u128)
-                        .with_ledger(TRADING_LEDGER)
-                        .with_code(1)]
+                // TODO: External deposit/withdraw design needs careful consideration
+                // Commenting out until design is finalized
+                //
+                // BalanceEvent::Deposited { tx_id, user_id, asset_id, amount } => {
+                //     vec![Transfer::new(tb_id(1, tx_id))
+                //         .with_debit_account_id(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id))
+                //         .with_credit_account_id(tb_account_id(user_id, asset_id))
+                //         .with_amount(amount as u128)
+                //         .with_ledger(TRADING_LEDGER)
+                //         .with_code(1)]
+                // },
+                // BalanceEvent::Withdrawn { tx_id, user_id, asset_id, amount } => {
+                //     vec![Transfer::new(tb_id(1, tx_id))
+                //         .with_debit_account_id(tb_account_id(user_id, asset_id))
+                //         .with_credit_account_id(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id))
+                //         .with_amount(amount as u128)
+                //         .with_ledger(TRADING_LEDGER)
+                //         .with_code(1)]
+                // },
+                BalanceEvent::Deposited { .. } => {
+                    log::warn!("Deposited event ignored - external design not finalized");
+                    continue;
                 },
-                // EXTERNAL Withdrawal: Money leaves to outside via omnibus
-                // (This is NOT internal transfer - omnibus is correct here for external funds)
-                BalanceEvent::Withdrawn { tx_id, user_id, asset_id, amount } => {
-                    vec![Transfer::new(tb_id(1, tx_id)) // Type 1 = External
-                        .with_debit_account_id(tb_account_id(user_id, asset_id))
-                        .with_credit_account_id(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id))
-                        .with_amount(amount as u128)
-                        .with_ledger(TRADING_LEDGER)
-                        .with_code(1)]
+                BalanceEvent::Withdrawn { .. } => {
+                    log::warn!("Withdrawn event ignored - external design not finalized");
+                    continue;
                 },
                 BalanceEvent::FundsLocked { user_id, asset_id, amount, order_id } => {
                     // Create PENDING transfer: User -> Holding
