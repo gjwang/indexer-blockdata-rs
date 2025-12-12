@@ -56,20 +56,32 @@ impl InternalTransferQuery {
         let asset_name = self.symbol_manager.get_asset_name(record.asset_id as u32)
             .unwrap_or_else(|| "UNKNOWN".to_string());
 
-        // Construct AccountTypes
+        // Construct AccountTypes - log warning for unknown types
         let from_account = match record.from_account_type.as_str() {
             "funding" => AccountType::Funding { asset: asset_name.clone(), user_id: record.from_user_id as u64 },
             "spot" => AccountType::Spot { user_id: record.from_user_id as u64, asset: asset_name.clone() },
-            _ => AccountType::Funding { asset: "UNKNOWN".to_string(), user_id: 0 },
+            unknown => {
+                log::warn!("Transfer {}: unknown from_account_type '{}'", request_id, unknown);
+                AccountType::Funding { asset: asset_name.clone(), user_id: record.from_user_id as u64 }
+            }
         };
 
         let to_account = match record.to_account_type.as_str() {
             "funding" => AccountType::Funding { asset: asset_name.clone(), user_id: record.to_user_id as u64 },
             "spot" => AccountType::Spot { user_id: record.to_user_id as u64, asset: asset_name.clone() },
-            _ => AccountType::Funding { asset: "UNKNOWN".to_string(), user_id: 0 },
+            unknown => {
+                log::warn!("Transfer {}: unknown to_account_type '{}'", request_id, unknown);
+                AccountType::Funding { asset: asset_name.clone(), user_id: record.to_user_id as u64 }
+            }
         };
 
-        let status = TransferStatus::from_str(&record.status).unwrap_or(TransferStatus::Failed);
+        let status = match TransferStatus::from_str(&record.status) {
+            Some(s) => s,
+            None => {
+                log::error!("Transfer {}: corrupt status '{}', defaulting to Failed", request_id, record.status);
+                TransferStatus::Failed
+            }
+        };
         let amount_str = format!("{}.{:08}", record.amount / 100_000_000, record.amount % 100_000_000);
 
         let data = InternalTransferData {

@@ -116,7 +116,10 @@ impl OrderHistoryDb {
                         5 => OrderStatus::Cancelled,
                         6 => OrderStatus::Rejected,
                         7 => OrderStatus::Expired,
-                        _ => OrderStatus::New,
+                        unknown => {
+                            log::warn!("Order {}: unknown status value {}, defaulting to New", oid, unknown);
+                            OrderStatus::New
+                        }
                     };
 
                     return Ok(Some(OrderUpdate {
@@ -259,7 +262,13 @@ impl OrderHistoryDb {
         let (mut total, mut filled, mut cancelled, mut rejected) =
             if let Some(rows) = current_stats.rows {
                 if let Some(row) = rows.into_iter().next() {
-                    row.into_typed::<(i32, i32, i32, i32)>().unwrap_or((0, 0, 0, 0))
+                    match row.into_typed::<(i32, i32, i32, i32)>() {
+                        Ok(stats) => stats,
+                        Err(e) => {
+                            log::warn!("Failed to parse order statistics for user {}: {}, using defaults", user_id, e);
+                            (0, 0, 0, 0)
+                        }
+                    }
                 } else {
                     (0, 0, 0, 0)
                 }
