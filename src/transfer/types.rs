@@ -37,7 +37,7 @@ impl ServiceId {
 /// - Success: Operation definitely completed successfully
 /// - Failed: Operation definitely failed (business failure, e.g., insufficient funds)
 /// - Pending: Operation in-flight or technical error (requires retry)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OpResult {
     /// Operation definitely succeeded
     Success,

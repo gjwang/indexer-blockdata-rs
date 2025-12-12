@@ -123,6 +123,19 @@ impl TransferCoordinator {
         }
     }
 
+    /// Helper: Finalize source commit after target success
+    /// Logs warning if commit fails but does not fail the transfer
+    async fn finalize_source_commit(&self, record: &TransferRecord, source: &dyn ServiceAdapter) {
+        let commit_result = source.commit(record.req_id).await;
+        if let OpResult::Failed(e) = &commit_result {
+            log::warn!(
+                "Source commit failed for {} (target already received funds): {}",
+                record.req_id, e
+            );
+            // TODO: Send alert to ops for manual cleanup of frozen funds
+        }
+    }
+
     /// Step from Init state: Call source.withdraw()
     async fn step_init(
         &self,
@@ -212,17 +225,8 @@ impl TransferCoordinator {
         // 3. Handle result
         match result {
             OpResult::Success => {
-                // Commit source (finalize freeze if applicable)
-                // EXPERT REVIEW: Log if commit fails, but proceed with Committed state
-                // because target has already received the funds
-                let commit_result = source.commit(record.req_id).await;
-                if let OpResult::Failed(e) = &commit_result {
-                    log::warn!(
-                        "Source commit failed for {} (target already received funds): {}",
-                        record.req_id, e
-                    );
-                    // TODO: Send alert to ops for manual cleanup of frozen funds
-                }
+                // Finalize source commit
+                self.finalize_source_commit(record, source).await;
                 self.db.update_state_if(record.req_id, TransferState::TargetPending, TransferState::Committed).await?;
                 Ok(TransferState::Committed)
             }
@@ -252,14 +256,8 @@ impl TransferCoordinator {
 
         match result {
             OpResult::Success => {
-                // Commit source
-                let commit_result = source.commit(record.req_id).await;
-                if let OpResult::Failed(e) = &commit_result {
-                    log::warn!(
-                        "Source commit failed for {} (target already received funds): {}",
-                        record.req_id, e
-                    );
-                }
+                // Finalize source commit
+                self.finalize_source_commit(record, source).await;
                 self.db.update_state_if(record.req_id, TransferState::TargetPending, TransferState::Committed).await?;
                 Ok(TransferState::Committed)
             }

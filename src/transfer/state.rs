@@ -67,6 +67,16 @@ impl TransferState {
     }
 }
 
+/// Implement std::str::FromStr for idiomatic parsing
+impl std::str::FromStr for TransferState {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        TransferState::from_str(s)
+            .ok_or_else(|| format!("Invalid TransferState: {}", s))
+    }
+}
+
 /// FSM Events (inputs that trigger state transitions)
 #[derive(Debug, Clone)]
 pub enum TransferEvent {

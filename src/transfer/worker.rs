@@ -150,52 +150,87 @@ impl TransferWorker {
         }
     }
 
-    /// Run the background worker loop
+    /// Run the background worker loop with graceful shutdown
+    pub async fn run_with_shutdown(&self, mut shutdown: tokio::sync::watch::Receiver<bool>) {
+        log::info!("Transfer worker started with shutdown signal (scan_interval={}ms, stale_after={}ms)",
+            self.config.scan_interval_ms, self.config.stale_after_ms);
+
+        loop {
+            tokio::select! {
+                biased;
+
+                _ = shutdown.changed() => {
+                    log::info!("Transfer worker received shutdown signal");
+                    break;
+                }
+
+                _ = self.run_one_cycle() => {}
+            }
+        }
+
+        log::info!("Transfer worker stopped");
+    }
+
+    /// Run one cycle of the worker loop
+    async fn run_one_cycle(&self) {
+        // 1. Process items from queue
+        while let Some(req_id) = self.queue.try_pop() {
+            self.process_transfer(req_id).await;
+        }
+
+        // 2. Scan for stale transfers
+        self.scan_stale_transfers().await;
+
+        // 3. Sleep before next scan
+        sleep(Duration::from_millis(self.config.scan_interval_ms)).await;
+    }
+
+    /// Run the background worker loop (no graceful shutdown)
     pub async fn run(&self) {
         log::info!("Transfer worker started (scan_interval={}ms, stale_after={}ms)",
             self.config.scan_interval_ms, self.config.stale_after_ms);
 
         loop {
-            // 1. Process items from queue
-            while let Some(req_id) = self.queue.try_pop() {
-                self.process_transfer(req_id).await;
-            }
+            self.run_one_cycle().await;
+        }
+    }
 
-            // 2. Scan for stale transfers
-            match self.db.find_stale(self.config.stale_after_ms).await {
-                Ok(stale) => {
-                    if !stale.is_empty() {
-                        log::info!("Found {} stale transfers", stale.len());
-                    }
+    /// Scan and process stale transfers
+    async fn scan_stale_transfers(&self) {
+        match self.db.find_stale(self.config.stale_after_ms).await {
+            Ok(stale) => {
+                if !stale.is_empty() {
+                    log::info!("Found {} stale transfers", stale.len());
+                }
 
-                    for record in stale {
-                        log::info!(
-                            "Processing stale transfer: {} (state: {:?}, retries: {})",
-                            record.req_id, record.state, record.retry_count
+                for record in stale {
+                    log::info!(
+                        "Processing stale transfer: {} (state: {:?}, retries: {})",
+                        record.req_id, record.state, record.retry_count
+                    );
+
+                    // Check alert threshold
+                    if record.retry_count >= self.config.alert_threshold {
+                        log::warn!(
+                            "ALERT: Transfer {} stuck after {} retries (state: {:?})",
+                            record.req_id, record.retry_count, record.state
                         );
-
-                        // Check alert threshold
-                        if record.retry_count >= self.config.alert_threshold {
-                            log::warn!(
-                                "ALERT: Transfer {} stuck after {} retries (state: {:?})",
-                                record.req_id, record.retry_count, record.state
-                            );
-                            // TODO: Send alert to monitoring system
-                        }
-
-                        self.process_transfer(record.req_id).await;
-
-                        // EXPERT REVIEW: Rate limit to prevent thundering herd
-                        sleep(Duration::from_millis(10)).await;
+                        // TODO: Send alert to monitoring system
                     }
-                }
-                Err(e) => {
-                    log::error!("Error scanning stale transfers: {}", e);
+
+                    self.process_transfer(record.req_id).await;
+
+                    // Exponential backoff: 10ms * 2^retries, capped at 5s
+                    let backoff_ms = std::cmp::min(
+                        10 * 2u64.saturating_pow(record.retry_count),
+                        5000,
+                    );
+                    sleep(Duration::from_millis(backoff_ms)).await;
                 }
             }
-
-            // 3. Sleep before next scan
-            sleep(Duration::from_millis(self.config.scan_interval_ms)).await;
+            Err(e) => {
+                log::error!("Error scanning stale transfers: {}", e);
+            }
         }
     }
 
