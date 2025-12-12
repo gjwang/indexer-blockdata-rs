@@ -100,6 +100,73 @@ impl UbsGatewayClient {
             .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
     }
 
+    /// Send raw payload and receive response bytes
+    pub async fn send_raw(
+        &self,
+        payload: &[u8],
+        timeout_ms: u64,
+    ) -> Result<Vec<u8>, SendError> {
+        self.channel.send_and_receive(payload, timeout_ms).await
+    }
+
+    /// Send deposit message to UBSCore
+    pub async fn send_deposit(
+        &self,
+        tx_id: u64,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        timeout_ms: u64,
+    ) -> Result<ResponseMessage, SendError> {
+        use super::message::{MsgType, parse_message};
+        use super::order_receiver::DepositMessage;
+        use super::WireMessage;
+
+        let msg = DepositMessage { tx_id, user_id, asset_id, amount };
+        let msg_bytes = msg.to_bytes();
+
+        let mut payload = Vec::with_capacity(1 + msg_bytes.len());
+        payload.push(MsgType::Deposit as u8);
+        payload.extend_from_slice(msg_bytes);
+
+        let response_bytes = self.channel.send_and_receive(&payload, timeout_ms).await?;
+
+        let (_resp_type, resp_body) = parse_message(&response_bytes)
+            .ok_or_else(|| SendError::AeronError("Empty response".into()))?;
+
+        ResponseMessage::from_bytes(resp_body)
+            .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
+    }
+
+    /// Send withdraw message to UBSCore
+    pub async fn send_withdraw(
+        &self,
+        tx_id: u64,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+        timeout_ms: u64,
+    ) -> Result<ResponseMessage, SendError> {
+        use super::message::{MsgType, parse_message};
+        use super::order_receiver::WithdrawMessage;
+        use super::WireMessage;
+
+        let msg = WithdrawMessage { tx_id, user_id, asset_id, amount };
+        let msg_bytes = msg.to_bytes();
+
+        let mut payload = Vec::with_capacity(1 + msg_bytes.len());
+        payload.push(MsgType::Withdraw as u8);
+        payload.extend_from_slice(msg_bytes);
+
+        let response_bytes = self.channel.send_and_receive(&payload, timeout_ms).await?;
+
+        let (_resp_type, resp_body) = parse_message(&response_bytes)
+            .ok_or_else(|| SendError::AeronError("Empty response".into()))?;
+
+        ResponseMessage::from_bytes(resp_body)
+            .ok_or_else(|| SendError::AeronError("Invalid response format".into()))
+    }
+
     /// Check if connected
     pub fn is_connected(&self) -> bool {
         self.channel.is_connected()

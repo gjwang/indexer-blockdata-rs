@@ -15,3 +15,7 @@ pub use trading::TradingAdapter;
 // TigerBeetle-backed adapters
 pub use funding::TbFundingAdapter;
 pub use trading::TbTradingAdapter;
+
+// UBSCore-backed adapter (via Aeron - for production)
+#[cfg(feature = "aeron")]
+pub use trading::UbsTradingAdapter;
