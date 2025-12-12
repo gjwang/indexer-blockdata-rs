@@ -88,7 +88,7 @@ use tigerbeetle_unofficial::{Client, Transfer};
 use tigerbeetle_unofficial::transfer::Flags as TransferFlags;
 
 use crate::ubs_core::tigerbeetle::{
-    tb_account_id, ensure_account, TRADING_LEDGER,
+    tb_account_id, ensure_account, TRADING_LEDGER, HOLDING_ACCOUNT_ID_PREFIX,
 };
 
 /// TigerBeetle-backed Trading Adapter
@@ -120,18 +120,22 @@ impl ServiceAdapter for TbTradingAdapter {
         log::info!("TbTradingAdapter::withdraw({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
+        let holding_account = tb_account_id(HOLDING_ACCOUNT_ID_PREFIX, asset_id);
 
         if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
             log::warn!("Failed to ensure user account: {}", e);
             return OpResult::Pending;
         }
+        if let Err(e) = ensure_account(&self.client, holding_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure holding account: {}", e);
+            return OpResult::Pending;
+        }
 
-        // Create PENDING transfer - funds are frozen in user's debits_pending
-        // We use user_account as both debit and credit with PENDING flag
-        // This freezes the amount without moving it anywhere
+        // Create PENDING transfer: User -> Holding
+        // Funds are frozen in user's debits_pending until committed/rolled back
         let transfer = Transfer::new(Self::transfer_id(req_id))
             .with_debit_account_id(user_account)
-            .with_credit_account_id(user_account) // Same account - TB allows this with PENDING
+            .with_credit_account_id(holding_account)
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
             .with_code(1)
@@ -149,7 +153,7 @@ impl ServiceAdapter for TbTradingAdapter {
         }
     }
 
-    /// Deposit to trading: Direct transfer to user account
+    /// Deposit to trading: Transfer from holding to user account
     async fn deposit(
         &self,
         req_id: RequestId,
@@ -160,16 +164,20 @@ impl ServiceAdapter for TbTradingAdapter {
         log::info!("TbTradingAdapter::deposit({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
+        let holding_account = tb_account_id(HOLDING_ACCOUNT_ID_PREFIX, asset_id);
 
         if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
             log::warn!("Failed to ensure user account: {}", e);
             return OpResult::Pending;
         }
+        if let Err(e) = ensure_account(&self.client, holding_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure holding account: {}", e);
+            return OpResult::Pending;
+        }
 
-        // For deposit, we credit the user directly
-        // This is a self-transfer that increases the balance
+        // Transfer: Holding -> User
         let transfer = Transfer::new(Self::transfer_id(req_id))
-            .with_debit_account_id(user_account)
+            .with_debit_account_id(holding_account)
             .with_credit_account_id(user_account)
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
