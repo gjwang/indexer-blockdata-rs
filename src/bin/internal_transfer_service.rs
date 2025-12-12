@@ -24,7 +24,7 @@ use tower_http::cors::CorsLayer;
 use fetcher::transfer::{
     TransferCoordinator, TransferDb, TransferQueue, TransferRequest, TransferState,
     TransferWorker, WorkerConfig,
-    adapters::{TbFundingAdapter, TbTradingAdapter},
+    adapters::{TbFundingAdapter, TbTradingAdapter, AtomicTransferAdapter},
 };
 
 /// Application state
@@ -32,6 +32,8 @@ struct AppState {
     coordinator: Arc<TransferCoordinator>,
     worker: Arc<TransferWorker>,
     queue: Arc<TransferQueue>,
+    /// Optional atomic adapter for Funding→Funding transfers
+    atomic_adapter: Option<Arc<AtomicTransferAdapter>>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -112,6 +114,66 @@ async fn handle_transfer(
         amount: payload.amount,
     };
 
+    // Check if this is a Funding→Funding transfer (can use atomic path)
+    use fetcher::transfer::TransferCoordinator;
+    if TransferCoordinator::is_funding_only(from, to) {
+        // Use atomic TigerBeetle transfer for maximum safety
+        log::info!("Using atomic transfer path for Funding→Funding: user={} asset={} amount={}",
+            payload.user_id, payload.asset_id, payload.amount);
+
+        if let Some(ref atomic_adapter) = state.atomic_adapter {
+            use fetcher::transfer::types::OpResult;
+
+            // Generate a request ID for tracking
+            let req_id = match state.coordinator.create(req).await {
+                Ok(id) => id,
+                Err(e) => {
+                    return Json(TransferResp {
+                        req_id: "".to_string(),
+                        status: "failed".to_string(),
+                        message: None,
+                        error: Some(e.to_string()),
+                    }).into_response();
+                }
+            };
+
+            // Execute atomic transfer directly through TigerBeetle
+            // This is a single atomic operation - no FSM needed
+            let result = atomic_adapter.execute_atomic_transfer(
+                req_id,
+                payload.user_id,  // from_user
+                payload.user_id,  // to_user (same user, different account type)
+                payload.asset_id,
+                payload.amount,
+            ).await;
+
+            let (status, error) = match result {
+                OpResult::Success => {
+                    // Update DB state to Committed
+                    let _ = state.coordinator.mark_committed(req_id).await;
+                    ("committed", None)
+                }
+                OpResult::Failed(e) => {
+                    let _ = state.coordinator.mark_failed(req_id, &e).await;
+                    ("failed", Some(e))
+                }
+                OpResult::Pending => {
+                    // Queue for background retry
+                    let _ = state.queue.try_push(req_id);
+                    ("pending", None)
+                }
+            };
+
+            return Json(TransferResp {
+                req_id: req_id.to_string(),
+                status: status.to_string(),
+                message: None,
+                error,
+            }).into_response();
+        }
+        // Fall through to FSM path if atomic adapter not available
+    }
+
     let req_id = match state.coordinator.create(req).await {
         Ok(id) => id,
         Err(e) => {
@@ -124,7 +186,7 @@ async fn handle_transfer(
         }
     };
 
-    // Process sync
+    // Process sync using FSM
     let result = state.worker.process_now(req_id).await;
 
     let (status, message) = match result {
@@ -339,6 +401,10 @@ async fn main() {
         Arc::new(TbTradingAdapter::new(tb_client.clone()))
     };
 
+    // Create atomic adapter for Funding→Funding transfers
+    let atomic_adapter = Arc::new(AtomicTransferAdapter::new(tb_client.clone()));
+    println!("✅ Atomic transfer adapter: TigerBeetle (for Funding→Funding)");
+
     // Create coordinator
     let coordinator = Arc::new(TransferCoordinator::new(
         db.clone(),
@@ -377,6 +443,7 @@ async fn main() {
             coordinator,
             worker,
             queue,
+            atomic_adapter: Some(atomic_adapter),
         });
 
         run_http_server(state).await;

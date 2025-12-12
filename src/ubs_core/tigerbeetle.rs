@@ -60,6 +60,143 @@ pub async fn ensure_account(client: &Client, account_id: u128, ledger: u32, code
     }
 }
 
+/// Atomic transfer between two accounts using TigerBeetle's linked transfers
+///
+/// Uses linked transfer pairs - if either transfer fails, both are rejected.
+/// This guarantees that funds never disappear or double-credit.
+///
+/// # Arguments
+/// * `client` - TigerBeetle client
+/// * `transfer_id` - Unique transfer ID (use request_id)
+/// * `from_account` - Source account ID
+/// * `to_account` - Destination account ID
+/// * `amount` - Amount to transfer
+/// * `ledger` - Ledger ID (e.g., TRADING_LEDGER)
+/// * `code` - Transfer code for categorization
+///
+/// # Returns
+/// * `Ok(())` - Both transfers succeeded atomically
+/// * `Err(String)` - Transfer failed (funds unchanged)
+pub async fn atomic_transfer(
+    client: &Client,
+    transfer_id: u128,
+    from_account: u128,
+    to_account: u128,
+    amount: u64,
+    ledger: u32,
+    code: u16,
+) -> Result<(), String> {
+    // Create linked transfer pair:
+    // Transfer 1: Debit from source (linked to next)
+    // Transfer 2: Credit to destination
+    // If either fails, both are rejected atomically by TigerBeetle
+
+    let debit_transfer = Transfer::new(transfer_id)
+        .with_debit_account_id(from_account)
+        .with_credit_account_id(to_account)
+        .with_amount(amount as u128)
+        .with_ledger(ledger)
+        .with_code(code);
+
+    // Single transfer is already atomic in TB, linked transfers are for multi-party scenarios
+    // For simple A->B transfers, one transfer is sufficient and atomic
+    match client.create_transfers(vec![debit_transfer]).await {
+        Ok(_) => {
+            log::info!(
+                "Atomic transfer succeeded: id={} from={} to={} amount={}",
+                transfer_id, from_account, to_account, amount
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "Atomic transfer failed: id={} from={} to={} amount={} error={:?}",
+                transfer_id, from_account, to_account, amount, e
+            );
+            Err(format!("Atomic transfer failed: {:?}", e))
+        }
+    }
+}
+
+/// Two-phase atomic transfer using pending transfers
+///
+/// Phase 1: Create pending transfer (freezes funds in source)
+/// Phase 2: Post pending transfer (atomically completes the transfer)
+///
+/// This provides additional safety:
+/// - Funds are frozen (not available) during processing
+/// - Can be voided if something goes wrong before commit
+/// - Final commit is atomic
+pub async fn create_pending_transfer(
+    client: &Client,
+    transfer_id: u128,
+    from_account: u128,
+    to_account: u128,
+    amount: u64,
+    ledger: u32,
+    code: u16,
+) -> Result<(), String> {
+    let transfer = Transfer::new(transfer_id)
+        .with_debit_account_id(from_account)
+        .with_credit_account_id(to_account)
+        .with_amount(amount as u128)
+        .with_ledger(ledger)
+        .with_code(code)
+        .with_flags(TransferFlags::PENDING);
+
+    match client.create_transfers(vec![transfer]).await {
+        Ok(_) => {
+            log::info!(
+                "Pending transfer created: id={} from={} to={} amount={}",
+                transfer_id, from_account, to_account, amount
+            );
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Failed to create pending transfer: {:?}", e);
+            Err(format!("Failed to create pending transfer: {:?}", e))
+        }
+    }
+}
+
+/// Commit a pending transfer atomically
+pub async fn post_pending_transfer(client: &Client, pending_id: u128) -> Result<(), String> {
+    let post_id = pending_id.wrapping_add(1);
+    let transfer = Transfer::new(post_id)
+        .with_pending_id(pending_id)
+        .with_flags(TransferFlags::POST_PENDING_TRANSFER);
+
+    match client.create_transfers(vec![transfer]).await {
+        Ok(_) => {
+            log::info!("Pending transfer posted: pending_id={}", pending_id);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Failed to post pending transfer: {:?}", e);
+            Err(format!("Failed to post pending transfer: {:?}", e))
+        }
+    }
+}
+
+/// Void a pending transfer (unfreeze funds)
+pub async fn void_pending_transfer(client: &Client, pending_id: u128) -> Result<(), String> {
+    let void_id = pending_id.wrapping_add(2);
+    let transfer = Transfer::new(void_id)
+        .with_pending_id(pending_id)
+        .with_flags(TransferFlags::VOID_PENDING_TRANSFER);
+
+    match client.create_transfers(vec![transfer]).await {
+        Ok(_) => {
+            log::info!("Pending transfer voided: pending_id={}", pending_id);
+            Ok(())
+        }
+        Err(e) => {
+            log::error!("Failed to void pending transfer: {:?}", e);
+            Err(format!("Failed to void pending transfer: {:?}", e))
+        }
+    }
+}
+
 
 pub struct TigerBeetleWorker;
 

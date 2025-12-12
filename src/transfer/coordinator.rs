@@ -81,6 +81,29 @@ impl TransferCoordinator {
         Ok(req_id)
     }
 
+    /// Mark a transfer as committed (for atomic transfer path)
+    pub async fn mark_committed(&self, req_id: RequestId) -> Result<()> {
+        // Update from any non-terminal state to Committed
+        let record = self.db.get(req_id).await?;
+        if let Some(r) = record {
+            if !r.state.is_terminal() {
+                self.db.update_state_if(req_id, r.state, TransferState::Committed).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Mark a transfer as failed (for atomic transfer path)
+    pub async fn mark_failed(&self, req_id: RequestId, error: &str) -> Result<()> {
+        let record = self.db.get(req_id).await?;
+        if let Some(r) = record {
+            if !r.state.is_terminal() {
+                self.db.update_state_with_error(req_id, r.state, TransferState::Failed, error).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Execute one step of the FSM
     /// Returns the new state after processing
     pub async fn step(&self, req_id: RequestId) -> Result<TransferState> {
@@ -125,6 +148,14 @@ impl TransferCoordinator {
         }
 
         Ok(new_state)
+    }
+
+    /// Check if this transfer can use atomic TigerBeetle path
+    ///
+    /// Funding→Funding transfers can use TigerBeetle's native atomic transfers,
+    /// which provide stronger guarantees than the 2-phase FSM approach.
+    pub fn is_funding_only(source: ServiceId, target: ServiceId) -> bool {
+        source == ServiceId::Funding && target == ServiceId::Funding
     }
 
     fn get_adapter(&self, service: ServiceId) -> Arc<dyn ServiceAdapter> {
