@@ -32,7 +32,7 @@ SERVER_PID=""
 cleanup() {
     if [ -n "$SERVER_PID" ]; then
         echo ""
-        echo "🧹 Stopping internal_transfer_test_server (PID: $SERVER_PID)..."
+        echo "🧹 Stopping internal_transfer_service (PID: $SERVER_PID)..."
         kill $SERVER_PID 2>/dev/null
         wait $SERVER_PID 2>/dev/null
     fi
@@ -63,13 +63,13 @@ transfer() {
 }
 
 # Kill any existing server
-pkill -9 -f internal_transfer_test_server 2>/dev/null
+pkill -9 -f internal_transfer_service 2>/dev/null
 sleep 2
 
 # Start the server
-echo "🚀 Starting internal_transfer_test_server..."
+echo "🚀 Starting internal_transfer_service..."
 SERVER_LOG="/tmp/transfer_server_$$.log"
-RUST_LOG=info "$PROJECT_DIR/target/debug/internal_transfer_test_server" > "$SERVER_LOG" 2>&1 &
+RUST_LOG=info "$PROJECT_DIR/target/debug/internal_transfer_service" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
 echo "   Server PID: $SERVER_PID"
 sleep 8  # Give the server time to initialize (TigerBeetle connection can be slow)
