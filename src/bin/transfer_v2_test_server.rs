@@ -71,9 +71,35 @@ async fn handle_transfer(
     }
 
     // Create transfer
+    use fetcher::transfer::ServiceId;
+
+    let from = match ServiceId::from_str(&payload.from) {
+        Some(s) => s,
+        None => {
+            return Json(TransferResp {
+                req_id: "".to_string(),
+                status: "failed".to_string(),
+                message: None,
+                error: Some(format!("Invalid source: {}", payload.from)),
+            }).into_response();
+        }
+    };
+
+    let to = match ServiceId::from_str(&payload.to) {
+        Some(s) => s,
+        None => {
+            return Json(TransferResp {
+                req_id: "".to_string(),
+                status: "failed".to_string(),
+                message: None,
+                error: Some(format!("Invalid target: {}", payload.to)),
+            }).into_response();
+        }
+    };
+
     let req = TransferRequest {
-        from: payload.from,
-        to: payload.to,
+        from,
+        to,
         user_id: payload.user_id,
         asset_id: payload.asset_id,
         amount: payload.amount,

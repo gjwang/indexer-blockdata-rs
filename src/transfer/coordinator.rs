@@ -38,12 +38,7 @@ impl TransferCoordinator {
             return Err(anyhow::anyhow!("Amount must be greater than 0"));
         }
 
-        let source = ServiceId::from_str(&req.from)
-            .ok_or_else(|| anyhow::anyhow!("Invalid source: {}", req.from))?;
-        let target = ServiceId::from_str(&req.to)
-            .ok_or_else(|| anyhow::anyhow!("Invalid target: {}", req.to))?;
-
-        if source == target {
+        if req.from == req.to {
             return Err(anyhow::anyhow!("Source and target cannot be the same"));
         }
 
@@ -52,8 +47,8 @@ impl TransferCoordinator {
 
         let record = TransferRecord {
             req_id,
-            source,
-            target,
+            source: req.from,
+            target: req.to,
             user_id: req.user_id,
             asset_id: req.asset_id,
             amount: req.amount,
@@ -65,7 +60,7 @@ impl TransferCoordinator {
         };
 
         self.db.create(&record).await?;
-        log::info!("Created transfer: {} ({:?} -> {:?})", req_id, source, target);
+        log::info!("Created transfer: {} ({:?} -> {:?})", req_id, req.from, req.to);
 
         Ok(req_id)
     }

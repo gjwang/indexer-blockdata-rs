@@ -916,8 +916,8 @@ async fn handle_get_transfer_status(
 /// Request payload for Transfer v2
 #[derive(Debug, serde::Deserialize)]
 pub struct TransferV2Request {
-    pub from: String,       // "funding" or "trading"
-    pub to: String,         // "trading" or "funding"
+    pub from: crate::transfer::ServiceId,
+    pub to: crate::transfer::ServiceId,
     pub user_id: u64,
     pub asset_id: u32,
     pub amount: u64,
