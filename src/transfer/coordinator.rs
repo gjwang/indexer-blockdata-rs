@@ -156,7 +156,13 @@ impl TransferCoordinator {
         // 1. Persist SourcePending BEFORE calling service (persist-before-call)
         if !self.db.update_state_if(record.req_id, TransferState::Init, TransferState::SourcePending).await? {
             // Another worker already transitioned - get current state
-            return Ok(self.db.get(record.req_id).await?.map(|r| r.state).unwrap_or(TransferState::Init));
+            return match self.db.get(record.req_id).await? {
+                Some(r) => Ok(r.state),
+                None => {
+                    log::error!("Transfer {} not found after CAS failure (data corruption?)", record.req_id);
+                    Err(anyhow::anyhow!("Transfer not found after CAS failure"))
+                }
+            };
         }
 
         // 2. Call source withdraw
@@ -222,7 +228,13 @@ impl TransferCoordinator {
     ) -> Result<TransferState> {
         // 1. Persist TargetPending BEFORE calling service
         if !self.db.update_state_if(record.req_id, TransferState::SourceDone, TransferState::TargetPending).await? {
-            return Ok(self.db.get(record.req_id).await?.map(|r| r.state).unwrap_or(TransferState::SourceDone));
+            return match self.db.get(record.req_id).await? {
+                Some(r) => Ok(r.state),
+                None => {
+                    log::error!("Transfer {} not found after CAS failure (data corruption?)", record.req_id);
+                    Err(anyhow::anyhow!("Transfer not found after CAS failure"))
+                }
+            };
         }
 
         // 2. Call target deposit

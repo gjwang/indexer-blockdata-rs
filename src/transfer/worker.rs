@@ -119,12 +119,18 @@ impl TransferWorker {
                 }
                 Err(e) => {
                     log::error!("Error processing transfer {}: {}", req_id, e);
-                    // Return current state from DB
-                    return self.db.get(req_id).await
-                        .ok()
-                        .flatten()
-                        .map(|r| r.state)
-                        .unwrap_or(TransferState::Init);
+                    // Try to get current state from DB, but don't mask errors with defaults
+                    match self.db.get(req_id).await {
+                        Ok(Some(r)) => return r.state,
+                        Ok(None) => {
+                            log::error!("Transfer {} not found in DB after error", req_id);
+                            return TransferState::Failed;
+                        }
+                        Err(db_err) => {
+                            log::error!("DB error fetching transfer {}: {}", req_id, db_err);
+                            return TransferState::Failed;
+                        }
+                    }
                 }
             }
         }
