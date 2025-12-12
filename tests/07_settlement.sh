@@ -14,7 +14,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Check if prerequisite services are running
-if ! pgrep -f "ubscore_aeron_service" > /dev/null || ! pgrep -f "order_gate_server" > /dev/null || ! pgrep -f "matching_engine_server" > /dev/null; then
+if ! pgrep -f "ubscore_aeron_service" > /dev/null || ! pgrep -f "gateway_service" > /dev/null || ! pgrep -f "matching_engine_server" > /dev/null; then
     echo -e "${RED}❌ Required services not running!${NC}"
     echo "Please run tests 03 and 06 first:"
     echo "  bash tests/03_start_services.sh"
@@ -166,12 +166,12 @@ echo -e "${GREEN}🎉 TEST 07 PASSED - Settlement Service Integration Working${N
 echo ""
 echo "💡 All services still running:"
 echo "   - UBSCore (PID: $(pgrep -f ubscore_aeron_service))"
-echo "   - Gateway (PID: $(pgrep -f order_gate_server))"
+echo "   - Gateway (PID: $(pgrep -f gateway_service))"
 echo "   - Matching Engine (PID: $(pgrep -f matching_engine_server))"
 echo "   - Settlement (PID: $SETTLE_PID)"
 echo ""
 echo "💡 To stop all services:"
-echo "   pkill -f 'order_gate_server|ubscore_aeron_service|matching_engine_server|settlement_service'"
+echo "   pkill -f 'gateway_service|ubscore_aeron_service|matching_engine_server|settlement_service'"
 echo ""
 
 exit 0

@@ -16,7 +16,7 @@ NC='\033[0m'
 
 # Check if services are running
 if ! pgrep -f "ubscore_aeron_service" > /dev/null || \
-   ! pgrep -f "order_gate_server" > /dev/null || \
+   ! pgrep -f "gateway_service" > /dev/null || \
    ! pgrep -f "matching_engine_server" > /dev/null || \
    ! pgrep -f "settlement_service" > /dev/null; then
     echo -e "${RED}❌ Not all services running!${NC}"
@@ -204,7 +204,7 @@ echo "   4. Settlement (Settlement → ScyllaDB)"
 echo "   5. Balance Updates (TigerBeetle → Gateway API)"
 echo ""
 echo "💡 All services still running. To stop:"
-echo "   pkill -f 'order_gate_server|ubscore_aeron_service|matching_engine_server|settlement_service'"
+echo "   pkill -f 'gateway_service|ubscore_aeron_service|matching_engine_server|settlement_service'"
 echo ""
 
 exit 0

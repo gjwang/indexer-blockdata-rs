@@ -15,7 +15,7 @@ NC='\033[0m'
 # Cleanup function
 cleanup() {
     echo "🧹 Cleanup..."
-    pkill -f "order_gate_server|ubscore_aeron_service|settlement_service" || true
+    pkill -f "gateway_service|ubscore_aeron_service|settlement_service" || true
     docker-compose down -v 2>/dev/null || true
     docker rm -f tigerbeetle 2>/dev/null || true
 }
@@ -31,7 +31,7 @@ sleep 5
 
 # Build services
 echo "🔨 Building services..."
-cargo build --bin ubscore_aeron_service --bin order_gate_server --features aeron --quiet
+cargo build --bin ubscore_aeron_service --bin gateway_service --features aeron --quiet
 
 # Start UBSCore
 echo "▶️  Starting UBSCore..."
@@ -58,7 +58,7 @@ done
 
 # Start Gateway
 echo "▶️  Starting Gateway..."
-./target/debug/order_gate_server --features aeron > logs/gateway_std.log 2>&1 &
+./target/debug/gateway_service --features aeron > logs/gateway_std.log 2>&1 &
 GW_PID=$!
 
 GW_LOG="logs/gateway.log.$DATE"

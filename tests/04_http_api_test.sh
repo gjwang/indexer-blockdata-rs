@@ -13,7 +13,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Check if services are running
-if ! pgrep -f "order_gate_server" > /dev/null; then
+if ! pgrep -f "gateway_service" > /dev/null; then
     echo -e "${RED}❌ Gateway not running!${NC}"
     echo "Please run: bash tests/03_start_services.sh"
     exit 1
@@ -105,7 +105,7 @@ echo ""
 echo -e "${GREEN}🎉 TEST 04 PASSED - HTTP API Working${NC}"
 echo ""
 echo "💡 Services still running. To stop:"
-echo "   pkill -f 'order_gate_server|ubscore_aeron_service'"
+echo "   pkill -f 'gateway_service|ubscore_aeron_service'"
 echo ""
 
 exit 0

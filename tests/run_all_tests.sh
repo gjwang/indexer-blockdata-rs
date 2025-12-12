@@ -48,7 +48,7 @@ run_test() {
 
 # Clean environment first
 echo "🧹 Cleaning environment..."
-pkill -f "order_gate_server|ubscore_aeron|matching_engine|settlement_service" 2>/dev/null || true
+pkill -f "gateway_service|ubscore_aeron|matching_engine|settlement_service" 2>/dev/null || true
 docker-compose down -v 2>/dev/null || true
 sleep 2
 
@@ -96,7 +96,7 @@ if [ $TESTS_FAILED -eq 0 ]; then
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "💡 Services are still running. To stop:"
-    echo "   pkill -f 'order_gate_server|ubscore_aeron_service|matching_engine_server|settlement_service'"
+    echo "   pkill -f 'gateway_service|ubscore_aeron_service|matching_engine_server|settlement_service'"
     echo ""
     exit 0
 else

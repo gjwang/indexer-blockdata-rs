@@ -8,7 +8,7 @@ cleanup() {
     # But mainly kill the background cargo run / binaries
     pkill -P $$ || true
     # Also explicit kill by name to be sure
-    pkill -f "order_gate_server|ubscore_aeron_service|settlement_service" || true
+    pkill -f "gateway_service|ubscore_aeron_service|settlement_service" || true
 }
 trap cleanup EXIT
 
@@ -24,12 +24,12 @@ NC='\033[0m'
 # 0. Build Binaries (Fail Fast)
 echo "� Building binaries..."
 cargo build --bin ubscore_aeron_service --features aeron
-cargo build --bin order_gate_server --features aeron
+cargo build --bin gateway_service --features aeron
 cargo build --bin settlement_service
 
 # 1. Clean & Setup Environment
 echo "🧹 Cleaning environment..."
-pkill -f "order_gate_server|ubscore_aeron_service|settlement_service" || true
+pkill -f "gateway_service|ubscore_aeron_service|settlement_service" || true
 rm -rf ~/ubscore_data
 docker rm -f tigerbeetle || true
 docker-compose down -v
@@ -116,7 +116,7 @@ done
 # 3. Start Gateway Service
 echo "▶️  Starting Gateway Service..."
 # Gateway connects to UBSCore via Aeron (UDP)
-./target/debug/order_gate_server --features aeron > logs/gateway_std.log 2>&1 &
+./target/debug/gateway_service --features aeron > logs/gateway_std.log 2>&1 &
 GW_PID=$!
 GW_LOG="logs/gateway.log.$DATE"
 

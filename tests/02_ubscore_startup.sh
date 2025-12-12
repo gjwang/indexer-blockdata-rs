@@ -154,7 +154,7 @@ while [ $count -lt $timeout ]; do
 done
 
 if [ $count -ge $timeout ]; then
-    echo-e " ${RED}TIMEOUT${NC}"
+    echo -e " ${RED}TIMEOUT${NC}"
     tail -n 20 "$LOG_FILE" 2>/dev/null || cat logs/ubscore_std.log
     exit 1
 fi

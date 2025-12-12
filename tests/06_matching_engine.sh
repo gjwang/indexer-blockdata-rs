@@ -14,7 +14,7 @@ RED='\033[0;31m'
 NC='\033[0m'
 
 # Check if UBSCore and Gateway are running
-if ! pgrep -f "ubscore_aeron_service" > /dev/null || ! pgrep -f "order_gate_server" > /dev/null; then
+if ! pgrep -f "ubscore_aeron_service" > /dev/null || ! pgrep -f "gateway_service" > /dev/null; then
     echo -e "${RED}❌ Services not running!${NC}"
     echo "Please run: bash tests/03_start_services.sh"
     exit 1
@@ -140,11 +140,11 @@ echo -e "${GREEN}🎉 TEST 06 PASSED - Matching Engine Integration Working${NC}"
 echo ""
 echo "💡 Services still running:"
 echo "   - UBSCore (PID: $(pgrep -f ubscore_aeron_service))"
-echo "   - Gateway (PID: $(pgrep -f order_gate_server))"
+echo "   - Gateway (PID: $(pgrep -f gateway_service))"
 echo "   - Matching Engine (PID: $ME_PID)"
 echo ""
 echo "💡 To stop all services:"
-echo "   pkill -f 'order_gate_server|ubscore_aeron_service|matching_engine_server'"
+echo "   pkill -f 'gateway_service|ubscore_aeron_service|matching_engine_server'"
 echo ""
 
 exit 0
