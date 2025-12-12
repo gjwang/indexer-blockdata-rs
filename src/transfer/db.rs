@@ -67,16 +67,16 @@ impl TransferDb {
     }
 
     /// Parse a raw DB row into a TransferRecord
-    /// Returns None and logs error if data is corrupt
+    /// Returns error if data is corrupt
     fn parse_row(row: TransferRow) -> Result<TransferRecord> {
         let (req_id_raw, source, target, user_id, asset_id, amount, state, created_at, updated_at, error, retry_count) = row;
 
-        let source = ServiceId::from_str(&source)
-            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid source '{}'", source))?;
-        let target = ServiceId::from_str(&target)
-            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid target '{}'", target))?;
-        let state = TransferState::from_str(&state)
-            .ok_or_else(|| anyhow::anyhow!("Corrupt data: invalid state '{}'", state))?;
+        let source: ServiceId = source.parse()
+            .map_err(|_| anyhow::anyhow!("Corrupt data: invalid source '{}'", source))?;
+        let target: ServiceId = target.parse()
+            .map_err(|_| anyhow::anyhow!("Corrupt data: invalid target '{}'", target))?;
+        let state: TransferState = state.parse()
+            .map_err(|_| anyhow::anyhow!("Corrupt data: invalid state '{}'", state))?;
 
         Ok(TransferRecord {
             req_id: RequestId::new(req_id_raw as u64),
@@ -100,12 +100,12 @@ impl TransferDb {
                 INSERT_TRANSFER_CQL,
                 (
                     record.req_id.as_u64() as i64,
-                    record.source.as_str(),
-                    record.target.as_str(),
+                    record.source.as_ref(),
+                    record.target.as_ref(),
                     record.user_id as i64,
                     record.asset_id as i32,
                     record.amount as i64,
-                    record.state.as_str(),
+                    record.state.as_ref(),
                     record.created_at,
                     record.updated_at,
                     &record.error,
@@ -149,7 +149,7 @@ impl TransferDb {
             .session
             .query(
                 UPDATE_STATE_IF_CQL,
-                (new_state.as_str(), now, req_id.as_u64() as i64, expected.as_str()),
+                (new_state.as_ref(), now, req_id.as_u64() as i64, expected.as_ref()),
             )
             .await
             .context("Failed to update transfer state")?;
@@ -181,7 +181,7 @@ impl TransferDb {
             .session
             .query(
                 UPDATE_STATE_WITH_ERROR_CQL,
-                (new_state.as_str(), now, error, req_id.as_u64() as i64, expected.as_str()),
+                (new_state.as_ref(), now, error, req_id.as_u64() as i64, expected.as_ref()),
             )
             .await
             .context("Failed to update transfer state with error")?;

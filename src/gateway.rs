@@ -1001,9 +1001,9 @@ async fn get_internal_transfer(
         Ok(Some(record)) => {
             Json(serde_json::json!({
                 "req_id": record.req_id.to_string(),
-                "state": record.state.as_str(),
-                "source": record.source.as_str(),
-                "target": record.target.as_str(),
+                "state": record.state.as_ref(),
+                "source": record.source.as_ref(),
+                "target": record.target.as_ref(),
                 "user_id": record.user_id,
                 "asset_id": record.asset_id,
                 "amount": record.amount,

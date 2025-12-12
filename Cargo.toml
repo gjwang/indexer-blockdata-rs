@@ -91,6 +91,10 @@ zmq = "0.10.0"
 async-trait = "0.1.89"
 crossbeam = { version = "0.8.4", features = ["crossbeam-queue"] }
 
+# Enum utilities - automatic String/Number conversion
+strum = "0.26"
+strum_macros = "0.26"
+
 [features]
 default = ["aeron"]
 aeron = ["rusteron-client", "rusteron-media-driver"]

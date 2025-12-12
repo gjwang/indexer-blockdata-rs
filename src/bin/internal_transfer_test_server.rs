@@ -72,9 +72,9 @@ async fn handle_transfer(
     // Create transfer
     use fetcher::transfer::ServiceId;
 
-    let from = match ServiceId::from_str(&payload.from) {
-        Some(s) => s,
-        None => {
+    let from: ServiceId = match payload.from.parse() {
+        Ok(s) => s,
+        Err(_) => {
             return Json(TransferResp {
                 req_id: "".to_string(),
                 status: "failed".to_string(),
@@ -84,9 +84,9 @@ async fn handle_transfer(
         }
     };
 
-    let to = match ServiceId::from_str(&payload.to) {
-        Some(s) => s,
-        None => {
+    let to: ServiceId = match payload.to.parse() {
+        Ok(s) => s,
+        Err(_) => {
             return Json(TransferResp {
                 req_id: "".to_string(),
                 status: "failed".to_string(),
@@ -157,9 +157,9 @@ async fn get_transfer(
         Ok(Some(record)) => {
             Json(serde_json::json!({
                 "req_id": record.req_id.to_string(),
-                "state": record.state.as_str(),
-                "source": record.source.as_str(),
-                "target": record.target.as_str(),
+                "state": record.state.as_ref(),
+                "source": record.source.as_ref(),
+                "target": record.target.as_ref(),
                 "user_id": record.user_id,
                 "asset_id": record.asset_id,
                 "amount": record.amount,

@@ -3,9 +3,17 @@
 //! Defines the FSM states, events, and transition function for internal transfers.
 
 use serde::{Deserialize, Serialize};
+use strum_macros::{Display, EnumString, AsRefStr};
 
 /// Transfer FSM states
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Uses strum for automatic String conversion:
+/// - `state.as_ref()` -> &str "source_pending" (zero-alloc)
+/// - `state.to_string()` -> String "source_pending"
+/// - `TransferState::from_str("source_pending")` -> Result<TransferState>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Display, EnumString, AsRefStr)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
 pub enum TransferState {
     /// Transfer created, waiting for processing
     Init,
@@ -26,33 +34,6 @@ pub enum TransferState {
 }
 
 impl TransferState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            TransferState::Init => "init",
-            TransferState::SourcePending => "source_pending",
-            TransferState::SourceDone => "source_done",
-            TransferState::TargetPending => "target_pending",
-            TransferState::Compensating => "compensating",
-            TransferState::Committed => "committed",
-            TransferState::RolledBack => "rolled_back",
-            TransferState::Failed => "failed",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "init" => Some(TransferState::Init),
-            "source_pending" => Some(TransferState::SourcePending),
-            "source_done" => Some(TransferState::SourceDone),
-            "target_pending" => Some(TransferState::TargetPending),
-            "compensating" => Some(TransferState::Compensating),
-            "committed" => Some(TransferState::Committed),
-            "rolled_back" => Some(TransferState::RolledBack),
-            "failed" => Some(TransferState::Failed),
-            _ => None,
-        }
-    }
-
     /// Check if this is a terminal state (no further transitions possible)
     pub fn is_terminal(&self) -> bool {
         matches!(
@@ -67,15 +48,6 @@ impl TransferState {
     }
 }
 
-/// Implement std::str::FromStr for idiomatic parsing
-impl std::str::FromStr for TransferState {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        TransferState::from_str(s)
-            .ok_or_else(|| format!("Invalid TransferState: {}", s))
-    }
-}
 
 /// FSM Events (inputs that trigger state transitions)
 #[derive(Debug, Clone)]
@@ -182,17 +154,17 @@ mod tests {
         ];
 
         for state in states {
-            let s = state.as_str();
-            let parsed = TransferState::from_str(s).unwrap();
+            let s: &str = state.as_ref();
+            let parsed: TransferState = s.parse().unwrap();
             assert_eq!(state, parsed);
         }
     }
 
     #[test]
     fn test_invalid_state_string() {
-        assert!(TransferState::from_str("invalid").is_none());
-        assert!(TransferState::from_str("").is_none());
-        assert!(TransferState::from_str("COMMITTED").is_none());
+        assert!("invalid".parse::<TransferState>().is_err());
+        assert!("".parse::<TransferState>().is_err());
+        assert!("COMMITTED".parse::<TransferState>().is_err());
     }
 
     // ===== Happy Path Transitions =====

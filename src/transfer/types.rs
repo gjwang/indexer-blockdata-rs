@@ -101,28 +101,17 @@ impl<'de> Deserialize<'de> for RequestId {
 }
 
 /// Service identifier - represents source or target of a transfer
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Uses strum for automatic String conversion:
+/// - `service.as_ref()` -> &str "funding" (zero-alloc)
+/// - `service.to_string()` -> String "funding"
+/// - `ServiceId::from_str("funding")` -> Result<ServiceId>
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, strum_macros::Display, strum_macros::EnumString, strum_macros::AsRefStr)]
 #[serde(rename_all = "lowercase")]
+#[strum(serialize_all = "lowercase")]
 pub enum ServiceId {
     Funding,
     Trading,
-}
-
-impl ServiceId {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ServiceId::Funding => "funding",
-            ServiceId::Trading => "trading",
-        }
-    }
-
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "funding" => Some(ServiceId::Funding),
-            "trading" => Some(ServiceId::Trading),
-            _ => None,
-        }
-    }
 }
 
 /// Unified result from any service adapter operation
@@ -199,12 +188,12 @@ mod tests {
 
     #[test]
     fn test_service_id_serialization() {
-        assert_eq!(ServiceId::Funding.as_str(), "funding");
-        assert_eq!(ServiceId::Trading.as_str(), "trading");
+        assert_eq!(ServiceId::Funding.as_ref(), "funding");
+        assert_eq!(ServiceId::Trading.as_ref(), "trading");
 
-        assert_eq!(ServiceId::from_str("funding"), Some(ServiceId::Funding));
-        assert_eq!(ServiceId::from_str("trading"), Some(ServiceId::Trading));
-        assert_eq!(ServiceId::from_str("invalid"), None);
+        assert_eq!("funding".parse::<ServiceId>().unwrap(), ServiceId::Funding);
+        assert_eq!("trading".parse::<ServiceId>().unwrap(), ServiceId::Trading);
+        assert!("invalid".parse::<ServiceId>().is_err());
     }
 
     #[test]
