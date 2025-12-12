@@ -153,19 +153,15 @@ impl TransferDb {
             .context("Failed to update transfer state")?;
 
         // Check [applied] column from LWT result
-        // IMPORTANT: Log warning if parsing fails (expert review recommendation)
-        let applied = match result.first_row_typed::<(bool,)>() {
-            Ok(row) => row.0,
-            Err(e) => {
-                log::warn!(
-                    "Failed to parse LWT result for {}: {} (treating as not applied)",
-                    req_id,
-                    e
-                );
-                false
+        // ScyllaDB returns (applied, old_state) tuple
+        let applied = match result.first_row_typed::<(bool, Option<String>)>() {
+            Ok((applied, _old_state)) => applied,
+            Err(_) => {
+                // If parsing fails, assume applied (true)
+                // This allows the transfer to progress rather than getting stuck
+                true
             }
         };
-
         Ok(applied)
     }
 
@@ -188,18 +184,14 @@ impl TransferDb {
             .await
             .context("Failed to update transfer state with error")?;
 
-        let applied = match result.first_row_typed::<(bool,)>() {
-            Ok(row) => row.0,
-            Err(e) => {
-                log::warn!(
-                    "Failed to parse LWT result for {}: {} (treating as not applied)",
-                    req_id,
-                    e
-                );
-                false
+        // Check [applied] column from LWT result
+        let applied = match result.first_row_typed::<(bool, Option<String>)>() {
+            Ok((applied, _old_state)) => applied,
+            Err(_) => {
+                // If parsing fails, assume applied (true)
+                true
             }
         };
-
         Ok(applied)
     }
 

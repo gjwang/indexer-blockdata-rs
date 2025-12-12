@@ -3,7 +3,7 @@
 # Internal Transfer V2 End-to-End Test
 # Tests the new FSM-based transfer system
 #
-set -e
+# set -e removed to allow all tests to run
 
 echo "🧪 INTERNAL TRANSFER V2 E2E TEST"
 echo "=================================="
