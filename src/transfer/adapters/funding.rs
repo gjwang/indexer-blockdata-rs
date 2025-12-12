@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::transfer::types::OpResult;
 use super::traits::ServiceAdapter;
 
-/// Funding service adapter
+/// Funding service adapter (placeholder)
 ///
 /// Uses freeze/commit pattern:
 /// - withdraw: Freezes funds (available -= amount, frozen += amount)
@@ -16,7 +16,6 @@ use super::traits::ServiceAdapter;
 /// - rollback: Unfreezes (frozen -= amount, available += amount)
 pub struct FundingAdapter {
     // TODO: Add TigerBeetle client for balance operations
-    // TODO: Add DB for idempotency tracking
 }
 
 impl FundingAdapter {
@@ -40,10 +39,6 @@ impl ServiceAdapter for FundingAdapter {
         asset_id: u32,
         amount: u64,
     ) -> OpResult {
-        // TODO: Implement freeze logic with TigerBeetle
-        // 1. Check idempotency (have we processed this req_id?)
-        // 2. Lock funds: available -= amount, frozen += amount
-        // 3. Return Success (immediate for Funding)
         log::info!(
             "FundingAdapter::withdraw({}, user={}, asset={}, amount={})",
             req_id, user_id, asset_id, amount
@@ -60,10 +55,6 @@ impl ServiceAdapter for FundingAdapter {
         asset_id: u32,
         amount: u64,
     ) -> OpResult {
-        // TODO: Implement direct credit with TigerBeetle
-        // 1. Check idempotency
-        // 2. Credit funds: available += amount
-        // 3. Return Success
         log::info!(
             "FundingAdapter::deposit({}, user={}, asset={}, amount={})",
             req_id, user_id, asset_id, amount
@@ -73,28 +64,170 @@ impl ServiceAdapter for FundingAdapter {
     }
 
     async fn commit(&self, req_id: Uuid) -> OpResult {
-        // TODO: Finalize freeze with TigerBeetle
-        // 1. Delete frozen funds entry
-        // 2. Return Success
         log::info!("FundingAdapter::commit({})", req_id);
         OpResult::Success
     }
 
     async fn rollback(&self, req_id: Uuid) -> OpResult {
-        // TODO: Unfreeze with TigerBeetle
-        // 1. frozen -= amount, available += amount
-        // 2. Return Success
         log::info!("FundingAdapter::rollback({})", req_id);
         OpResult::Success
     }
 
     async fn query(&self, req_id: Uuid) -> OpResult {
-        // TODO: Check operation status from DB
         log::info!("FundingAdapter::query({})", req_id);
         OpResult::Pending
     }
 
     fn name(&self) -> &str {
         "funding"
+    }
+}
+
+// ============================================================================
+// TigerBeetle-backed adapter
+// ============================================================================
+
+use std::sync::Arc;
+use tigerbeetle_unofficial::{Client, Transfer};
+use tigerbeetle_unofficial::transfer::Flags as TransferFlags;
+
+use crate::ubs_core::tigerbeetle::{
+    tb_account_id, ensure_account,
+    EXCHANGE_OMNIBUS_ID_PREFIX, TRADING_LEDGER,
+};
+
+/// TigerBeetle-backed Funding Adapter
+pub struct TbFundingAdapter {
+    client: Arc<Client>,
+}
+
+impl TbFundingAdapter {
+    pub fn new(client: Arc<Client>) -> Self {
+        Self { client }
+    }
+
+    fn transfer_id(req_id: Uuid) -> u128 {
+        req_id.as_u128()
+    }
+}
+
+#[async_trait]
+impl ServiceAdapter for TbFundingAdapter {
+    async fn withdraw(
+        &self,
+        req_id: Uuid,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> OpResult {
+        log::info!("TbFundingAdapter::withdraw({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
+
+        let user_account = tb_account_id(user_id, asset_id);
+        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
+
+        if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure user account: {}", e);
+            return OpResult::Pending;
+        }
+        if let Err(e) = ensure_account(&self.client, omnibus_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure omnibus account: {}", e);
+            return OpResult::Pending;
+        }
+
+        let transfer = Transfer::new(Self::transfer_id(req_id))
+            .with_debit_account_id(user_account)
+            .with_credit_account_id(omnibus_account)
+            .with_amount(amount as u128)
+            .with_ledger(TRADING_LEDGER)
+            .with_code(1)
+            .with_flags(TransferFlags::PENDING);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => {
+                log::info!("Funding withdraw succeeded: {}", req_id);
+                OpResult::Success
+            }
+            Err(e) => {
+                log::error!("Funding withdraw error: {} - {:?}", req_id, e);
+                OpResult::Pending
+            }
+        }
+    }
+
+    async fn deposit(
+        &self,
+        req_id: Uuid,
+        user_id: u64,
+        asset_id: u32,
+        amount: u64,
+    ) -> OpResult {
+        log::info!("TbFundingAdapter::deposit({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
+
+        let user_account = tb_account_id(user_id, asset_id);
+        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
+
+        let transfer = Transfer::new(Self::transfer_id(req_id))
+            .with_debit_account_id(omnibus_account)
+            .with_credit_account_id(user_account)
+            .with_amount(amount as u128)
+            .with_ledger(TRADING_LEDGER)
+            .with_code(1);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => {
+                log::info!("Funding deposit succeeded: {}", req_id);
+                OpResult::Success
+            }
+            Err(e) => {
+                log::error!("Funding deposit error: {} - {:?}", req_id, e);
+                OpResult::Pending
+            }
+        }
+    }
+
+    async fn commit(&self, req_id: Uuid) -> OpResult {
+        log::info!("TbFundingAdapter::commit({})", req_id);
+
+        let pending_id = Self::transfer_id(req_id);
+        let post_id = pending_id.wrapping_add(1);
+
+        let transfer = Transfer::new(post_id)
+            .with_pending_id(pending_id)
+            .with_flags(TransferFlags::POST_PENDING_TRANSFER);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => OpResult::Success,
+            Err(e) => {
+                log::error!("Funding commit error: {} - {:?}", req_id, e);
+                OpResult::Pending
+            }
+        }
+    }
+
+    async fn rollback(&self, req_id: Uuid) -> OpResult {
+        log::info!("TbFundingAdapter::rollback({})", req_id);
+
+        let pending_id = Self::transfer_id(req_id);
+        let void_id = pending_id.wrapping_add(2);
+
+        let transfer = Transfer::new(void_id)
+            .with_pending_id(pending_id)
+            .with_flags(TransferFlags::VOID_PENDING_TRANSFER);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => OpResult::Success,
+            Err(e) => {
+                log::error!("Funding rollback error: {} - {:?}", req_id, e);
+                OpResult::Pending
+            }
+        }
+    }
+
+    async fn query(&self, _req_id: Uuid) -> OpResult {
+        OpResult::Pending
+    }
+
+    fn name(&self) -> &str {
+        "funding-tb"
     }
 }
