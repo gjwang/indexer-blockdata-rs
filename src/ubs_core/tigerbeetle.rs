@@ -7,11 +7,15 @@ use tokio::sync::mpsc;
 // Ledger constants
 pub const TRADING_LEDGER: u32 = 1;
 
-// Special accounts
-// 0xFFFF...FFFF = All 1s (max u64)
-pub const EXCHANGE_OMNIBUS_ID_PREFIX: u64 = u64::MAX;
-pub const HOLDING_ACCOUNT_ID_PREFIX: u64 = u64::MAX - 1;
-pub const REVENUE_ACCOUNT_ID_PREFIX: u64 = u64::MAX - 2;
+// Special system accounts (NOT used for internal transfers)
+// Internal transfers use TigerBeetle's pending (frozen) mechanism directly on user accounts.
+// These accounts are reserved for:
+//   - EXCHANGE_OMNIBUS: Collect trading fees
+//   - HOLDING_ACCOUNT: Temporary holding for external settlements
+//   - REVENUE_ACCOUNT: Accumulated exchange revenue
+pub const EXCHANGE_OMNIBUS_ID_PREFIX: u64 = u64::MAX;      // Trading fee collection
+pub const HOLDING_ACCOUNT_ID_PREFIX: u64 = u64::MAX - 1;   // External settlement holding
+pub const REVENUE_ACCOUNT_ID_PREFIX: u64 = u64::MAX - 2;   // Exchange revenue
 
 use crate::ubs_core::events::{BalanceEvent, UnlockReason};
 

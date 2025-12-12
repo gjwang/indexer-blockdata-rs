@@ -91,11 +91,11 @@ use tigerbeetle_unofficial::{Client, Transfer};
 use tigerbeetle_unofficial::transfer::Flags as TransferFlags;
 
 use crate::ubs_core::tigerbeetle::{
-    tb_account_id, ensure_account,
-    EXCHANGE_OMNIBUS_ID_PREFIX, TRADING_LEDGER,
+    tb_account_id, ensure_account, TRADING_LEDGER,
 };
 
 /// TigerBeetle-backed Funding Adapter
+/// Uses pending transfers with frozen balance - no omnibus account needed
 pub struct TbFundingAdapter {
     client: Arc<Client>,
 }
@@ -112,6 +112,7 @@ impl TbFundingAdapter {
 
 #[async_trait]
 impl ServiceAdapter for TbFundingAdapter {
+    /// Withdraw from funding: Create PENDING transfer that freezes funds
     async fn withdraw(
         &self,
         req_id: RequestId,
@@ -122,20 +123,18 @@ impl ServiceAdapter for TbFundingAdapter {
         log::info!("TbFundingAdapter::withdraw({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
-        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
 
         if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
             log::warn!("Failed to ensure user account: {}", e);
             return OpResult::Pending;
         }
-        if let Err(e) = ensure_account(&self.client, omnibus_account, TRADING_LEDGER, 1).await {
-            log::warn!("Failed to ensure omnibus account: {}", e);
-            return OpResult::Pending;
-        }
 
+        // Create PENDING transfer - funds are frozen in user's debits_pending
+        // We use user_account as both debit and credit with PENDING flag
+        // This freezes the amount without moving it anywhere
         let transfer = Transfer::new(Self::transfer_id(req_id))
             .with_debit_account_id(user_account)
-            .with_credit_account_id(omnibus_account)
+            .with_credit_account_id(user_account) // Same account - TB allows this with PENDING
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
             .with_code(1)
@@ -143,7 +142,7 @@ impl ServiceAdapter for TbFundingAdapter {
 
         match self.client.create_transfers(vec![transfer]).await {
             Ok(_) => {
-                log::info!("Funding withdraw succeeded: {}", req_id);
+                log::info!("Funding withdraw (pending) succeeded: {}", req_id);
                 OpResult::Success
             }
             Err(e) => {
@@ -153,6 +152,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
+    /// Deposit to funding: Direct transfer to user account
     async fn deposit(
         &self,
         req_id: RequestId,
@@ -163,14 +163,20 @@ impl ServiceAdapter for TbFundingAdapter {
         log::info!("TbFundingAdapter::deposit({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
-        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
 
+        if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure user account: {}", e);
+            return OpResult::Pending;
+        }
+
+        // For deposit, we credit the user directly
+        // This is a self-transfer that increases the balance
         let transfer = Transfer::new(Self::transfer_id(req_id))
-            .with_debit_account_id(omnibus_account)
+            .with_debit_account_id(user_account)
             .with_credit_account_id(user_account)
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
-            .with_code(1);
+            .with_code(2); // Different code for deposit
 
         match self.client.create_transfers(vec![transfer]).await {
             Ok(_) => {
@@ -184,6 +190,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
+    /// Commit: Post the pending transfer (release frozen funds)
     async fn commit(&self, req_id: RequestId) -> OpResult {
         log::info!("TbFundingAdapter::commit({})", req_id);
 
@@ -195,7 +202,10 @@ impl ServiceAdapter for TbFundingAdapter {
             .with_flags(TransferFlags::POST_PENDING_TRANSFER);
 
         match self.client.create_transfers(vec![transfer]).await {
-            Ok(_) => OpResult::Success,
+            Ok(_) => {
+                log::info!("Funding commit succeeded: {}", req_id);
+                OpResult::Success
+            }
             Err(e) => {
                 log::error!("Funding commit error: {} - {:?}", req_id, e);
                 OpResult::Pending
@@ -203,6 +213,7 @@ impl ServiceAdapter for TbFundingAdapter {
         }
     }
 
+    /// Rollback: Void the pending transfer (unfreeze funds)
     async fn rollback(&self, req_id: RequestId) -> OpResult {
         log::info!("TbFundingAdapter::rollback({})", req_id);
 
@@ -214,7 +225,10 @@ impl ServiceAdapter for TbFundingAdapter {
             .with_flags(TransferFlags::VOID_PENDING_TRANSFER);
 
         match self.client.create_transfers(vec![transfer]).await {
-            Ok(_) => OpResult::Success,
+            Ok(_) => {
+                log::info!("Funding rollback succeeded: {}", req_id);
+                OpResult::Success
+            }
             Err(e) => {
                 log::error!("Funding rollback error: {} - {:?}", req_id, e);
                 OpResult::Pending

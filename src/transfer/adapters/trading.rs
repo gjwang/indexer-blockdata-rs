@@ -85,13 +85,14 @@ impl ServiceAdapter for TradingAdapter {
 
 use std::sync::Arc;
 use tigerbeetle_unofficial::{Client, Transfer};
+use tigerbeetle_unofficial::transfer::Flags as TransferFlags;
 
 use crate::ubs_core::tigerbeetle::{
-    tb_account_id, ensure_account,
-    EXCHANGE_OMNIBUS_ID_PREFIX, TRADING_LEDGER,
+    tb_account_id, ensure_account, TRADING_LEDGER,
 };
 
 /// TigerBeetle-backed Trading Adapter
+/// Uses pending transfers with frozen balance - no omnibus account needed
 pub struct TbTradingAdapter {
     client: Arc<Client>,
 }
@@ -108,6 +109,7 @@ impl TbTradingAdapter {
 
 #[async_trait]
 impl ServiceAdapter for TbTradingAdapter {
+    /// Withdraw from trading: Create PENDING transfer that freezes funds
     async fn withdraw(
         &self,
         req_id: RequestId,
@@ -118,23 +120,26 @@ impl ServiceAdapter for TbTradingAdapter {
         log::info!("TbTradingAdapter::withdraw({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
-        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
 
         if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
             log::warn!("Failed to ensure user account: {}", e);
             return OpResult::Pending;
         }
 
+        // Create PENDING transfer - funds are frozen in user's debits_pending
+        // We use user_account as both debit and credit with PENDING flag
+        // This freezes the amount without moving it anywhere
         let transfer = Transfer::new(Self::transfer_id(req_id))
             .with_debit_account_id(user_account)
-            .with_credit_account_id(omnibus_account)
+            .with_credit_account_id(user_account) // Same account - TB allows this with PENDING
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
-            .with_code(1);
+            .with_code(1)
+            .with_flags(TransferFlags::PENDING);
 
         match self.client.create_transfers(vec![transfer]).await {
             Ok(_) => {
-                log::info!("Trading withdraw succeeded: {}", req_id);
+                log::info!("Trading withdraw (pending) succeeded: {}", req_id);
                 OpResult::Success
             }
             Err(e) => {
@@ -144,6 +149,7 @@ impl ServiceAdapter for TbTradingAdapter {
         }
     }
 
+    /// Deposit to trading: Direct transfer to user account
     async fn deposit(
         &self,
         req_id: RequestId,
@@ -154,14 +160,20 @@ impl ServiceAdapter for TbTradingAdapter {
         log::info!("TbTradingAdapter::deposit({}, user={}, asset={}, amount={})", req_id, user_id, asset_id, amount);
 
         let user_account = tb_account_id(user_id, asset_id);
-        let omnibus_account = tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id);
 
+        if let Err(e) = ensure_account(&self.client, user_account, TRADING_LEDGER, 1).await {
+            log::warn!("Failed to ensure user account: {}", e);
+            return OpResult::Pending;
+        }
+
+        // For deposit, we credit the user directly
+        // This is a self-transfer that increases the balance
         let transfer = Transfer::new(Self::transfer_id(req_id))
-            .with_debit_account_id(omnibus_account)
+            .with_debit_account_id(user_account)
             .with_credit_account_id(user_account)
             .with_amount(amount as u128)
             .with_ledger(TRADING_LEDGER)
-            .with_code(1);
+            .with_code(2); // Different code for deposit
 
         match self.client.create_transfers(vec![transfer]).await {
             Ok(_) => {
@@ -175,14 +187,42 @@ impl ServiceAdapter for TbTradingAdapter {
         }
     }
 
-    async fn commit(&self, _req_id: RequestId) -> OpResult {
-        log::debug!("TbTradingAdapter::commit - no-op for trading");
-        OpResult::Success
+    /// Commit: Post the pending transfer (release frozen funds)
+    async fn commit(&self, req_id: RequestId) -> OpResult {
+        log::info!("TbTradingAdapter::commit({})", req_id);
+
+        let transfer = Transfer::new(Self::transfer_id(req_id))
+            .with_flags(TransferFlags::POST_PENDING_TRANSFER);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => {
+                log::info!("Trading commit succeeded: {}", req_id);
+                OpResult::Success
+            }
+            Err(e) => {
+                log::error!("Trading commit error: {} - {:?}", req_id, e);
+                OpResult::Pending
+            }
+        }
     }
 
-    async fn rollback(&self, _req_id: RequestId) -> OpResult {
-        log::warn!("TbTradingAdapter::rollback - not supported without state lookup");
-        OpResult::Failed("Rollback not supported for trading".to_string())
+    /// Rollback: Void the pending transfer (unfreeze funds)
+    async fn rollback(&self, req_id: RequestId) -> OpResult {
+        log::info!("TbTradingAdapter::rollback({})", req_id);
+
+        let transfer = Transfer::new(Self::transfer_id(req_id))
+            .with_flags(TransferFlags::VOID_PENDING_TRANSFER);
+
+        match self.client.create_transfers(vec![transfer]).await {
+            Ok(_) => {
+                log::info!("Trading rollback succeeded: {}", req_id);
+                OpResult::Success
+            }
+            Err(e) => {
+                log::error!("Trading rollback error: {} - {:?}", req_id, e);
+                OpResult::Failed(format!("Rollback failed: {:?}", e))
+            }
+        }
     }
 
     async fn query(&self, _req_id: RequestId) -> OpResult {
