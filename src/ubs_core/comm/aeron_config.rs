@@ -104,11 +104,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_default_config_is_udp() {
+    fn test_default_config_is_ipc() {
+        // Default uses IPC for development (shared memory, same machine)
         let config = AeronConfig::default();
-        assert!(config.orders_channel.contains("aeron:udp"));
-        assert!(config.orders_channel.contains("40456"));
-        assert!(config.responses_channel.contains("40457"));
+        assert!(config.orders_channel.contains("aeron:ipc"));
+        assert!(config.responses_channel.contains("aeron:ipc"));
         assert_eq!(config.orders_in_stream, 1001);
         assert!(config.busy_spin);
     }
