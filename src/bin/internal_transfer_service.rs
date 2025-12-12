@@ -227,20 +227,36 @@ async fn main() {
         println!("==================================================");
     }
 
-    // Connect to ScyllaDB
-    println!("📦 Connecting to ScyllaDB...");
-    let session = match scylla::SessionBuilder::new()
-        .known_node("127.0.0.1:9042")
-        .build()
-        .await
-    {
-        Ok(s) => Arc::new(s),
-        Err(e) => {
-            eprintln!("❌ Failed to connect to ScyllaDB: {}", e);
-            std::process::exit(1);
+    // Connect to ScyllaDB with retry
+    println!("📦 Connecting to ScyllaDB (with retry)...");
+    let max_retries = 10;
+    let mut retry_delay_ms = 1000u64;
+    let mut session_opt = None;
+
+    for attempt in 1..=max_retries {
+        match scylla::SessionBuilder::new()
+            .known_node("127.0.0.1:9042")
+            .build()
+            .await
+        {
+            Ok(s) => {
+                println!("✅ Connected to ScyllaDB (attempt {})", attempt);
+                session_opt = Some(Arc::new(s));
+                break;
+            }
+            Err(e) => {
+                if attempt < max_retries {
+                    eprintln!("⚠️ ScyllaDB connection attempt {} failed: {}. Retrying in {}ms...", attempt, e, retry_delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(retry_delay_ms)).await;
+                    retry_delay_ms = (retry_delay_ms * 2).min(30000); // Max 30 seconds
+                } else {
+                    eprintln!("❌ Failed to connect to ScyllaDB after {} attempts: {}", max_retries, e);
+                    std::process::exit(1);
+                }
+            }
         }
-    };
-    println!("✅ Connected to ScyllaDB");
+    }
+    let session = session_opt.expect("Session should be set");
 
     // Initialize schema
     println!("📋 Setting up schema...");
@@ -267,20 +283,33 @@ async fn main() {
     // Create DB layer
     let db = Arc::new(TransferDb::new(session));
 
-    // Connect to TigerBeetle
-    println!("🐯 Connecting to TigerBeetle...");
+    // Connect to TigerBeetle with retry
+    println!("🐯 Connecting to TigerBeetle (with retry)...");
     let tb_address = std::env::var("TIGERBEETLE_ADDRESS").unwrap_or_else(|_| "3000".to_string());
-    let tb_client: Arc<tigerbeetle_unofficial::Client> = match tigerbeetle_unofficial::Client::new(0, &tb_address) {
-        Ok(client) => {
-            println!("✅ Connected to TigerBeetle at {}", tb_address);
-            Arc::new(client)
+    let mut tb_retry_delay_ms = 1000u64;
+    let mut tb_client_opt = None;
+
+    for attempt in 1..=max_retries {
+        match tigerbeetle_unofficial::Client::new(0, &tb_address) {
+            Ok(client) => {
+                println!("✅ Connected to TigerBeetle at {} (attempt {})", tb_address, attempt);
+                tb_client_opt = Some(Arc::new(client));
+                break;
+            }
+            Err(e) => {
+                if attempt < max_retries {
+                    eprintln!("⚠️ TigerBeetle connection attempt {} failed: {:?}. Retrying in {}ms...", attempt, e, tb_retry_delay_ms);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(tb_retry_delay_ms)).await;
+                    tb_retry_delay_ms = (tb_retry_delay_ms * 2).min(30000);
+                } else {
+                    eprintln!("❌ Failed to connect to TigerBeetle after {} attempts: {:?}", max_retries, e);
+                    eprintln!("   Make sure TigerBeetle is running on port {}", tb_address);
+                    std::process::exit(1);
+                }
+            }
         }
-        Err(e) => {
-            eprintln!("❌ Failed to connect to TigerBeetle: {}", e);
-            eprintln!("   Make sure TigerBeetle is running on port {}", tb_address);
-            std::process::exit(1);
-        }
-    };
+    }
+    let tb_client: Arc<tigerbeetle_unofficial::Client> = tb_client_opt.expect("TB client should be set");
 
     // Create adapters
     // Funding: TigerBeetle direct
