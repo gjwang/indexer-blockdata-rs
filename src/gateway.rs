@@ -135,6 +135,12 @@ pub struct AppState {
     pub ubscore_timeout_ms: u64,
     /// TigerBeetle Client for direct balance lookups
     pub tb_client: Option<Arc<tigerbeetle_unofficial::Client>>,
+    /// Transfer v2: Coordinator
+    pub transfer_coordinator: Option<Arc<crate::transfer::TransferCoordinator>>,
+    /// Transfer v2: Worker
+    pub transfer_worker: Option<Arc<crate::transfer::TransferWorker>>,
+    /// Transfer v2: Queue for async processing
+    pub transfer_queue: Option<Arc<crate::transfer::TransferQueue>>,
 }
 
 pub fn create_app(state: Arc<AppState>) -> Router {
@@ -151,6 +157,9 @@ pub fn create_app(state: Arc<AppState>) -> Router {
         .route("/api/v1/user/internal_transfer", post(handle_internal_transfer))
         .route("/api/v1/user/internal_transfer/:request_id", axum::routing::get(handle_get_transfer_status))
         .route("/api/v1/user/balance", axum::routing::get(get_balance))
+        // Transfer v2 endpoints
+        .route("/api/v1/transfer", post(handle_transfer_v2))
+        .route("/api/v1/transfer/:req_id", axum::routing::get(get_transfer_v2))
         .layer(Extension(state))
         .layer(CorsLayer::permissive())
 }
@@ -897,5 +906,181 @@ async fn handle_get_transfer_status(
         }
     } else {
         (StatusCode::SERVICE_UNAVAILABLE, "Internal Transfer Database not connected").into_response()
+    }
+}
+
+// ============================================================================
+// Transfer v2 Handlers
+// ============================================================================
+
+/// Request payload for Transfer v2
+#[derive(Debug, serde::Deserialize)]
+pub struct TransferV2Request {
+    pub from: String,       // "funding" or "trading"
+    pub to: String,         // "trading" or "funding"
+    pub user_id: u64,
+    pub asset_id: u32,
+    pub amount: u64,
+}
+
+/// Response payload for Transfer v2
+#[derive(Debug, serde::Serialize)]
+pub struct TransferV2Response {
+    pub req_id: String,
+    pub status: String,     // "committed", "pending", "failed", "rolled_back"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// POST /api/v1/transfer - Create and process a new transfer
+async fn handle_transfer_v2(
+    Extension(state): Extension<Arc<AppState>>,
+    Json(payload): Json<TransferV2Request>,
+) -> impl IntoResponse {
+    use crate::transfer::{TransferRequest, TransferState};
+
+    // Check if transfer v2 is enabled
+    let (coordinator, worker, queue) = match (
+        &state.transfer_coordinator,
+        &state.transfer_worker,
+        &state.transfer_queue,
+    ) {
+        (Some(c), Some(w), Some(q)) => (c.clone(), w.clone(), q.clone()),
+        _ => {
+            return Json(TransferV2Response {
+                req_id: "".to_string(),
+                status: "failed".to_string(),
+                message: None,
+                error: Some("Transfer v2 not enabled".to_string()),
+            }).into_response();
+        }
+    };
+
+    // Validate request
+    if payload.amount == 0 {
+        return Json(TransferV2Response {
+            req_id: "".to_string(),
+            status: "failed".to_string(),
+            message: None,
+            error: Some("Amount must be greater than 0".to_string()),
+        }).into_response();
+    }
+
+    if payload.from == payload.to {
+        return Json(TransferV2Response {
+            req_id: "".to_string(),
+            status: "failed".to_string(),
+            message: None,
+            error: Some("Source and target cannot be the same".to_string()),
+        }).into_response();
+    }
+
+    // Create transfer request
+    let req = TransferRequest {
+        from: payload.from,
+        to: payload.to,
+        user_id: payload.user_id,
+        asset_id: payload.asset_id,
+        amount: payload.amount,
+    };
+
+    // Create transfer record
+    let req_id = match coordinator.create(req).await {
+        Ok(id) => id,
+        Err(e) => {
+            return Json(TransferV2Response {
+                req_id: "".to_string(),
+                status: "failed".to_string(),
+                message: None,
+                error: Some(e.to_string()),
+            }).into_response();
+        }
+    };
+
+    // SYNC: Try full processing immediately (happy path)
+    let result = worker.process_now(req_id).await;
+
+    // Return based on result
+    let (status, message) = match result {
+        TransferState::Committed => ("committed", None),
+        TransferState::RolledBack => ("rolled_back", Some("Transfer cancelled".to_string())),
+        TransferState::Failed => ("failed", Some("Transfer failed".to_string())),
+        _ => {
+            // Not terminal - push to queue for background processing
+            if !queue.try_push(req_id) {
+                log::warn!("Queue full, req_id {} will be picked up by scanner", req_id);
+            }
+            ("pending", Some("Processing in background".to_string()))
+        }
+    };
+
+    Json(TransferV2Response {
+        req_id: req_id.to_string(),
+        status: status.to_string(),
+        message,
+        error: None,
+    }).into_response()
+}
+
+/// GET /api/v1/transfer/:req_id - Get transfer status
+async fn get_transfer_v2(
+    Extension(state): Extension<Arc<AppState>>,
+    Path(req_id): Path<String>,
+) -> impl IntoResponse {
+    // Check if transfer v2 is enabled
+    let coordinator = match &state.transfer_coordinator {
+        Some(c) => c.clone(),
+        None => {
+            return Json(TransferV2Response {
+                req_id: req_id.clone(),
+                status: "error".to_string(),
+                message: None,
+                error: Some("Transfer v2 not enabled".to_string()),
+            }).into_response();
+        }
+    };
+
+    // Parse UUID
+    let uuid = match uuid::Uuid::parse_str(&req_id) {
+        Ok(id) => id,
+        Err(_) => {
+            return Json(TransferV2Response {
+                req_id: req_id.clone(),
+                status: "error".to_string(),
+                message: None,
+                error: Some("Invalid req_id format".to_string()),
+            }).into_response();
+        }
+    };
+
+    // Get transfer
+    match coordinator.get(uuid).await {
+        Ok(Some(record)) => {
+            Json(serde_json::json!({
+                "req_id": record.req_id.to_string(),
+                "state": record.state.as_str(),
+                "source": record.source.as_str(),
+                "target": record.target.as_str(),
+                "user_id": record.user_id,
+                "asset_id": record.asset_id,
+                "amount": record.amount,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+                "error": record.error,
+                "retry_count": record.retry_count,
+            })).into_response()
+        }
+        Ok(None) => {
+            Json(serde_json::json!({
+                "error": "Transfer not found"
+            })).into_response()
+        }
+        Err(e) => {
+            Json(serde_json::json!({
+                "error": e.to_string()
+            })).into_response()
+        }
     }
 }

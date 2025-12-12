@@ -151,6 +151,54 @@ async fn main() {
     // Clone TB client for Settlement Listener
     let tb_client_for_settlement = tb_client.clone();
 
+    // --- Transfer v2 Initialization ---
+    // Note: Transfer v2 is disabled by default until adapters are fully implemented
+    let transfer_v2_enabled = std::env::var("TRANSFER_V2_ENABLED").is_ok();
+
+    let (transfer_coordinator, transfer_worker, transfer_queue) = if transfer_v2_enabled {
+        use fetcher::transfer::{
+            TransferCoordinator, TransferWorker, TransferQueue, TransferDb, WorkerConfig,
+            adapters::{FundingAdapter, TradingAdapter},
+        };
+
+        if let Some(ref session) = db {
+            let transfer_db = Arc::new(TransferDb::new(session.get_session()));
+            let funding_adapter = Arc::new(FundingAdapter::new());
+            let trading_adapter = Arc::new(TradingAdapter::new());
+
+            let coordinator = Arc::new(TransferCoordinator::new(
+                transfer_db.clone(),
+                funding_adapter,
+                trading_adapter,
+            ));
+
+            let queue = Arc::new(TransferQueue::new(10000));
+            let config = WorkerConfig::default();
+
+            let worker = Arc::new(TransferWorker::new(
+                coordinator.clone(),
+                transfer_db,
+                queue.clone(),
+                config,
+            ));
+
+            // Spawn background worker
+            let worker_clone = worker.clone();
+            tokio::spawn(async move {
+                worker_clone.run().await;
+            });
+
+            println!("✅ Transfer v2 ENABLED");
+            (Some(coordinator), Some(worker), Some(queue))
+        } else {
+            println!("⚠️ Transfer v2 requires database connection");
+            (None, None, None)
+        }
+    } else {
+        println!("⚠️ Transfer v2 DISABLED (set TRANSFER_V2_ENABLED=1 to enable)");
+        (None, None, None)
+    };
+
     let state = Arc::new(AppState {
         symbol_manager,
         balance_manager,
@@ -166,6 +214,9 @@ async fn main() {
         ubs_client,
         ubscore_timeout_ms: 5000,
         tb_client,
+        transfer_coordinator,
+        transfer_worker,
+        transfer_queue,
     });
 
     // --- Internal Transfer Settlement Listener ---
