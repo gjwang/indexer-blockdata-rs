@@ -88,6 +88,8 @@ hostname = "0.4"
 metrics = "0.21"
 metrics-exporter-prometheus = "0.12"
 zmq = "0.10.0"
+async-trait = "0.1.89"
+crossbeam = { version = "0.8.4", features = ["crossbeam-queue"] }
 
 [features]
 default = ["aeron"]

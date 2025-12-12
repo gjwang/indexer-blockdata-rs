@@ -10,6 +10,7 @@ pub mod engine_output;
 pub mod enforced_balance;
 pub mod fast_ulid;
 pub mod gateway;
+pub mod transfer;  // Internal Transfer v2
 
 pub mod ledger;
 pub mod logging;  // Phase 3: Structured async logging
