@@ -282,9 +282,33 @@ async fn main() {
         }
     };
 
-    // Create TigerBeetle adapters
-    let funding = Arc::new(TbFundingAdapter::new(tb_client.clone()));
-    let trading = Arc::new(TbTradingAdapter::new(tb_client.clone()));
+    // Create adapters
+    // Funding: TigerBeetle direct
+    let funding: Arc<dyn fetcher::transfer::adapters::ServiceAdapter + Send + Sync> =
+        Arc::new(TbFundingAdapter::new(tb_client.clone()));
+
+    // Trading: Use UBSCore via Aeron in production, TigerBeetle in test
+    #[cfg(feature = "aeron")]
+    let trading: Arc<dyn fetcher::transfer::adapters::ServiceAdapter + Send + Sync> = {
+        use fetcher::transfer::adapters::UbsTradingAdapter;
+        match UbsTradingAdapter::new() {
+            Ok(adapter) => {
+                println!("✅ Trading adapter: UBSCore (via Aeron)");
+                Arc::new(adapter)
+            }
+            Err(e) => {
+                eprintln!("⚠️ Failed to connect to UBSCore: {}", e);
+                eprintln!("   Using TigerBeetle direct adapter");
+                Arc::new(TbTradingAdapter::new(tb_client.clone()))
+            }
+        }
+    };
+
+    #[cfg(not(feature = "aeron"))]
+    let trading: Arc<dyn fetcher::transfer::adapters::ServiceAdapter + Send + Sync> = {
+        println!("✅ Trading adapter: TigerBeetle (direct)");
+        Arc::new(TbTradingAdapter::new(tb_client.clone()))
+    };
 
     // Create coordinator
     let coordinator = Arc::new(TransferCoordinator::new(

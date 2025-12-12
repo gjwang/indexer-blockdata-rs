@@ -157,7 +157,7 @@ async fn main() {
     let (transfer_coordinator, transfer_worker, transfer_queue) = if internal_transfer_enabled {
         use fetcher::transfer::{
             TransferCoordinator, TransferWorker, TransferQueue, TransferDb, WorkerConfig,
-            adapters::{TbFundingAdapter, TbTradingAdapter},
+            adapters::TbFundingAdapter,
         };
 
         // Require both ScyllaDB and TigerBeetle for internal transfers
@@ -165,9 +165,33 @@ async fn main() {
             (Some(ref session), Some(ref tb)) => {
                 let transfer_db = Arc::new(TransferDb::new(session.get_session()));
 
-                // Use real TigerBeetle adapters
+                // Funding adapter always uses TigerBeetle directly
                 let funding_adapter = Arc::new(TbFundingAdapter::new(tb.clone()));
-                let trading_adapter = Arc::new(TbTradingAdapter::new(tb.clone()));
+
+                // Trading adapter: Use UBSCore via Aeron in production, TigerBeetle in test
+                #[cfg(feature = "aeron")]
+                let trading_adapter: Arc<dyn fetcher::transfer::adapters::ServiceAdapter + Send + Sync> = {
+                    use fetcher::transfer::adapters::UbsTradingAdapter;
+                    match UbsTradingAdapter::new() {
+                        Ok(adapter) => {
+                            println!("✅ Trading adapter: UBSCore (via Aeron)");
+                            Arc::new(adapter)
+                        }
+                        Err(e) => {
+                            eprintln!("⚠️ Failed to connect to UBSCore: {}", e);
+                            eprintln!("   Falling back to TigerBeetle direct adapter");
+                            use fetcher::transfer::adapters::TbTradingAdapter;
+                            Arc::new(TbTradingAdapter::new(tb.clone()))
+                        }
+                    }
+                };
+
+                #[cfg(not(feature = "aeron"))]
+                let trading_adapter: Arc<dyn fetcher::transfer::adapters::ServiceAdapter + Send + Sync> = {
+                    use fetcher::transfer::adapters::TbTradingAdapter;
+                    println!("✅ Trading adapter: TigerBeetle (direct)");
+                    Arc::new(TbTradingAdapter::new(tb.clone()))
+                };
 
                 let coordinator = Arc::new(TransferCoordinator::new(
                     transfer_db.clone(),
@@ -191,7 +215,7 @@ async fn main() {
                     worker_clone.run().await;
                 });
 
-                println!("✅ Internal Transfer ENABLED (TigerBeetle)");
+                println!("✅ Internal Transfer ENABLED");
                 (Some(coordinator), Some(worker), Some(queue))
             }
             (None, _) => {
