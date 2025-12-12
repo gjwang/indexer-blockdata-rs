@@ -21,6 +21,7 @@ pub mod error_codes {
     pub const INSUFFICIENT_BALANCE: &str = "INSUFFICIENT_BALANCE";
     pub const PERMISSION_DENIED: &str = "PERMISSION_DENIED";
     pub const INVALID_PRECISION: &str = "INVALID_PRECISION";
+    pub const VALIDATION_ERROR: &str = "VALIDATION_ERROR";
 }
 
 /// Create success response

@@ -181,7 +181,7 @@ fn run_aeron_service() {
 
             let consumer: BaseConsumer = ClientConfig::new()
                 .set("bootstrap.servers", &config.kafka.broker)
-                .set("group.id", "ubscore-balance-consumer")
+                .set("group.id", "ubscore_group_v4") // Bumped to v4 to ensure fresh start
                 .set("enable.auto.commit", "true")
                 .set("auto.offset.reset", "earliest")  // Process all deposits from beginning
                 .create()
@@ -251,7 +251,7 @@ fn run_aeron_service() {
 
         // Phase 4: Poll Kafka for balance operations (deposits/withdrawals)
         if let Some(ref consumer) = kafka_consumer {
-            match consumer.poll(Duration::from_millis(0)) {  // Non-blocking poll
+            match consumer.poll(Duration::from_millis(10)) {
                 Some(Ok(message)) => {
                     if let Some(payload) = message.payload() {
                         match serde_json::from_slice::<BalanceRequest>(payload) {
@@ -259,31 +259,32 @@ fn run_aeron_service() {
                                 info!("📥 Balance request: {:?}", req);
                                 let mut state = business_state.borrow_mut();
                                 match req {
-                                    BalanceRequest::TransferIn { user_id, asset_id, amount, timestamp, .. } => {
+                                    BalanceRequest::TransferIn { request_id, user_id, asset_id, amount, timestamp } => {
                                         // Generate unique event ID
-                                        let event_id = format!("deposit_{}_{}_{}", user_id, asset_id, timestamp);
+                                        let event_id = format!("deposit_{}", request_id);
 
-                                        info!("[DEPOSIT_CONSUMED] event_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
-                                            event_id, user_id, asset_id, amount);
+                                        info!("[DEPOSIT_CONSUMED] request_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
+                                            request_id, user_id, asset_id, amount);
 
                                         // Get balance before
                                         let balance_before = state.ubs_core.get_balance_full(user_id, asset_id)
                                             .map(|(a, _)| a).unwrap_or(0);
 
-                                        // Process deposit
-                                        state.ubs_core.on_deposit(user_id, asset_id, amount, timestamp);
+                                        // Process deposit - Pass request_id as tx_id
+                                        state.ubs_core.on_deposit(user_id, asset_id, amount, request_id);
 
                                         // Get updated balance (returns Option<(avail, frozen)>)
                                         let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
                                             .unwrap_or((amount, 0));
 
-                                        info!("[DEPOSIT_VALIDATED] event_id={} balance_before={} balance_after={} delta={} | UBSCore updated balance",
-                                            event_id, balance_before, avail, amount);
+                                        info!("[DEPOSIT_VALIDATED] request_id={} balance_before={} balance_after={} delta={} | UBSCore updated balance",
+                                            request_id, balance_before, avail, amount);
 
                                         // Publish balance event to Kafka for Settlement
                                         if let Some(ref producer) = state.kafka_producer {
                                             use fetcher::engine_output::BalanceEvent;
-                                            // Use timestamp as seq since UBSCore doesn't track per-asset versions
+                                            // Use timestamp as base for seq, but include request_id logic if needed?
+                                            // Actually ref_id in BalanceEvent is what matters
                                             let seq = std::time::SystemTime::now()
                                                 .duration_since(std::time::UNIX_EPOCH)
                                                 .unwrap()
@@ -298,7 +299,7 @@ fn run_aeron_service() {
                                                 avail: Some(avail),
                                                 frozen: Some(frozen),
                                                 event_type: "deposit".to_string(),
-                                                ref_id: 0,
+                                                ref_id: request_id, // Pass request_id here!
                                             };
 
                                             let event_json = serde_json::to_string(&event).unwrap();
@@ -308,33 +309,33 @@ fn run_aeron_service() {
                                                 .payload(&event_json);
                                             // Block until message is sent to Kafka
                                             let send_future = producer.send(record, Duration::from_secs(1));
-                                            let rt = tokio::runtime::Runtime::new().unwrap();
                                             let _ = rt.block_on(send_future);
 
-                                            info!("[DEPOSIT_TO_SETTLEMENT] event_id={} topic=balance.events seq={} | Published to Settlement",
-                                                event_id, seq);
+                                            info!("[DEPOSIT_TO_SETTLEMENT] request_id={} topic=balance.events seq={} | Published to Settlement",
+                                                request_id, seq);
                                         }
 
-                                        info!("[DEPOSIT_EXIT] event_id={} | UBSCore completed deposit processing", event_id);
+                                        info!("[DEPOSIT_EXIT] request_id={} | UBSCore completed deposit processing", request_id);
                                     }
-                                    BalanceRequest::TransferOut { user_id, asset_id, amount, timestamp, .. } => {
+                                    BalanceRequest::TransferOut { request_id, user_id, asset_id, amount, timestamp } => {
                                         // Generate unique event ID
-                                        let event_id = format!("withdraw_{}_{}_{}", user_id, asset_id, timestamp);
+                                        let event_id = format!("withdraw_{}", request_id);
 
-                                        info!("[WITHDRAW_CONSUMED] event_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
-                                            event_id, user_id, asset_id, amount);
+                                        info!("[WITHDRAW_CONSUMED] request_id={} user={} asset={} amount={} | UBSCore consumed from Kafka",
+                                            request_id, user_id, asset_id, amount);
 
                                         // Get balance before
                                         let balance_before = state.ubs_core.get_balance_full(user_id, asset_id)
                                             .map(|(a, _)| a).unwrap_or(0);
 
-                                        if state.ubs_core.on_withdraw(user_id, asset_id, amount, timestamp) {
+                                        // Pass request_id as tx_id to on_withdraw
+                                        if state.ubs_core.on_withdraw(user_id, asset_id, amount, request_id) {
                                             // Get updated balance
                                             let (avail, frozen) = state.ubs_core.get_balance_full(user_id, asset_id)
                                                 .unwrap_or((0, 0));
 
-                                            info!("[WITHDRAW_VALIDATED] event_id={} balance_before={} balance_after={} delta=-{} | UBSCore updated balance",
-                                                event_id, balance_before, avail, amount);
+                                            info!("[WITHDRAW_VALIDATED] request_id={} balance_before={} balance_after={} delta=-{} | UBSCore updated balance",
+                                                request_id, balance_before, avail, amount);
 
                                             // Publish balance event to Kafka for Settlement
                                             if let Some(ref producer) = state.kafka_producer {
@@ -353,7 +354,7 @@ fn run_aeron_service() {
                                                     avail: Some(avail),
                                                     frozen: Some(frozen),
                                                     event_type: "withdraw".to_string(),
-                                                    ref_id: 0,
+                                                    ref_id: request_id, // Pass request_id here!
                                                 };
 
                                                 let event_json = serde_json::to_string(&event).unwrap();
@@ -363,16 +364,15 @@ fn run_aeron_service() {
                                                     .payload(&event_json);
                                                 // Block until message is sent to Kafka
                                                 let send_future = producer.send(record, Duration::from_secs(1));
-                                                let rt = tokio::runtime::Runtime::new().unwrap();
                                                 let _ = rt.block_on(send_future);
 
-                                                info!("[WITHDRAW_TO_SETTLEMENT] event_id={} topic=balance.events seq={} | Published to Settlement",
-                                                    event_id, seq);
+                                                info!("[WITHDRAW_TO_SETTLEMENT] request_id={} topic=balance.events seq={} | Published to Settlement",
+                                                    request_id, seq);
                                             }
 
-                                            info!("[WITHDRAW_EXIT] event_id={} | UBSCore completed withdrawal processing", event_id);
+                                            info!("[WITHDRAW_EXIT] request_id={} | UBSCore completed withdrawal processing", request_id);
                                         } else {
-                                            info!("[WITHDRAW_FAILED] event_id={} | Insufficient balance", event_id);
+                                            info!("[WITHDRAW_FAILED] request_id={} | Insufficient balance", request_id);
                                         }
                                     }
                                 }
@@ -399,7 +399,7 @@ fn run_aeron_service() {
         }
 
         // Small sleep to avoid busy-spin
-        std::thread::sleep(Duration::from_micros(POLL_SLEEP_US));
+        // std::thread::sleep(Duration::from_micros(POLL_SLEEP_US));
     }
 }
 

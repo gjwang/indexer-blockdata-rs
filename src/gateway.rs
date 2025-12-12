@@ -336,82 +336,51 @@ async fn transfer_out(
 async fn handle_internal_transfer(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<crate::models::internal_transfer_types::InternalTransferRequest>,
-) -> Result<Json<crate::models::api_response::ApiResponse<crate::models::internal_transfer_types::InternalTransferData>>, StatusCode> {
-    use crate::models::internal_transfer_types::{InternalTransferData, TransferStatus};
+) -> Result<Json<crate::models::api_response::ApiResponse<Option<crate::models::internal_transfer_types::InternalTransferData>>>, StatusCode> {
+    use crate::models::api_response::ApiResponse;
 
-    // Validate asset match
-    if payload.from_account.asset() != payload.to_account.asset() {
-        log::error!("❌ Asset mismatch: {} != {}", payload.from_account.asset(), payload.to_account.asset());
-        return Err(StatusCode::BAD_REQUEST);
+    // 1. Check if DB is available
+    let db = match &state.internal_transfer_db {
+        Some(d) => d,
+        None => return Err(StatusCode::SERVICE_UNAVAILABLE),
+    };
+
+    // 2. Instantiate Handler
+    // TODO: Migrate InternalTransferHandler to use Real TB Client.
+    // For now, we use a dummy MockTbClient because Spot->Funding doesn't use TB (uses Kafka).
+    use crate::api::internal_transfer_handler::InternalTransferHandler;
+    use crate::mocks::tigerbeetle_mock::MockTbClient;
+
+    // Use real TB client from state
+    let tb_client = match &state.tb_client {
+        Some(c) => c.clone(),
+        None => {
+             log::error!("TB Client not available in AppState!");
+             return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+
+    // Use the producer from state (OrderPublisher trait)
+    let producer: Option<Arc<dyn OrderPublisher>> = Some(state.producer.clone());
+
+    let handler = InternalTransferHandler::new(
+        db.clone(),
+        state.symbol_manager.clone(),
+        tb_client,
+        producer,
+    );
+
+    // 3. Delegate processing
+    match handler.handle_transfer(payload).await {
+        Ok(api_resp) => Ok(Json(api_resp)),
+        Err(e) => {
+            log::error!("Internal Transfer Handler Error: {:?}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
-
-    // Generate request ID
-    let request_id = {
-        let mut gen = state.snowflake_gen.lock().unwrap();
-        gen.generate() as i64
-    };
-
-    // Convert amount to internal representation
-    let (asset_id, raw_amount) = state
-        .balance_manager
-        .to_internal_amount(&payload.from_account.asset(), payload.amount)
-        .map_err(|e| {
-            log::error!("❌ Amount conversion failed: {}", e);
-            StatusCode::BAD_REQUEST
-        })?;
-
-    log::info!("🔄 Internal Transfer Request:");
-    log::info!("   ID: {}", request_id);
-    log::info!("   From: {} (asset: {})", payload.from_account.type_name(), payload.from_account.asset());
-    log::info!("   To: {} (asset: {})", payload.to_account.type_name(), payload.to_account.asset());
-    log::info!("   Amount: {} (raw: {})", payload.amount, raw_amount);
-
-    // Send to settlement service via Kafka (following transfer_in pattern)
-    let settlement_message = serde_json::json!({
-        "request_id": request_id,
-        "from_account": payload.from_account,
-        "to_account": payload.to_account,
-        "asset_id": asset_id,
-        "amount": raw_amount,
-        "timestamp": current_time_ms(),
-    });
-
-    let json_payload = serde_json::to_string(&settlement_message).map_err(|e| {
-        log::error!("Failed to serialize internal_transfer request: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    state
-        .producer
-        .publish(
-            "internal_transfer_requests".to_string(),
-            request_id.to_string(),
-            json_payload.into_bytes()
-        )
-        .await
-        .map_err(|e| {
-            log::error!("Failed to send internal_transfer to Kafka: {}", e);
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-
-    log::info!("✅ Internal Transfer published to Kafka");
-
-    // TODO: Write to database (InternalTransferDb)
-    // TODO: Send to settlement service via Kafka
-
-    let response_data = InternalTransferData {
-        request_id: request_id.to_string(),
-        from_account: payload.from_account,
-        to_account: payload.to_account,
-        amount: payload.amount.to_string(),
-        status: TransferStatus::Pending,  // Changed to Pending since we sent to Kafka
-        created_at: current_time_ms() as i64,
-    };
-
-    log::info!("✅ Internal Transfer SUBMITTED: request_id={}", request_id);
-
-    Ok(Json(crate::models::api_response::ApiResponse::success(response_data)))
 }
+
+
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 struct CancelOrderRequest {

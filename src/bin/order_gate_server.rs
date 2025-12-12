@@ -9,6 +9,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -146,6 +147,9 @@ async fn main() {
         None
     };
 
+    // Clone TB client for Settlement Listener
+    let tb_client_for_settlement = tb_client.clone();
+
     let state = Arc::new(AppState {
         symbol_manager,
         balance_manager,
@@ -155,7 +159,7 @@ async fn main() {
         balance_topic,
         user_manager: UserAccountManager::new(),
         db: db.map(|d| (*d).clone()),
-        internal_transfer_db,
+        internal_transfer_db: internal_transfer_db.clone(),
         funding_account,
         #[cfg(feature = "aeron")]
         ubs_client,
@@ -163,10 +167,39 @@ async fn main() {
         tb_client,
     });
 
-    let app = create_app(state);
+    // --- Internal Transfer Settlement Listener ---
+    if let Some(internal_db) = internal_transfer_db.clone() {
+        if let Some(tb) = tb_client_for_settlement {
+            println!("🔧 Starting Settlement Listener. Broker: {}", config.kafka.broker);
 
-    println!("🚀 Order Gateway API running on http://localhost:3001");
-    println!("   Flow: HTTP → Aeron (UBSCore) → Kafka (ME)");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+            let settlement = Arc::new(fetcher::api::internal_transfer_settlement::InternalTransferSettlement::new(
+                internal_db,
+                tb,
+            ));
+
+            let brokers = config.kafka.broker.clone();
+            let group_id = "internal_transfer_settlement".to_string();
+
+            let settlement_clone = settlement.clone();
+            tokio::spawn(async move {
+                settlement_clone.run_consumer(brokers, group_id).await;
+            });
+            println!("✅ Internal Transfer Settlement Listener spawned");
+        } else {
+             println!("⚠️ Settlement Listener NOT started (No updated TB Connection)");
+        }
+    }
+
+    // --- Start HTTP Server ---
+    let app = create_app(state);
+    let port = 3001;
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("🚀 Order Gateway running on {}", addr);
+
+    axum::serve(
+        tokio::net::TcpListener::bind(&addr).await.unwrap(),
+        app.into_make_service(),
+    )
+    .await
+    .unwrap();
 }
