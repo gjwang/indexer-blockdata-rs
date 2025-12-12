@@ -1,6 +1,13 @@
-//! Internal Transfer Test Server
+//! Internal Transfer Service
 //!
-//! Standalone HTTP server for testing internal transfers with real TigerBeetle.
+//! Combined HTTP API + Background Worker for internal transfers.
+//!
+//! This service can run in two modes:
+//! 1. HTTP + Worker (default): Provides HTTP API + background processing
+//! 2. Worker only: Set WORKER_ONLY=1 for background processing only
+//!
+//! In production, the Gateway handles HTTP, and this runs as worker only.
+//! For testing, this can be the standalone HTTP+Worker service.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -17,6 +24,7 @@ use tower_http::cors::CorsLayer;
 use fetcher::transfer::{
     TransferCoordinator, TransferDb, TransferQueue, TransferRequest, TransferState,
     TransferWorker, WorkerConfig,
+    adapters::{TbFundingAdapter, TbTradingAdapter},
 };
 
 /// Application state
@@ -50,6 +58,8 @@ async fn handle_transfer(
     Extension(state): Extension<Arc<AppState>>,
     Json(payload): Json<TransferReq>,
 ) -> impl IntoResponse {
+    use fetcher::transfer::ServiceId;
+
     // Validate
     if payload.amount == 0 {
         return Json(TransferResp {
@@ -69,9 +79,7 @@ async fn handle_transfer(
         }).into_response();
     }
 
-    // Create transfer
-    use fetcher::transfer::ServiceId;
-
+    // Parse service IDs
     let from: ServiceId = match payload.from.parse() {
         Ok(s) => s,
         Err(_) => {
@@ -182,12 +190,42 @@ async fn get_transfer(
     }
 }
 
+async fn run_http_server(state: Arc<AppState>) {
+    let app = Router::new()
+        .route("/api/v1/transfer", post(handle_transfer))
+        .route("/api/v1/transfer/:req_id", get(get_transfer))
+        .layer(Extension(state))
+        .layer(CorsLayer::permissive());
+
+    let port = 8080;
+    let addr = SocketAddr::from(([0, 0, 0, 0], port));
+    println!("🚀 Internal Transfer Service on http://127.0.0.1:{}", port);
+    println!("");
+    println!("📤 Endpoints:");
+    println!("  POST /api/v1/transfer       - Create internal transfer");
+    println!("  GET  /api/v1/transfer/:id   - Query transfer status");
+
+    axum::serve(
+        tokio::net::TcpListener::bind(&addr).await.unwrap(),
+        app.into_make_service(),
+    )
+    .await
+    .unwrap();
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::init();
 
-    println!("🧪 Internal Transfer Test Server");
-    println!("================================");
+    let worker_only = std::env::var("WORKER_ONLY").is_ok();
+
+    if worker_only {
+        println!("🔄 Internal Transfer Service (Worker Only Mode)");
+        println!("================================================");
+    } else {
+        println!("🧪 Internal Transfer Service (HTTP + Worker Mode)");
+        println!("==================================================");
+    }
 
     // Connect to ScyllaDB
     println!("📦 Connecting to ScyllaDB...");
@@ -206,8 +244,6 @@ async fn main() {
 
     // Initialize schema
     println!("📋 Setting up schema...");
-    // Drop and recreate table with new schema (req_id changed from uuid to bigint)
-    let _ = session.query("DROP TABLE IF EXISTS trading.transfers", &[]).await;
     let schema = r#"
         CREATE TABLE IF NOT EXISTS trading.transfers (
             req_id bigint,
@@ -228,7 +264,7 @@ async fn main() {
         eprintln!("⚠️ Schema setup warning: {}", e);
     }
 
-    // Create components
+    // Create DB layer
     let db = Arc::new(TransferDb::new(session));
 
     // Connect to TigerBeetle
@@ -246,17 +282,18 @@ async fn main() {
         }
     };
 
-    // Use real TigerBeetle adapters
-    use fetcher::transfer::adapters::{TbFundingAdapter, TbTradingAdapter};
+    // Create TigerBeetle adapters
     let funding = Arc::new(TbFundingAdapter::new(tb_client.clone()));
     let trading = Arc::new(TbTradingAdapter::new(tb_client.clone()));
 
+    // Create coordinator
     let coordinator = Arc::new(TransferCoordinator::new(
         db.clone(),
         funding,
         trading,
     ));
 
+    // Create queue and worker
     let queue = Arc::new(TransferQueue::new(10000));
     let config = WorkerConfig::default();
 
@@ -273,31 +310,22 @@ async fn main() {
         worker_clone.run().await;
     });
 
-    let state = Arc::new(AppState {
-        coordinator,
-        worker,
-        queue,
-    });
+    if worker_only {
+        println!("");
+        println!("🔄 Worker running in background...");
+        println!("   Press Ctrl+C to stop.");
 
-    // Build router
-    let app = Router::new()
-        .route("/api/v1/transfer", post(handle_transfer))
-        .route("/api/v1/transfer/:req_id", get(get_transfer))
-        .layer(Extension(state))
-        .layer(CorsLayer::permissive());
+        // Just wait forever
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(3600)).await;
+        }
+    } else {
+        let state = Arc::new(AppState {
+            coordinator,
+            worker,
+            queue,
+        });
 
-    let port = 8080;
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    println!("🚀 Internal Transfer Test Server on http://127.0.0.1:{}", port);
-    println!("");
-    println!("📤 Endpoints:");
-    println!("  POST /api/v1/transfer       - Create internal transfer");
-    println!("  GET  /api/v1/transfer/:id   - Query transfer status");
-
-    axum::serve(
-        tokio::net::TcpListener::bind(&addr).await.unwrap(),
-        app.into_make_service(),
-    )
-    .await
-    .unwrap();
+        run_http_server(state).await;
+    }
 }

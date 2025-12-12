@@ -3,6 +3,10 @@
 # Internal Transfer V2 - TigerBeetle Integration Test
 # Tests with real TigerBeetle backend
 #
+# Uses internal_transfer_service (HTTP + Worker mode) for testing.
+# In production, Gateway handles HTTP, and internal_transfer_service
+# runs in WORKER_ONLY mode.
+#
 # Prerequisites:
 #   - TigerBeetle running on 127.0.0.1:3000
 #   - ScyllaDB running on 127.0.0.1:9042
@@ -15,7 +19,6 @@ echo "=============================================="
 BASE_URL="${BASE_URL:-http://127.0.0.1:8080}"
 USER_ID=5001
 ASSET_ID=1  # BTC
-INITIAL_AMOUNT=1000000000  # 10 BTC in satoshis
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
@@ -66,8 +69,8 @@ transfer() {
 pkill -9 -f internal_transfer_service 2>/dev/null
 sleep 2
 
-# Start the server
-echo "🚀 Starting internal_transfer_service..."
+# Start the service (HTTP + Worker mode)
+echo "🚀 Starting internal_transfer_service (HTTP + Worker mode)..."
 SERVER_LOG="/tmp/transfer_server_$$.log"
 RUST_LOG=info "$PROJECT_DIR/target/debug/internal_transfer_service" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
