@@ -1,5 +1,17 @@
-// Settlement handler for internal transfers
-// Responsibilities:
+// ============================================================================
+// DEPRECATED: Legacy V1 Internal Transfer Settlement
+// ============================================================================
+// This module is part of the OLD internal transfer system.
+// It uses omnibus accounts which is NOT the correct pattern for internal transfers.
+//
+// The NEW FSM-based transfer system is in src/transfer/ and uses:
+// - TigerBeetle pending (frozen) balance mechanism
+// - No omnibus accounts for internal transfers
+//
+// TODO: Remove this file once migration to new system is complete.
+// ============================================================================
+//
+// Original responsibilities:
 // 1. Process UBSCore confirmations (via Kafka)
 // 2. POST_PENDING in TigerBeetle
 // 3. Scan for stuck transfers (requesting/pending)

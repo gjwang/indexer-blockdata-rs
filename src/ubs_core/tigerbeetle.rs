@@ -100,6 +100,8 @@ impl TigerBeetleWorker {
 
         while let Some(event) = rx.recv().await {
             let transfers = match event {
+                // EXTERNAL Deposit: Money enters from outside via omnibus
+                // (This is NOT internal transfer - omnibus is correct here for external funds)
                 BalanceEvent::Deposited { tx_id, user_id, asset_id, amount } => {
                     vec![Transfer::new(tb_id(1, tx_id)) // Type 1 = External
                         .with_debit_account_id(tb_account_id(EXCHANGE_OMNIBUS_ID_PREFIX, asset_id))
@@ -108,6 +110,8 @@ impl TigerBeetleWorker {
                         .with_ledger(TRADING_LEDGER)
                         .with_code(1)]
                 },
+                // EXTERNAL Withdrawal: Money leaves to outside via omnibus
+                // (This is NOT internal transfer - omnibus is correct here for external funds)
                 BalanceEvent::Withdrawn { tx_id, user_id, asset_id, amount } => {
                     vec![Transfer::new(tb_id(1, tx_id)) // Type 1 = External
                         .with_debit_account_id(tb_account_id(user_id, asset_id))
