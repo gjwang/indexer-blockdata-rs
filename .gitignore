@@ -42,3 +42,4 @@ logs/
 *.log
 *.log.*
 triggers/
+book/
