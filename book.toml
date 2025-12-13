@@ -1,0 +1,30 @@
+[book]
+authors = ["Trading Exchange Team"]
+language = "en"
+multilingual = false
+src = "docs"
+title = "Trading Exchange Documentation"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/gjwang/indexer-blockdata-rs"
+edit-url-template = "https://github.com/gjwang/indexer-blockdata-rs/edit/main/{path}"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-hierarchical-index = true
+
+[output.html.playground]
+editable = false
+copyable = true
