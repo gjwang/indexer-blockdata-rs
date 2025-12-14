@@ -91,8 +91,17 @@ use crate::ubs_core::tigerbeetle::{
     tb_account_id, ensure_account, TRADING_LEDGER, HOLDING_ACCOUNT_ID_PREFIX,
 };
 
-/// TigerBeetle-backed Trading Adapter
-/// Uses pending transfers with frozen balance - no omnibus account needed
+/// ⚠️ WARNING: FOR TESTING ONLY - DO NOT USE IN PRODUCTION ⚠️
+///
+/// This adapter writes directly to TigerBeetle, bypassing UBSCore.
+/// This VIOLATES the architecture where UBSCore RAM is the source of truth
+/// for Trading balances.
+///
+/// In production, use `UbsTradingAdapter` which communicates with UBSCore
+/// via Aeron IPC. UBSCore then syncs to TigerBeetle as a shadow.
+///
+/// See: docs/INTERNAL_TRANSFER_ARCHITECTURE.md
+/// See: docs/INTERNAL_TRANSFER_FIX_PLAN.md
 pub struct TbTradingAdapter {
     client: Arc<Client>,
 }
