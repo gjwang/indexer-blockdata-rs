@@ -184,3 +184,23 @@ CREATE TABLE IF NOT EXISTS engine_output_log (
 
 -- Index for cross-symbol queries (e.g., recovery by global sequence)
 CREATE INDEX IF NOT EXISTS idx_engine_output_seq ON engine_output_log (output_seq);
+
+-- Internal Transfers (FSM-based)
+-- Tracks transfer state for Funding <-> Trading transfers
+CREATE TABLE IF NOT EXISTS transfers (
+    req_id bigint,
+    source text,           -- 'funding' or 'trading'
+    target text,           -- 'funding' or 'trading'
+    user_id bigint,
+    asset_id int,
+    amount bigint,
+    state text,            -- FSM state: init, source_pending, source_done, target_pending, compensating, committed, rolled_back, failed
+    created_at bigint,
+    updated_at bigint,
+    error text,
+    retry_count int,
+    PRIMARY KEY (req_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_transfers_state ON transfers (state);
+CREATE INDEX IF NOT EXISTS idx_transfers_user ON transfers (user_id);
