@@ -285,8 +285,23 @@ impl TransferCoordinator {
                 Ok(TransferState::Committed)
             }
             OpResult::Failed(e) => {
-                self.db.update_state_with_error(record.req_id, TransferState::TargetPending, TransferState::Compensating, &e).await?;
-                Ok(TransferState::Compensating)
+                // CRITICAL: When source is Trading, we CANNOT rollback!
+                // Trading operations are immediate/final. Once withdrawn, money is gone.
+                // We MUST keep retrying target until it succeeds.
+                if record.source == ServiceId::Trading {
+                    log::error!(
+                        "Target deposit failed for {} but source is Trading (cannot rollback)! \
+                         Staying in TargetPending to retry. Error: {}",
+                        record.req_id, e
+                    );
+                    // Stay in TargetPending - keep retrying target deposit
+                    // Do NOT go to Compensating - Trading cannot be rolled back!
+                    Ok(TransferState::TargetPending)
+                } else {
+                    // Source is Funding (can be rolled back via TB void)
+                    self.db.update_state_with_error(record.req_id, TransferState::TargetPending, TransferState::Compensating, &e).await?;
+                    Ok(TransferState::Compensating)
+                }
             }
             OpResult::Pending => {
                 Ok(TransferState::TargetPending)

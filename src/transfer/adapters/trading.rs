@@ -369,10 +369,25 @@ mod ubs_adapter {
             OpResult::Success
         }
 
-        /// Rollback: Not implemented for UBSCore
+        /// Rollback: FORBIDDEN for UBSCore (defense in depth)
+        ///
+        /// UBSCore operations are immediate and final. They cannot be rolled back.
+        /// The FSM coordinator should NEVER call this (see step_target_pending).
+        /// If this is called, it indicates a bug in the coordinator.
+        ///
+        /// Returns Failed to:
+        /// 1. Prevent FSM from transitioning to RolledBack (which would hide data loss)
+        /// 2. Keep the transfer in Compensating state for manual investigation
+        /// 3. Trigger alerts via error logging
         async fn rollback(&self, req_id: RequestId) -> OpResult {
-            log::warn!("UbsTradingAdapter::rollback({}) - not implemented", req_id);
-            OpResult::Success
+            log::error!(
+                "FORBIDDEN: UbsTradingAdapter::rollback({}) called! \
+                 UBSCore operations are final and cannot be rolled back. \
+                 This indicates a bug in the transfer coordinator. \
+                 Transfer will remain stuck for manual investigation.",
+                req_id
+            );
+            OpResult::Failed("FORBIDDEN: UBSCore operations are final and cannot be rolled back".to_string())
         }
 
         async fn query(&self, _req_id: RequestId) -> OpResult {
